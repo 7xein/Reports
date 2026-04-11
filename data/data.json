@@ -1,0 +1,1096 @@
+{
+  "weekly": {
+    "targets": {
+      "saleOrdersToInvoice": {
+        "Dubai": 200,
+        "Ajman": 150,
+        "Sharjah": 100,
+        "Abu Dhabi": 200,
+        "Al Ain": 100,
+        "Qatar": 150
+      },
+      "openRepairOrders": {
+        "Dubai": 400,
+        "Ajman": 300,
+        "Sharjah": 200,
+        "Abu Dhabi": 400,
+        "Al Ain": 100,
+        "Qatar": 100
+      },
+      "warrantiesActivated": {
+        "Dubai": 500,
+        "Ajman": 100,
+        "Sharjah": 50,
+        "Abu Dhabi": 100,
+        "Al Ain": 50,
+        "Qatar": 20
+      },
+      "rosWithoutQuotations": {
+        "Dubai": 30,
+        "Ajman": 100,
+        "Sharjah": 50,
+        "Abu Dhabi": 100,
+        "Al Ain": 30,
+        "Qatar": 50
+      },
+      "rosWithoutTags": {
+        "Dubai": 100,
+        "Ajman": 100,
+        "Sharjah": 100,
+        "Abu Dhabi": 200,
+        "Al Ain": 100,
+        "Qatar": 50
+      },
+      "quotationsNotApproved": {
+        "Dubai": 300,
+        "Ajman": 200,
+        "Sharjah": 100,
+        "Abu Dhabi": 300,
+        "Al Ain": 100,
+        "Qatar": 100
+      },
+      "rosWithoutInvoices": {
+        "Dubai": 0,
+        "Ajman": 0,
+        "Sharjah": 0,
+        "Abu Dhabi": 0,
+        "Al Ain": 0,
+        "Qatar": 0
+      },
+      "totalRepairOrders": {
+        "Dubai": 9500,
+        "Ajman": 5000,
+        "Sharjah": 1500,
+        "Abu Dhabi": 8500,
+        "Al Ain": 3200,
+        "Qatar": 1000
+      },
+      "totalInvoicedSales": {
+        "Dubai": 35000000,
+        "Ajman": 5000000,
+        "Sharjah": 3500000,
+        "Abu Dhabi": 7500000,
+        "Al Ain": 3500000,
+        "Qatar": 1100000
+      }
+    },
+    "current": {
+      "weekStarting": "2026-04-04",
+      "weekEnding": "2026-04-09",
+      "values": {
+        "saleOrdersToInvoice": {
+          "Dubai": 1028,
+          "Ajman": 479,
+          "Sharjah": 119,
+          "Abu Dhabi": 773,
+          "Al Ain": 161,
+          "Qatar": 352
+        },
+        "openRepairOrders": {
+          "Dubai": 831,
+          "Ajman": 402,
+          "Sharjah": 267,
+          "Abu Dhabi": 685,
+          "Al Ain": 97,
+          "Qatar": 127
+        },
+        "warrantiesActivated": {
+          "Dubai": 974,
+          "Ajman": 202,
+          "Sharjah": 85,
+          "Abu Dhabi": 128,
+          "Al Ain": 66,
+          "Qatar": 0
+        },
+        "rosWithoutQuotations": {
+          "Dubai": 27,
+          "Ajman": 3226,
+          "Sharjah": 135,
+          "Abu Dhabi": 1335,
+          "Al Ain": 19,
+          "Qatar": 230
+        },
+        "rosWithoutTags": {
+          "Dubai": 230,
+          "Ajman": 94,
+          "Sharjah": 93,
+          "Abu Dhabi": 354,
+          "Al Ain": 124,
+          "Qatar": 10
+        },
+        "quotationsNotApproved": {
+          "Dubai": 691,
+          "Ajman": 404,
+          "Sharjah": 65,
+          "Abu Dhabi": 524,
+          "Al Ain": 138,
+          "Qatar": 163
+        },
+        "rosWithoutInvoices": {
+          "Dubai": 0,
+          "Ajman": 0,
+          "Sharjah": 0,
+          "Abu Dhabi": 0,
+          "Al Ain": 0,
+          "Qatar": 0
+        },
+        "totalRepairOrders": {
+          "Dubai": 9730,
+          "Ajman": 4943,
+          "Sharjah": 1431,
+          "Abu Dhabi": 8300,
+          "Al Ain": 3130,
+          "Qatar": 912
+        },
+        "totalInvoicedSales": {
+          "Dubai": 36567514,
+          "Ajman": 5009801,
+          "Sharjah": 3353624,
+          "Abu Dhabi": 7544841,
+          "Al Ain": 3468720,
+          "Qatar": 1054669
+        }
+      }
+    },
+    "previous": {
+      "weekStarting": "2026-03-30",
+      "weekEnding": "2026-04-05",
+      "values": {
+        "saleOrdersToInvoice": {
+          "Dubai": 1021,
+          "Ajman": 479,
+          "Sharjah": 119,
+          "Abu Dhabi": 773,
+          "Al Ain": 161,
+          "Qatar": 352
+        },
+        "openRepairOrders": {
+          "Dubai": 705,
+          "Ajman": 402,
+          "Sharjah": 267,
+          "Abu Dhabi": 685,
+          "Al Ain": 97,
+          "Qatar": 127
+        },
+        "warrantiesActivated": {
+          "Dubai": 651,
+          "Ajman": 202,
+          "Sharjah": 85,
+          "Abu Dhabi": 128,
+          "Al Ain": 66,
+          "Qatar": 0
+        },
+        "rosWithoutQuotations": {
+          "Dubai": 25,
+          "Ajman": 3226,
+          "Sharjah": 135,
+          "Abu Dhabi": 1335,
+          "Al Ain": 19,
+          "Qatar": 230
+        },
+        "rosWithoutTags": {
+          "Dubai": 86,
+          "Ajman": 94,
+          "Sharjah": 93,
+          "Abu Dhabi": 354,
+          "Al Ain": 124,
+          "Qatar": 10
+        },
+        "quotationsNotApproved": {
+          "Dubai": 634,
+          "Ajman": 404,
+          "Sharjah": 65,
+          "Abu Dhabi": 524,
+          "Al Ain": 138,
+          "Qatar": 163
+        },
+        "rosWithoutInvoices": {
+          "Dubai": 0,
+          "Ajman": 0,
+          "Sharjah": 0,
+          "Abu Dhabi": 0,
+          "Al Ain": 0,
+          "Qatar": 0
+        },
+        "totalRepairOrders": {
+          "Dubai": 9486,
+          "Ajman": 4943,
+          "Sharjah": 1431,
+          "Abu Dhabi": 8300,
+          "Al Ain": 3130,
+          "Qatar": 912
+        },
+        "totalInvoicedSales": {
+          "Dubai": 36441499,
+          "Ajman": 5009801,
+          "Sharjah": 3353624,
+          "Abu Dhabi": 7544841,
+          "Al Ain": 3468720,
+          "Qatar": 1054669
+        }
+      }
+    },
+    "history": [
+      {
+        "weekEnding": "2026-03-08",
+        "values": {
+          "saleOrdersToInvoice": {
+            "Dubai": 349,
+            "Ajman": 78,
+            "Sharjah": 53,
+            "Abu Dhabi": 230,
+            "Al Ain": 44,
+            "Qatar": 0
+          },
+          "openRepairOrders": {
+            "Dubai": 387,
+            "Ajman": 329,
+            "Sharjah": 237,
+            "Abu Dhabi": 473,
+            "Al Ain": 77,
+            "Qatar": 0
+          },
+          "warrantiesActivated": {
+            "Dubai": 565,
+            "Ajman": 2,
+            "Sharjah": 11,
+            "Abu Dhabi": 114,
+            "Al Ain": 66,
+            "Qatar": 0
+          },
+          "rosWithoutQuotations": {
+            "Dubai": 25,
+            "Ajman": 3118,
+            "Sharjah": 118,
+            "Abu Dhabi": 1334,
+            "Al Ain": 19,
+            "Qatar": 0
+          },
+          "rosWithoutTags": {
+            "Dubai": 821,
+            "Ajman": 3044,
+            "Sharjah": 1140,
+            "Abu Dhabi": 7294,
+            "Al Ain": 2816,
+            "Qatar": 0
+          },
+          "quotationsNotApproved": {
+            "Dubai": 599,
+            "Ajman": 371,
+            "Sharjah": 75,
+            "Abu Dhabi": 464,
+            "Al Ain": 137,
+            "Qatar": 0
+          },
+          "totalRepairOrders": {
+            "Dubai": 8338,
+            "Ajman": 4664,
+            "Sharjah": 1201,
+            "Abu Dhabi": 7378,
+            "Al Ain": 2858,
+            "Qatar": 0
+          },
+          "totalInvoicedSales": {
+            "Dubai": 18837250,
+            "Ajman": 4909210,
+            "Sharjah": 2665256,
+            "Abu Dhabi": 6185465,
+            "Al Ain": 3296864,
+            "Qatar": 0
+          }
+        }
+      },
+      {
+        "weekEnding": "2026-03-15",
+        "values": {
+          "saleOrdersToInvoice": {
+            "Dubai": 364,
+            "Ajman": 140,
+            "Sharjah": 205,
+            "Abu Dhabi": 241,
+            "Al Ain": 124,
+            "Qatar": 266
+          },
+          "openRepairOrders": {
+            "Dubai": 617,
+            "Ajman": 383,
+            "Sharjah": 240,
+            "Abu Dhabi": 707,
+            "Al Ain": 98,
+            "Qatar": 118
+          },
+          "warrantiesActivated": {
+            "Dubai": 651,
+            "Ajman": 202,
+            "Sharjah": 85,
+            "Abu Dhabi": 128,
+            "Al Ain": 66,
+            "Qatar": 0
+          },
+          "rosWithoutQuotations": {
+            "Dubai": 25,
+            "Ajman": 3226,
+            "Sharjah": 135,
+            "Abu Dhabi": 1335,
+            "Al Ain": 19,
+            "Qatar": 230
+          },
+          "rosWithoutTags": {
+            "Dubai": 86,
+            "Ajman": 94,
+            "Sharjah": 93,
+            "Abu Dhabi": 354,
+            "Al Ain": 124,
+            "Qatar": 10
+          },
+          "quotationsNotApproved": {
+            "Dubai": 634,
+            "Ajman": 404,
+            "Sharjah": 65,
+            "Abu Dhabi": 524,
+            "Al Ain": 138,
+            "Qatar": 163
+          },
+          "totalRepairOrders": {
+            "Dubai": 9360,
+            "Ajman": 4886,
+            "Sharjah": 1375,
+            "Abu Dhabi": 8191,
+            "Al Ain": 3083,
+            "Qatar": 884
+          },
+          "totalInvoicedSales": {
+            "Dubai": 19977449,
+            "Ajman": 5086857,
+            "Sharjah": 3208065,
+            "Abu Dhabi": 6558565,
+            "Al Ain": 3593855,
+            "Qatar": 1043999
+          }
+        }
+      },
+      {
+        "weekEnding": "2026-03-22",
+        "values": {
+          "saleOrdersToInvoice": {
+            "Dubai": 400,
+            "Ajman": 250,
+            "Sharjah": 170,
+            "Abu Dhabi": 500,
+            "Al Ain": 150,
+            "Qatar": 300
+          },
+          "openRepairOrders": {
+            "Dubai": 650,
+            "Ajman": 390,
+            "Sharjah": 250,
+            "Abu Dhabi": 690,
+            "Al Ain": 95,
+            "Qatar": 120
+          },
+          "warrantiesActivated": {
+            "Dubai": 651,
+            "Ajman": 202,
+            "Sharjah": 85,
+            "Abu Dhabi": 128,
+            "Al Ain": 66,
+            "Qatar": 0
+          },
+          "rosWithoutQuotations": {
+            "Dubai": 25,
+            "Ajman": 3226,
+            "Sharjah": 135,
+            "Abu Dhabi": 1335,
+            "Al Ain": 19,
+            "Qatar": 230
+          },
+          "rosWithoutTags": {
+            "Dubai": 86,
+            "Ajman": 94,
+            "Sharjah": 93,
+            "Abu Dhabi": 354,
+            "Al Ain": 124,
+            "Qatar": 10
+          },
+          "quotationsNotApproved": {
+            "Dubai": 634,
+            "Ajman": 404,
+            "Sharjah": 65,
+            "Abu Dhabi": 524,
+            "Al Ain": 138,
+            "Qatar": 163
+          },
+          "totalRepairOrders": {
+            "Dubai": 9400,
+            "Ajman": 4900,
+            "Sharjah": 1390,
+            "Abu Dhabi": 8240,
+            "Al Ain": 3100,
+            "Qatar": 890
+          },
+          "totalInvoicedSales": {
+            "Dubai": 25000000,
+            "Ajman": 5000000,
+            "Sharjah": 3250000,
+            "Abu Dhabi": 6800000,
+            "Al Ain": 3400000,
+            "Qatar": 1050000
+          }
+        }
+      },
+      {
+        "weekEnding": "2026-03-29",
+        "values": {
+          "saleOrdersToInvoice": {
+            "Dubai": 700,
+            "Ajman": 400,
+            "Sharjah": 140,
+            "Abu Dhabi": 650,
+            "Al Ain": 155,
+            "Qatar": 330
+          },
+          "openRepairOrders": {
+            "Dubai": 680,
+            "Ajman": 395,
+            "Sharjah": 260,
+            "Abu Dhabi": 688,
+            "Al Ain": 96,
+            "Qatar": 125
+          },
+          "warrantiesActivated": {
+            "Dubai": 625,
+            "Ajman": 195,
+            "Sharjah": 80,
+            "Abu Dhabi": 120,
+            "Al Ain": 60,
+            "Qatar": 0
+          },
+          "rosWithoutQuotations": {
+            "Dubai": 20,
+            "Ajman": 3100,
+            "Sharjah": 130,
+            "Abu Dhabi": 1300,
+            "Al Ain": 18,
+            "Qatar": 220
+          },
+          "rosWithoutTags": {
+            "Dubai": 80,
+            "Ajman": 90,
+            "Sharjah": 88,
+            "Abu Dhabi": 340,
+            "Al Ain": 120,
+            "Qatar": 8
+          },
+          "quotationsNotApproved": {
+            "Dubai": 600,
+            "Ajman": 390,
+            "Sharjah": 60,
+            "Abu Dhabi": 510,
+            "Al Ain": 132,
+            "Qatar": 158
+          },
+          "totalRepairOrders": {
+            "Dubai": 9450,
+            "Ajman": 4920,
+            "Sharjah": 1410,
+            "Abu Dhabi": 8270,
+            "Al Ain": 3115,
+            "Qatar": 900
+          },
+          "totalInvoicedSales": {
+            "Dubai": 31000000,
+            "Ajman": 5005000,
+            "Sharjah": 3300000,
+            "Abu Dhabi": 7100000,
+            "Al Ain": 3430000,
+            "Qatar": 1052000
+          }
+        }
+      },
+      {
+        "weekEnding": "2026-04-05",
+        "values": {
+          "saleOrdersToInvoice": {
+            "Dubai": 1021,
+            "Ajman": 479,
+            "Sharjah": 119,
+            "Abu Dhabi": 773,
+            "Al Ain": 161,
+            "Qatar": 352
+          },
+          "openRepairOrders": {
+            "Dubai": 705,
+            "Ajman": 402,
+            "Sharjah": 267,
+            "Abu Dhabi": 685,
+            "Al Ain": 97,
+            "Qatar": 127
+          },
+          "warrantiesActivated": {
+            "Dubai": 651,
+            "Ajman": 202,
+            "Sharjah": 85,
+            "Abu Dhabi": 128,
+            "Al Ain": 66,
+            "Qatar": 0
+          },
+          "rosWithoutQuotations": {
+            "Dubai": 25,
+            "Ajman": 3226,
+            "Sharjah": 135,
+            "Abu Dhabi": 1335,
+            "Al Ain": 19,
+            "Qatar": 230
+          },
+          "rosWithoutTags": {
+            "Dubai": 86,
+            "Ajman": 94,
+            "Sharjah": 93,
+            "Abu Dhabi": 354,
+            "Al Ain": 124,
+            "Qatar": 10
+          },
+          "quotationsNotApproved": {
+            "Dubai": 634,
+            "Ajman": 404,
+            "Sharjah": 65,
+            "Abu Dhabi": 524,
+            "Al Ain": 138,
+            "Qatar": 163
+          },
+          "totalRepairOrders": {
+            "Dubai": 9486,
+            "Ajman": 4943,
+            "Sharjah": 1431,
+            "Abu Dhabi": 8300,
+            "Al Ain": 3130,
+            "Qatar": 912
+          },
+          "totalInvoicedSales": {
+            "Dubai": 36441499,
+            "Ajman": 5009801,
+            "Sharjah": 3353624,
+            "Abu Dhabi": 7544841,
+            "Al Ain": 3468720,
+            "Qatar": 1054669
+          }
+        }
+      }
+    ]
+  },
+  "daily": {
+    "targets": {
+      "newSaleOrders": {
+        "Dubai": 12,
+        "Ajman": 5,
+        "Sharjah": 4,
+        "Abu Dhabi": 8,
+        "Al Ain": 3,
+        "Qatar": 4
+      },
+      "saleOrdersInvoiced": {
+        "Dubai": 14,
+        "Ajman": 6,
+        "Sharjah": 5,
+        "Abu Dhabi": 7,
+        "Al Ain": 3,
+        "Qatar": 3
+      },
+      "rosOpened": {
+        "Dubai": 25,
+        "Ajman": 14,
+        "Sharjah": 9,
+        "Abu Dhabi": 18,
+        "Al Ain": 6,
+        "Qatar": 7
+      },
+      "rosClosed": {
+        "Dubai": 26,
+        "Ajman": 13,
+        "Sharjah": 9,
+        "Abu Dhabi": 17,
+        "Al Ain": 6,
+        "Qatar": 8
+      },
+      "warrantiesActivated": {
+        "Dubai": 3,
+        "Ajman": 1,
+        "Sharjah": 1,
+        "Abu Dhabi": 2,
+        "Al Ain": 1,
+        "Qatar": 1
+      },
+      "quotationsCreated": {
+        "Dubai": 18,
+        "Ajman": 9,
+        "Sharjah": 5,
+        "Abu Dhabi": 12,
+        "Al Ain": 4,
+        "Qatar": 5
+      },
+      "quotationsApproved": {
+        "Dubai": 14,
+        "Ajman": 6,
+        "Sharjah": 4,
+        "Abu Dhabi": 8,
+        "Al Ain": 3,
+        "Qatar": 3
+      },
+      "invoicesIssued": {
+        "Dubai": 16,
+        "Ajman": 8,
+        "Sharjah": 5,
+        "Abu Dhabi": 10,
+        "Al Ain": 4,
+        "Qatar": 4
+      },
+      "invoicedSales": {
+        "Dubai": 130000,
+        "Ajman": 38000,
+        "Sharjah": 22000,
+        "Abu Dhabi": 65000,
+        "Al Ain": 18000,
+        "Qatar": 12000
+      }
+    },
+    "current": {
+      "date": "2026-04-06",
+      "values": {
+        "newSaleOrders": {
+          "Dubai": 12,
+          "Ajman": 5,
+          "Sharjah": 3,
+          "Abu Dhabi": 8,
+          "Al Ain": 2,
+          "Qatar": 4
+        },
+        "saleOrdersInvoiced": {
+          "Dubai": 15,
+          "Ajman": 7,
+          "Sharjah": 4,
+          "Abu Dhabi": 6,
+          "Al Ain": 3,
+          "Qatar": 2
+        },
+        "rosOpened": {
+          "Dubai": 22,
+          "Ajman": 14,
+          "Sharjah": 8,
+          "Abu Dhabi": 18,
+          "Al Ain": 5,
+          "Qatar": 6
+        },
+        "rosClosed": {
+          "Dubai": 28,
+          "Ajman": 12,
+          "Sharjah": 9,
+          "Abu Dhabi": 16,
+          "Al Ain": 6,
+          "Qatar": 8
+        },
+        "warrantiesActivated": {
+          "Dubai": 3,
+          "Ajman": 1,
+          "Sharjah": 0,
+          "Abu Dhabi": 2,
+          "Al Ain": 1,
+          "Qatar": 0
+        },
+        "quotationsCreated": {
+          "Dubai": 18,
+          "Ajman": 9,
+          "Sharjah": 5,
+          "Abu Dhabi": 12,
+          "Al Ain": 4,
+          "Qatar": 5
+        },
+        "quotationsApproved": {
+          "Dubai": 14,
+          "Ajman": 6,
+          "Sharjah": 4,
+          "Abu Dhabi": 8,
+          "Al Ain": 3,
+          "Qatar": 3
+        },
+        "invoicesIssued": {
+          "Dubai": 16,
+          "Ajman": 8,
+          "Sharjah": 5,
+          "Abu Dhabi": 10,
+          "Al Ain": 4,
+          "Qatar": 4
+        },
+        "invoicedSales": {
+          "Dubai": 125000,
+          "Ajman": 38000,
+          "Sharjah": 22000,
+          "Abu Dhabi": 65000,
+          "Al Ain": 18000,
+          "Qatar": 12000
+        }
+      }
+    },
+    "previous": {
+      "date": "2026-04-05",
+      "values": {
+        "newSaleOrders": {
+          "Dubai": 10,
+          "Ajman": 4,
+          "Sharjah": 4,
+          "Abu Dhabi": 7,
+          "Al Ain": 2,
+          "Qatar": 3
+        },
+        "saleOrdersInvoiced": {
+          "Dubai": 13,
+          "Ajman": 6,
+          "Sharjah": 5,
+          "Abu Dhabi": 5,
+          "Al Ain": 3,
+          "Qatar": 2
+        },
+        "rosOpened": {
+          "Dubai": 25,
+          "Ajman": 13,
+          "Sharjah": 9,
+          "Abu Dhabi": 17,
+          "Al Ain": 5,
+          "Qatar": 7
+        },
+        "rosClosed": {
+          "Dubai": 24,
+          "Ajman": 11,
+          "Sharjah": 8,
+          "Abu Dhabi": 15,
+          "Al Ain": 5,
+          "Qatar": 7
+        },
+        "warrantiesActivated": {
+          "Dubai": 2,
+          "Ajman": 1,
+          "Sharjah": 0,
+          "Abu Dhabi": 2,
+          "Al Ain": 1,
+          "Qatar": 0
+        },
+        "quotationsCreated": {
+          "Dubai": 16,
+          "Ajman": 8,
+          "Sharjah": 6,
+          "Abu Dhabi": 11,
+          "Al Ain": 4,
+          "Qatar": 4
+        },
+        "quotationsApproved": {
+          "Dubai": 13,
+          "Ajman": 5,
+          "Sharjah": 4,
+          "Abu Dhabi": 7,
+          "Al Ain": 3,
+          "Qatar": 3
+        },
+        "invoicesIssued": {
+          "Dubai": 14,
+          "Ajman": 7,
+          "Sharjah": 5,
+          "Abu Dhabi": 9,
+          "Al Ain": 4,
+          "Qatar": 3
+        },
+        "invoicedSales": {
+          "Dubai": 110000,
+          "Ajman": 35000,
+          "Sharjah": 25000,
+          "Abu Dhabi": 60000,
+          "Al Ain": 17000,
+          "Qatar": 10000
+        }
+      }
+    },
+    "history": []
+  },
+  "regional": {
+    "weekStart": "2026-04-04",
+    "branchConfig": {
+      "Dubai": {
+        "monthlyTarget": 2000000,
+        "daysInMonth": 26
+      },
+      "Abu Dhabi": {
+        "monthlyTarget": 750000,
+        "daysInMonth": 26
+      },
+      "Ajman": {
+        "monthlyTarget": 700000,
+        "daysInMonth": 26
+      },
+      "Al Ain": {
+        "monthlyTarget": 550000,
+        "daysInMonth": 26
+      },
+      "Sharjah": {
+        "monthlyTarget": 1200000,
+        "daysInMonth": 26
+      },
+      "Qatar": {
+        "monthlyTarget": 0,
+        "daysInMonth": 26
+      }
+    },
+    "salesLog": [
+      {
+        "date": "2026-04-01",
+        "branch": "Abu Dhabi",
+        "actualSales": 23232,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-01",
+        "branch": "Ajman",
+        "actualSales": 3500,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-01",
+        "branch": "Al Ain",
+        "actualSales": 17535,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-01",
+        "branch": "Dubai",
+        "actualSales": 94733,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-01",
+        "branch": "Qatar",
+        "actualSales": 4550,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-01",
+        "branch": "Sharjah",
+        "actualSales": 7442,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Abu Dhabi",
+        "actualSales": 43453,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Ajman",
+        "actualSales": 6921,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Al Ain",
+        "actualSales": 13001,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Dubai",
+        "actualSales": 20806,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Qatar",
+        "actualSales": 750,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-02",
+        "branch": "Sharjah",
+        "actualSales": 20100,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Abu Dhabi",
+        "actualSales": 15575,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Ajman",
+        "actualSales": 6992,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Al Ain",
+        "actualSales": 16474,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Dubai",
+        "actualSales": 4138,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Qatar",
+        "actualSales": 1870,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-04",
+        "branch": "Sharjah",
+        "actualSales": 43888,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Abu Dhabi",
+        "actualSales": 2897,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Ajman",
+        "actualSales": 9256,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Al Ain",
+        "actualSales": 5987,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Dubai",
+        "actualSales": 10047,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Qatar",
+        "actualSales": 500,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-05",
+        "branch": "Sharjah",
+        "actualSales": 40785,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Abu Dhabi",
+        "actualSales": 37307,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Ajman",
+        "actualSales": 2860,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Al Ain",
+        "actualSales": 31844,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Dubai",
+        "actualSales": 24676,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Qatar",
+        "actualSales": 44275,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-06",
+        "branch": "Sharjah",
+        "actualSales": 42628,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Abu Dhabi",
+        "actualSales": 52716,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Ajman",
+        "actualSales": 8989,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Al Ain",
+        "actualSales": 16768,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Dubai",
+        "actualSales": 22944,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Qatar",
+        "actualSales": 21040,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-07",
+        "branch": "Sharjah",
+        "actualSales": 60580,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Abu Dhabi",
+        "actualSales": 20965,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Ajman",
+        "actualSales": 27207,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Al Ain",
+        "actualSales": 13555,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Dubai",
+        "actualSales": 30762,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Qatar",
+        "actualSales": 0,
+        "notes": ""
+      },
+      {
+        "date": "2026-04-08",
+        "branch": "Sharjah",
+        "actualSales": 48180,
+        "notes": ""
+      }
+    ]
+  },
+  "wipHistory": []
+}
