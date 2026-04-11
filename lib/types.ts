@@ -3,13 +3,13 @@ export type Branch = typeof BRANCHES[number];
 
 // ── WIP metrics (7 fields shown in both WIP dashboard views) ──────────────
 export const WIP_METRICS = [
-  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', lowerIsBetter: true },
-  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         lowerIsBetter: true },
-  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       lowerIsBetter: false },
-  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           lowerIsBetter: true },
-  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           lowerIsBetter: true },
-  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    lowerIsBetter: true },
-  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             lowerIsBetter: true },
+  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', lowerIsBetter: true,  isCurrency: false },
+  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         lowerIsBetter: true,  isCurrency: false },
+  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       lowerIsBetter: false, isCurrency: false },
+  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           lowerIsBetter: true,  isCurrency: false },
+  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           lowerIsBetter: true,  isCurrency: false },
+  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    lowerIsBetter: true,  isCurrency: false },
+  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             lowerIsBetter: true,  isCurrency: false },
 ] as const;
 export type WipMetricKey = typeof WIP_METRICS[number]['key'];
 

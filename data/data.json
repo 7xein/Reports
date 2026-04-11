@@ -282,6 +282,14 @@
             "Al Ain": 137,
             "Qatar": 0
           },
+          "rosWithoutInvoices": {
+            "Dubai": 0,
+            "Ajman": 0,
+            "Sharjah": 0,
+            "Abu Dhabi": 0,
+            "Al Ain": 0,
+            "Qatar": 0
+          },
           "totalRepairOrders": {
             "Dubai": 8338,
             "Ajman": 4664,
@@ -350,6 +358,14 @@
             "Abu Dhabi": 524,
             "Al Ain": 138,
             "Qatar": 163
+          },
+          "rosWithoutInvoices": {
+            "Dubai": 0,
+            "Ajman": 0,
+            "Sharjah": 0,
+            "Abu Dhabi": 0,
+            "Al Ain": 0,
+            "Qatar": 0
           },
           "totalRepairOrders": {
             "Dubai": 9360,
@@ -420,6 +436,14 @@
             "Al Ain": 138,
             "Qatar": 163
           },
+          "rosWithoutInvoices": {
+            "Dubai": 0,
+            "Ajman": 0,
+            "Sharjah": 0,
+            "Abu Dhabi": 0,
+            "Al Ain": 0,
+            "Qatar": 0
+          },
           "totalRepairOrders": {
             "Dubai": 9400,
             "Ajman": 4900,
@@ -489,6 +513,14 @@
             "Al Ain": 132,
             "Qatar": 158
           },
+          "rosWithoutInvoices": {
+            "Dubai": 0,
+            "Ajman": 0,
+            "Sharjah": 0,
+            "Abu Dhabi": 0,
+            "Al Ain": 0,
+            "Qatar": 0
+          },
           "totalRepairOrders": {
             "Dubai": 9450,
             "Ajman": 4920,
@@ -557,6 +589,14 @@
             "Abu Dhabi": 524,
             "Al Ain": 138,
             "Qatar": 163
+          },
+          "rosWithoutInvoices": {
+            "Dubai": 0,
+            "Ajman": 0,
+            "Sharjah": 0,
+            "Abu Dhabi": 0,
+            "Al Ain": 0,
+            "Qatar": 0
           },
           "totalRepairOrders": {
             "Dubai": 9486,
