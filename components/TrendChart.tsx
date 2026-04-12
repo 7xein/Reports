@@ -23,7 +23,7 @@ export function TrendChart({ entries, defaultMetric = 'openRepairOrders' }: Tren
 
   if (entries.length === 0) {
     return (
-      <div className="flex items-center justify-center h-28 text-ink-muted text-xs">
+      <div className="flex items-center justify-center h-40 text-ink-muted text-sm">
         No trend data yet — save a WIP snapshot in Admin to start building the chart.
       </div>
     );
@@ -38,14 +38,14 @@ export function TrendChart({ entries, defaultMetric = 'openRepairOrders' }: Tren
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[9px] font-bold uppercase tracking-wide text-ink-muted">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">
           {metaMeta.label}
         </span>
         <select
           value={metric}
           onChange={(e) => setMetric(e.target.value as WipMetricKey)}
-          className="text-[9px] border border-border rounded px-2 py-0.5 text-ink-muted bg-white"
+          className="text-sm border border-border rounded px-3 py-1 text-ink-muted bg-white"
         >
           {WIP_METRICS.map((m) => (
             <option key={m.key} value={m.key}>{m.label}</option>
@@ -53,8 +53,8 @@ export function TrendChart({ entries, defaultMetric = 'openRepairOrders' }: Tren
         </select>
       </div>
 
-      <ResponsiveContainer width="100%" height={120}>
-        <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+      <ResponsiveContainer width="100%" height={180}>
+        <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -10, bottom: 0 }}>
           <defs>
             <linearGradient id="wipGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%"  stopColor="#78C41A" stopOpacity={0.25} />
@@ -64,28 +64,28 @@ export function TrendChart({ entries, defaultMetric = 'openRepairOrders' }: Tren
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 8, fill: '#aaa' }}
+            tick={{ fontSize: 11, fill: '#aaa' }}
             tickFormatter={(v: string) => v.slice(5)}
           />
-          <YAxis tick={{ fontSize: 8, fill: '#aaa' }} />
+          <YAxis tick={{ fontSize: 11, fill: '#aaa' }} />
           <Tooltip
             formatter={(v: number) => [formatNumber(v), metaMeta.label]}
-            labelStyle={{ fontSize: 9 }}
-            contentStyle={{ fontSize: 9, borderRadius: 6 }}
+            labelStyle={{ fontSize: 12 }}
+            contentStyle={{ fontSize: 12, borderRadius: 6 }}
           />
           <Area
             type="monotone"
             dataKey="value"
             stroke="#78C41A"
-            strokeWidth={1.5}
+            strokeWidth={2}
             fill="url(#wipGradient)"
-            dot={{ r: 2, fill: '#78C41A' }}
-            activeDot={{ r: 4 }}
+            dot={{ r: 3, fill: '#78C41A' }}
+            activeDot={{ r: 5 }}
           />
         </AreaChart>
       </ResponsiveContainer>
 
-      <div className="text-[7.5px] text-ink-muted mt-1 text-right">
+      <div className="text-xs text-ink-muted mt-2 text-right">
         Total across all 6 branches · {entries.length} data point{entries.length !== 1 ? 's' : ''}
       </div>
     </div>

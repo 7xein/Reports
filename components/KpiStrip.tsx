@@ -8,7 +8,7 @@ interface KpiStripProps {
 
 export function KpiStrip({ current, previous }: KpiStripProps) {
   return (
-    <div className="grid grid-cols-7 gap-1.5 mb-3">
+    <div className="grid grid-cols-7 gap-2 mb-4">
       {WIP_METRICS.map((m) => {
         const cur = current[m.key as WipMetricKey] ?? 0;
         const prev = previous[m.key as WipMetricKey] ?? 0;
@@ -20,14 +20,14 @@ export function KpiStrip({ current, previous }: KpiStripProps) {
         return (
           <div
             key={m.key}
-            className={`bg-white rounded-lg p-2.5 shadow-sm border-t-2 ${borderColor}`}
+            className={`bg-white rounded-lg p-3 shadow-sm border-t-2 ${borderColor}`}
           >
-            <div className="text-lg font-black text-ink tabular-nums leading-none">
+            <div className="text-2xl font-black text-ink tabular-nums leading-none">
               {formatNumber(cur)}
             </div>
-            <div className="text-[7.5px] text-ink-muted mt-1 leading-tight">{m.label}</div>
+            <div className="text-xs text-ink-muted mt-1.5 leading-tight">{m.label}</div>
             {prev !== 0 && (
-              <div className={`text-[8px] font-semibold mt-1 ${isBetter ? 'text-evs-green-dark' : isWorse ? 'text-danger' : 'text-ink-muted'}`}>
+              <div className={`text-xs font-semibold mt-1.5 ${isBetter ? 'text-evs-green-dark' : isWorse ? 'text-danger' : 'text-ink-muted'}`}>
                 {delta > 0 ? '↑' : delta < 0 ? '↓' : '—'}{' '}
                 {delta !== 0 ? formatNumber(Math.abs(delta)) : 'No change'}
               </div>

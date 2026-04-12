@@ -19,7 +19,7 @@ export function SalesBars({ rows }: SalesBarsProps) {
   });
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {sorted.map((r) => {
         const pct = r.target > 0 ? (r.actual / r.target) * 100 : null;
         const isGood = pct !== null && pct >= 100;
@@ -27,24 +27,24 @@ export function SalesBars({ rows }: SalesBarsProps) {
         const targetWidth = r.target > 0 ? Math.min((r.target / maxActual) * 100, 100) : 0;
 
         return (
-          <div key={r.branch} className="flex items-center gap-2">
-            <span className="text-[8.5px] font-semibold text-ink min-w-[52px]">{r.branch}</span>
-            <div className="flex-1 space-y-0.5">
-              <div className="h-2 rounded-full bg-evs-green" style={{ width: `${barWidth}%` }} />
-              <div className="h-2 rounded-full bg-border" style={{ width: `${targetWidth}%` }} />
+          <div key={r.branch} className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-ink min-w-[64px]">{r.branch}</span>
+            <div className="flex-1 space-y-1">
+              <div className="h-3 rounded-full bg-evs-green" style={{ width: `${barWidth}%` }} />
+              <div className="h-3 rounded-full bg-border" style={{ width: `${targetWidth}%` }} />
             </div>
-            <span className={`text-[8px] font-bold min-w-[34px] text-right tabular-nums ${isGood ? 'text-evs-green-dark' : 'text-danger'}`}>
+            <span className={`text-sm font-bold min-w-[44px] text-right tabular-nums ${isGood ? 'text-evs-green-dark' : 'text-danger'}`}>
               {pct !== null ? `${pct.toFixed(1)}%` : '—'}
             </span>
           </div>
         );
       })}
-      <div className="flex gap-3 mt-1 pt-1 border-t border-border">
-        <span className="flex items-center gap-1 text-[7.5px] text-ink-muted">
-          <span className="w-2.5 h-2.5 rounded bg-evs-green inline-block" /> Actual ({formatCurrency(rows.reduce((s, r) => s + r.actual, 0))})
+      <div className="flex gap-4 mt-2 pt-2 border-t border-border">
+        <span className="flex items-center gap-1.5 text-xs text-ink-muted">
+          <span className="w-3 h-3 rounded bg-evs-green inline-block" /> Actual ({formatCurrency(rows.reduce((s, r) => s + r.actual, 0))})
         </span>
-        <span className="flex items-center gap-1 text-[7.5px] text-ink-muted">
-          <span className="w-2.5 h-2.5 rounded bg-border inline-block" /> Target
+        <span className="flex items-center gap-1.5 text-xs text-ink-muted">
+          <span className="w-3 h-3 rounded bg-border inline-block" /> Target
         </span>
       </div>
     </div>

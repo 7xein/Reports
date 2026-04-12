@@ -22,13 +22,11 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // ── WIP state ──────────────────────────────────────────────────────────────
   const [wipDate, setWipDate] = useState(today());
   const [wipValues, setWipValues] = useState<Record<WipMetricKey, Record<string, number>>>(
     emptyWipValues()
   );
 
-  // ── Sales state ────────────────────────────────────────────────────────────
   const [salesLog, setSalesLog] = useState<RegionalSalesEntry[]>(initialData.regional.salesLog);
   const [newDate, setNewDate] = useState(today());
   const [newEntries, setNewEntries] = useState<Record<string, { sales: string; notes: string }>>(
@@ -109,43 +107,43 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         sub: "Enter today's WIP snapshot and sales figures",
       }}
     >
-      {/* ── WIP Section ─────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-lg shadow-sm p-5 mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-[11px] font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today&apos;s Numbers</h2>
+      {/* WIP Section */}
+      <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today&apos;s Numbers</h2>
           <div className="flex items-center gap-2">
-            <label className="text-[9px] text-ink-muted">Date:</label>
+            <label className="text-sm text-ink-muted">Date:</label>
             <input
               type="date"
               value={wipDate}
               onChange={(e) => setWipDate(e.target.value)}
-              className="text-[9px] border border-border rounded px-2 py-1 text-ink"
+              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
             />
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-[9px]">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                <th className="text-left py-2 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-[8px] min-w-[180px]">Metric</th>
+                <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[200px]">Metric</th>
                 {BRANCHES.map((b) => (
-                  <th key={b} className="text-center py-2 px-2 font-semibold uppercase tracking-wide text-ink-muted text-[8px] min-w-[80px]">{b}</th>
+                  <th key={b} className="text-center py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[90px]">{b}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {WIP_METRICS.map((m, rowIdx) => (
                 <tr key={m.key} className={`border-b border-border ${rowIdx % 2 === 1 ? 'bg-surface/60' : ''}`}>
-                  <td className="py-2 pr-4 text-ink font-medium leading-tight">{m.label}</td>
+                  <td className="py-2.5 pr-4 text-ink font-medium leading-tight">{m.label}</td>
                   {BRANCHES.map((b) => (
-                    <td key={b} className="py-1 px-1">
+                    <td key={b} className="py-1.5 px-1.5">
                       <input
                         type="number"
                         min="0"
                         value={wipValues[m.key as WipMetricKey][b] || ''}
                         onChange={(e) => setWip(m.key as WipMetricKey, b, e.target.value)}
-                        className="w-full px-2 py-1 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-[9px]"
+                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
                         placeholder="0"
                       />
                     </td>
@@ -156,62 +154,62 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           </table>
         </div>
 
-        <div className="mt-4 flex items-center gap-3">
+        <div className="mt-5 flex items-center gap-4">
           <button
             onClick={saveWip}
             disabled={saving}
-            className="px-5 py-2 bg-evs-green text-white text-[10px] font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save WIP Snapshot →'}
           </button>
-          <span className="text-[8.5px] text-ink-muted">Each save appends to the Daily Trends chart</span>
+          <span className="text-sm text-ink-muted">Each save appends to the Daily Trends chart</span>
         </div>
       </div>
 
-      {/* ── Sales Section ────────────────────────────────────────────────── */}
-      <div className="bg-white rounded-lg shadow-sm p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-[11px] font-bold uppercase tracking-wide text-ink">Sales Log — Add Today&apos;s Sales</h2>
+      {/* Sales Section */}
+      <div className="bg-white rounded-lg shadow-sm p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-base font-bold uppercase tracking-wide text-ink">Sales Log — Add Today&apos;s Sales</h2>
           <div className="flex items-center gap-2">
-            <label className="text-[9px] text-ink-muted">Date:</label>
+            <label className="text-sm text-ink-muted">Date:</label>
             <input
               type="date"
               value={newDate}
               onChange={(e) => setNewDate(e.target.value)}
-              className="text-[9px] border border-border rounded px-2 py-1 text-ink"
+              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
             />
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-[9px]">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                <th className="text-left py-2 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-[8px]">Branch</th>
-                <th className="text-left py-2 px-2 font-semibold uppercase tracking-wide text-ink-muted text-[8px]">Actual Sales (AED)</th>
-                <th className="text-left py-2 px-2 font-semibold uppercase tracking-wide text-ink-muted text-[8px]">Notes</th>
+                <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs">Branch</th>
+                <th className="text-left py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Actual Sales (AED)</th>
+                <th className="text-left py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Notes</th>
               </tr>
             </thead>
             <tbody>
               {BRANCHES.map((b, idx) => (
                 <tr key={b} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
-                  <td className="py-2 pr-4 font-semibold text-ink">{b}</td>
-                  <td className="py-1 px-1">
+                  <td className="py-2.5 pr-4 font-semibold text-ink">{b}</td>
+                  <td className="py-1.5 px-1.5">
                     <input
                       type="number"
                       min="0"
                       value={newEntries[b]?.sales ?? ''}
                       onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], sales: e.target.value } }))}
-                      className="w-full px-2 py-1 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-[9px]"
+                      className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
                       placeholder="0"
                     />
                   </td>
-                  <td className="py-1 px-1">
+                  <td className="py-1.5 px-1.5">
                     <input
                       type="text"
                       value={newEntries[b]?.notes ?? ''}
                       onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], notes: e.target.value } }))}
-                      className="w-full px-2 py-1 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-[9px]"
+                      className="w-full px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm"
                       placeholder="Optional notes"
                     />
                   </td>
@@ -221,22 +219,22 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           </table>
         </div>
 
-        <div className="mt-4 flex items-center justify-between">
+        <div className="mt-5 flex items-center justify-between">
           <button
             onClick={saveSales}
             disabled={saving}
-            className="px-5 py-2 bg-evs-green text-white text-[10px] font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save Sales Entry →'}
           </button>
-          <button onClick={handleLogout} className="text-[9px] text-ink-muted hover:text-ink">
+          <button onClick={handleLogout} className="text-sm text-ink-muted hover:text-ink">
             Sign out
           </button>
         </div>
       </div>
 
       {message && (
-        <div className={`mt-3 text-[10px] font-semibold ${message.startsWith('✓') ? 'text-evs-green-dark' : 'text-danger'}`}>
+        <div className={`mt-4 text-sm font-semibold ${message.startsWith('✓') ? 'text-evs-green-dark' : 'text-danger'}`}>
           {message}
         </div>
       )}

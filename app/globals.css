@@ -29,17 +29,17 @@ body {
   min-height: 100vh;
 }
 .shell-sidebar {
-  width: 56px;
+  width: 72px;
   flex-shrink: 0;
   background: #0d1f08;
   position: fixed;
   top: 0; left: 0; bottom: 0;
   display: flex; flex-direction: column; align-items: center;
-  padding: 12px 0; gap: 4px;
+  padding: 16px 0; gap: 6px;
   z-index: 50;
 }
 .shell-main {
-  margin-left: 56px;
+  margin-left: 72px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -47,22 +47,22 @@ body {
 }
 .shell-topbar {
   position: sticky; top: 0; z-index: 40;
-  height: 48px;
+  height: 56px;
   background: #ffffff;
   border-bottom: 1px solid #eeeeee;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 20px;
+  padding: 0 28px;
 }
 .shell-hero {
   background: linear-gradient(135deg, #0d1f08 0%, #1a3a0d 60%, #0f2a09 100%);
-  padding: 16px 20px;
+  padding: 28px 32px;
   display: flex; align-items: center; justify-content: space-between;
   flex-shrink: 0;
 }
 .shell-content {
   flex: 1;
   background: #f7f8f6;
-  padding: 16px 20px 32px;
+  padding: 24px 28px 48px;
   overflow-y: auto;
 }
 

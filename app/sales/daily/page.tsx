@@ -46,13 +46,13 @@ export default function SalesDailyPage() {
         ],
       }}
     >
-      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-3">
-        <div className="bg-white rounded-lg p-4 shadow-sm">
-          <div className="text-[9px] font-bold uppercase tracking-wide text-ink-muted mb-3">Actual vs Target</div>
+      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4">
+        <div className="bg-white rounded-lg p-5 shadow-sm">
+          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-4">Actual vs Target</div>
           <SalesBars rows={rows} />
         </div>
         <div>
-          <div className="text-[9px] font-bold uppercase tracking-wide text-ink-muted mb-2">Branch Summary</div>
+          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Branch Summary</div>
           <SalesSummaryTable rows={rows} />
         </div>
       </div>

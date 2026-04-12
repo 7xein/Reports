@@ -39,8 +39,8 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
       <div className="shell-main">
         {/* Top bar */}
         <header className="shell-topbar">
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] text-ink-muted">
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-ink-muted">
               {breadcrumbSection} /{' '}
               <span className="font-semibold text-ink">{breadcrumbPage}</span>
             </span>
@@ -52,7 +52,7 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
                   <Link
                     key={tab.href}
                     href={tab.href}
-                    className={`text-[10px] font-semibold px-3 py-1 rounded-full transition-colors ${
+                    className={`text-sm font-semibold px-4 py-1.5 rounded-full transition-colors ${
                       active
                         ? 'bg-evs-green text-white'
                         : 'text-ink-muted hover:text-ink hover:bg-surface'
@@ -65,11 +65,11 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-[9px] font-bold tracking-wide text-evs-green-dark bg-evs-green/10 px-2 py-1 rounded-full">
+            <span className="flex items-center gap-1.5 text-xs font-bold tracking-wide text-evs-green-dark bg-evs-green/10 px-3 py-1 rounded-full">
               <span className="w-1.5 h-1.5 rounded-full bg-evs-green animate-pulse inline-block" />
               Live
             </span>
-            <div className="w-7 h-7 rounded-full bg-evs-dark flex items-center justify-center text-[10px] font-bold text-evs-green">
+            <div className="w-8 h-8 rounded-full bg-evs-dark flex items-center justify-center text-xs font-bold text-evs-green">
               E
             </div>
           </div>

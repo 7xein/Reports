@@ -59,8 +59,8 @@ export default function WipWeeklyPage() {
     >
       <KpiStrip current={currentTotals} previous={previousTotals} />
 
-      <div className="mt-3">
-        <div className="text-[9px] font-bold uppercase tracking-wide text-ink-muted mb-2">
+      <div className="mt-4">
+        <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">
           All WIP Metrics by Branch
         </div>
         <MetricsTable

@@ -73,19 +73,19 @@ export default function WipDailyPage() {
     >
       <KpiStrip current={currentTotals} previous={previousTotals} />
 
-      <div className="grid lg:grid-cols-[1.6fr_1fr] gap-3">
-        <div className="bg-white rounded-lg p-3 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[9px] font-bold uppercase tracking-wide text-ink-muted">Daily Trend</span>
-            <span className="text-[7.5px] bg-evs-green/10 text-evs-green-dark font-semibold px-2 py-0.5 rounded-full">All Branches</span>
+      <div className="grid lg:grid-cols-[1.6fr_1fr] gap-4">
+        <div className="bg-white rounded-lg p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Daily Trend</span>
+            <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">All Branches</span>
           </div>
           <TrendChart entries={data.wipHistory ?? []} />
         </div>
 
-        <div className="bg-white rounded-lg p-3 shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[9px] font-bold uppercase tracking-wide text-ink-muted">Branch Breakdown</span>
-            <span className="text-[7.5px] bg-evs-green/10 text-evs-green-dark font-semibold px-2 py-0.5 rounded-full">Open ROs</span>
+        <div className="bg-white rounded-lg p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Branch Breakdown</span>
+            <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">Open ROs</span>
           </div>
           <BranchBreakdownGrid
             metricKey="openRepairOrders"
