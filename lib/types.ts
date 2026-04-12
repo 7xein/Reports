@@ -53,9 +53,15 @@ export interface DailySnapshot {
   values: BranchValues<DailyMetricKey>;
 }
 
-// ── New: daily WIP history entry (one per admin save) ─────────────────────
+// ── New: daily WIP history entry — cumulative totals since July, updated daily
 export interface WipDailyEntry {
   date: string;                        // ISO date "2026-04-11"
+  values: BranchValues<WipMetricKey>;
+}
+
+// ── New: weekly WIP entry — this week's counts only (not cumulative), entered Thursday
+export interface WipWeeklyEntry {
+  weekEnding: string;                  // ISO date of the Thursday "2026-04-10"
   values: BranchValues<WipMetricKey>;
 }
 
@@ -91,5 +97,6 @@ export interface ReportData {
     history: DailySnapshot[];
   };
   regional: RegionalData;
-  wipHistory: WipDailyEntry[];         // NEW — daily WIP snapshots
+  wipHistory: WipDailyEntry[];         // cumulative daily snapshots (trend chart)
+  wipWeeklyHistory: WipWeeklyEntry[];  // week-only counts entered every Thursday
 }

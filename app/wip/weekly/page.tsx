@@ -29,7 +29,7 @@ function sumTotals(values: Record<WipMetricKey, Record<Branch, number>>): Record
 
 export default function WipWeeklyPage() {
   const data = readData();
-  const history = [...(data.wipHistory ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+  const history = [...(data.wipWeeklyHistory ?? [])].sort((a, b) => a.weekEnding.localeCompare(b.weekEnding));
 
   const latest = history[history.length - 1];
   const prior  = history.length >= 2 ? history[history.length - 2] : undefined;
@@ -46,10 +46,10 @@ export default function WipWeeklyPage() {
       breadcrumbPage="Weekly Snapshot"
       subTabs={WIP_SUB_TABS}
       hero={{
-        eyebrow: `WIP Dashboard · Week ending ${latest?.date ?? '—'}`,
+        eyebrow: `WIP Dashboard · Week ending ${latest?.weekEnding ?? '—'} · ${history.length} week${history.length !== 1 ? 's' : ''} on record`,
         title: 'Weekly',
         titleEm: 'Snapshot',
-        sub: 'Current entry vs previous entry across all branches',
+        sub: "This week's counts only — not cumulative. Entered every Thursday.",
         stats: [
           { value: formatNumber(currentTotals.openRepairOrders),    label: 'Open ROs'    },
           { value: formatNumber(currentTotals.saleOrdersToInvoice), label: 'Sale Orders' },
@@ -60,14 +60,27 @@ export default function WipWeeklyPage() {
       <KpiStrip current={currentTotals} previous={previousTotals} />
 
       <div className="mt-4">
-        <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">
-          All WIP Metrics by Branch
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">
+            All WIP Metrics by Branch
+          </span>
+          {prior && (
+            <span className="text-xs text-ink-muted">
+              vs week ending {prior.weekEnding}
+            </span>
+          )}
         </div>
-        <MetricsTable
-          branches={BRANCHES}
-          current={currentValues}
-          previous={previousValues}
-        />
+        {history.length === 0 ? (
+          <div className="bg-white rounded-lg p-8 text-center text-sm text-ink-muted shadow-sm">
+            No weekly snapshots yet — enter this week&apos;s WIP numbers in Admin under <strong>WIP Weekly Snapshot</strong>.
+          </div>
+        ) : (
+          <MetricsTable
+            branches={BRANCHES}
+            current={currentValues}
+            previous={previousValues}
+          />
+        )}
       </div>
     </Shell>
   );

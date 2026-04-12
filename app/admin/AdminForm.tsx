@@ -4,6 +4,14 @@ import { useState } from 'react';
 import { Shell } from '@/components/Shell';
 import { BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry } from '@/lib/types';
 
+function lastThursday() {
+  const d = new Date();
+  const day = d.getDay(); // 0=Sun, 4=Thu
+  const diff = (day + 3) % 7; // days since last Thursday
+  d.setDate(d.getDate() - diff);
+  return d.toISOString().slice(0, 10);
+}
+
 const ADMIN_SUB_TABS = [
   { href: '/admin', label: 'Update Data' },
 ];
@@ -22,8 +30,15 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
+  // ── WIP Daily state ────────────────────────────────────────────────────────
   const [wipDate, setWipDate] = useState(today());
   const [wipValues, setWipValues] = useState<Record<WipMetricKey, Record<string, number>>>(
+    emptyWipValues()
+  );
+
+  // ── WIP Weekly state ───────────────────────────────────────────────────────
+  const [wipWeekEnding, setWipWeekEnding] = useState(lastThursday());
+  const [wipWeeklyValues, setWipWeeklyValues] = useState<Record<WipMetricKey, Record<string, number>>>(
     emptyWipValues()
   );
 
@@ -35,6 +50,13 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   function setWip(metric: WipMetricKey, branch: string, val: string) {
     setWipValues((prev) => ({
+      ...prev,
+      [metric]: { ...prev[metric], [branch]: parseFloat(val) || 0 },
+    }));
+  }
+
+  function setWipWeekly(metric: WipMetricKey, branch: string, val: string) {
+    setWipWeeklyValues((prev) => ({
       ...prev,
       [metric]: { ...prev[metric], [branch]: parseFloat(val) || 0 },
     }));
@@ -54,6 +76,24 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       setMessage(`✓ WIP snapshot saved for ${wipDate} (${total} total data points)`);
     } catch {
       setMessage('Error saving WIP snapshot');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveWipWeekly() {
+    setSaving(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'wip-weekly', payload: { weekEnding: wipWeekEnding, values: wipWeeklyValues } }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      setMessage(`✓ Weekly WIP snapshot saved for week ending ${wipWeekEnding}`);
+    } catch {
+      setMessage('Error saving weekly WIP snapshot');
     } finally {
       setSaving(false);
     }
@@ -163,6 +203,68 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             {saving ? 'Saving…' : 'Save WIP Snapshot →'}
           </button>
           <span className="text-sm text-ink-muted">Each save appends to the Daily Trends chart</span>
+        </div>
+      </div>
+
+      {/* WIP Weekly Section */}
+      <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Weekly Snapshot — This Week&apos;s Counts</h2>
+            <p className="text-sm text-ink-muted mt-1">Enter the number of each item that occurred <strong>this week only</strong> — not cumulative since July.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-ink-muted">Week ending (Thursday):</label>
+            <input
+              type="date"
+              value={wipWeekEnding}
+              onChange={(e) => setWipWeekEnding(e.target.value)}
+              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border">
+                <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[200px]">Metric</th>
+                {BRANCHES.map((b) => (
+                  <th key={b} className="text-center py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[90px]">{b}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {WIP_METRICS.map((m, rowIdx) => (
+                <tr key={m.key} className={`border-b border-border ${rowIdx % 2 === 1 ? 'bg-surface/60' : ''}`}>
+                  <td className="py-2.5 pr-4 text-ink font-medium leading-tight">{m.label}</td>
+                  {BRANCHES.map((b) => (
+                    <td key={b} className="py-1.5 px-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        value={wipWeeklyValues[m.key as WipMetricKey][b] || ''}
+                        onChange={(e) => setWipWeekly(m.key as WipMetricKey, b, e.target.value)}
+                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                        placeholder="0"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-5 flex items-center gap-4">
+          <button
+            onClick={saveWipWeekly}
+            disabled={saving}
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save Weekly Snapshot →'}
+          </button>
+          <span className="text-sm text-ink-muted">Enter every Thursday — shows on the Weekly Snapshot dashboard</span>
         </div>
       </div>
 

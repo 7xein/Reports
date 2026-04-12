@@ -54,6 +54,16 @@ export async function POST(req: NextRequest) {
       current.wipHistory.push(entry);
     }
     current.wipHistory.sort((a: import('@/lib/types').WipDailyEntry, b: import('@/lib/types').WipDailyEntry) => a.date.localeCompare(b.date));
+  } else if (body.type === 'wip-weekly') {
+    const entry = body.payload as import('@/lib/types').WipWeeklyEntry;
+    if (!current.wipWeeklyHistory) current.wipWeeklyHistory = [];
+    const idx = current.wipWeeklyHistory.findIndex((e: import('@/lib/types').WipWeeklyEntry) => e.weekEnding === entry.weekEnding);
+    if (idx >= 0) {
+      current.wipWeeklyHistory[idx] = entry;
+    } else {
+      current.wipWeeklyHistory.push(entry);
+    }
+    current.wipWeeklyHistory.sort((a: import('@/lib/types').WipWeeklyEntry, b: import('@/lib/types').WipWeeklyEntry) => a.weekEnding.localeCompare(b.weekEnding));
   } else {
     return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
   }
