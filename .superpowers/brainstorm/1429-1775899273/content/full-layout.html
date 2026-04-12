@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EVS Dashboard — Layout Proposal</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #1a1a1a; color: #e0e0e0; }
+
+  /* ── Page chrome ── */
+  .page-header {
+    background: #111; border-bottom: 1px solid #333; padding: 14px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .page-header h1 { font-size: 1rem; font-weight: 600; color: #fff; }
+  .page-header .subtitle { font-size: 0.75rem; color: #888; margin-top: 2px; }
+  .tab-strip {
+    display: flex; gap: 6px; padding: 14px 24px 0;
+    border-bottom: 1px solid #333; background: #111;
+  }
+  .tab {
+    padding: 8px 18px; font-size: 0.75rem; font-weight: 600;
+    border-radius: 6px 6px 0 0; cursor: pointer; border: 1px solid transparent;
+    border-bottom: none; letter-spacing: 0.03em;
+    color: #888; background: transparent; transition: all 0.15s;
+  }
+  .tab.active { background: #1a1a1a; color: #78C41A; border-color: #333; border-bottom-color: #1a1a1a; }
+  .tab:not(.active):hover { color: #ccc; }
+  .section-label {
+    font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #555; padding: 14px 24px 4px; font-weight: 600;
+  }
+  .view-area { padding: 0 24px 24px; }
+
+  /* ── Shell mockup ── */
+  .shell {
+    display: flex; border: 1px solid #333; border-radius: 10px;
+    overflow: hidden; background: #fff; height: 540px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 56px; background: #0d1f08; display: flex;
+    flex-direction: column; align-items: center; padding: 12px 0; gap: 4px;
+    flex-shrink: 0;
+  }
+  .sb-logo {
+    width: 36px; height: 22px; margin-bottom: 12px;
+    background: #78C41A; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 7px; font-weight: 900; color: #0d1f08; letter-spacing: -0.5px;
+  }
+  .sb-divider { width: 24px; height: 1px; background: #1e3a14; margin: 6px 0; }
+  .sb-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 0.15s; position: relative;
+  }
+  .sb-icon:hover { background: rgba(120,196,26,0.12); }
+  .sb-icon.active { background: rgba(120,196,26,0.2); }
+  .sb-icon svg { width: 16px; height: 16px; }
+  .sb-icon .dot { width: 5px; height: 5px; border-radius: 50%; background: #78C41A; position: absolute; top: 7px; right: 7px; }
+  .sb-tooltip {
+    position: absolute; left: 54px; background: #222; color: #fff;
+    font-size: 10px; padding: 4px 8px; border-radius: 4px; white-space: nowrap;
+    pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 10;
+  }
+  .sb-icon:hover .sb-tooltip { opacity: 1; }
+
+  /* Main area */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Top bar */
+  .topbar {
+    background: #fff; border-bottom: 1px solid #eee;
+    padding: 0 20px; height: 48px;
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 10px; }
+  .breadcrumb { font-size: 11px; color: #aaa; }
+  .breadcrumb span { color: #1a1a1a; font-weight: 600; }
+  .sub-tabs { display: flex; gap: 2px; }
+  .sub-tab {
+    font-size: 10px; padding: 4px 12px; border-radius: 100px;
+    cursor: pointer; font-weight: 500; transition: all 0.15s;
+    color: #888; background: transparent;
+  }
+  .sub-tab.active { background: #78C41A; color: white; font-weight: 600; }
+  .sub-tab:not(.active):hover { background: #f5f5f5; color: #333; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .live-badge {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
+    padding: 3px 8px; border-radius: 100px;
+    background: rgba(120,196,26,0.12); color: #5a9015;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .live-dot { width: 5px; height: 5px; border-radius: 50%; background: #78C41A; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #0d1f08; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #78C41A; }
+
+  /* Hero banner */
+  .hero {
+    background: linear-gradient(135deg, #0d1f08 0%, #1a3a0d 60%, #0f2a09 100%);
+    padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .hero-left {}
+  .hero-eyebrow { font-size: 9px; color: rgba(255,255,255,0.45); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 3px; }
+  .hero-title { font-size: 20px; font-weight: 800; color: #fff; line-height: 1.1; }
+  .hero-title em { color: #78C41A; font-style: normal; }
+  .hero-sub { font-size: 9px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+  .hero-stats { display: flex; gap: 20px; }
+  .hero-stat { text-align: right; }
+  .hero-stat-val { font-size: 18px; font-weight: 800; color: #78C41A; }
+  .hero-stat-lbl { font-size: 8px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.07em; margin-top: 1px; }
+  .hero-stat-delta { font-size: 9px; color: rgba(120,196,26,0.7); margin-top: 1px; }
+
+  /* Content */
+  .content { flex: 1; overflow-y: auto; padding: 14px 20px; background: #f7f8f6; }
+
+  /* KPI strip */
+  .kpi-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 12px; }
+  .kpi-card {
+    background: white; border-radius: 8px; padding: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06); border-top: 2px solid #78C41A;
+  }
+  .kpi-card.warn { border-top-color: #e53e3e; }
+  .kpi-val { font-size: 18px; font-weight: 800; color: #1a1a1a; }
+  .kpi-lbl { font-size: 7.5px; color: #888; margin-top: 2px; line-height: 1.3; }
+  .kpi-delta { font-size: 8px; margin-top: 3px; font-weight: 600; }
+  .kpi-delta.up { color: #78C41A; }
+  .kpi-delta.down { color: #e53e3e; }
+
+  /* Row of panels */
+  .panel-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .panel { background: white; border-radius: 8px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .panel-title { font-size: 9px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: #444; }
+  .panel-badge { font-size: 7.5px; background: rgba(120,196,26,0.12); color: #5a9015; padding: 2px 7px; border-radius: 100px; font-weight: 600; }
+  .panel-badge.red { background: rgba(229,62,62,0.1); color: #c53030; }
+
+  /* Trend chart (fake sparkline) */
+  .chart-area { height: 90px; position: relative; overflow: hidden; }
+  .chart-area svg { width: 100%; height: 100%; }
+
+  /* Branch table */
+  .branch-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+  .branch-table th { text-align: left; color: #aaa; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 0 6px 6px; font-size: 7.5px; border-bottom: 1px solid #eee; }
+  .branch-table th:not(:first-child) { text-align: right; }
+  .branch-table td { padding: 5px 6px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+  .branch-table td:not(:first-child) { text-align: right; }
+  .branch-name { font-weight: 600; color: #1a1a1a; font-size: 9px; }
+  .cell-good { color: #5a9015; font-weight: 600; }
+  .cell-bad { color: #c53030; font-weight: 600; }
+  .cell-muted { color: #999; }
+
+  /* Branch mini cards */
+  .branch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .branch-card {
+    border-radius: 6px; padding: 8px;
+    border-left: 3px solid #78C41A; background: #fafafa;
+  }
+  .branch-card.alert { border-left-color: #e53e3e; }
+  .bc-name { font-size: 9px; font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }
+  .bc-stat { display: flex; justify-content: space-between; font-size: 7.5px; color: #888; margin-top: 1px; }
+  .bc-stat span:last-child { font-weight: 600; color: #1a1a1a; }
+  .bc-status { font-size: 7px; font-weight: 700; }
+  .bc-status.good { color: #5a9015; }
+  .bc-status.bad { color: #c53030; }
+
+  /* Progress bar */
+  .prog-track { height: 4px; background: #eee; border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .prog-fill { height: 100%; border-radius: 2px; background: #78C41A; }
+  .prog-fill.danger { background: #e53e3e; }
+  .prog-fill.warn { background: #f6ad55; }
+
+  /* Annotations */
+  .annotation {
+    position: absolute; background: rgba(10,30,5,0.92); color: #78C41A;
+    font-size: 8.5px; font-weight: 600; padding: 5px 10px;
+    border-radius: 5px; border: 1px solid rgba(120,196,26,0.3);
+    pointer-events: none; white-space: nowrap;
+  }
+  .annotation::after {
+    content: ''; position: absolute; bottom: -5px; left: 50%;
+    transform: translateX(-50%); border: 5px solid transparent;
+    border-top-color: rgba(10,30,5,0.92); border-bottom: none;
+  }
+
+  /* Views */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Legend */
+  .legend { display: flex; gap: 12px; align-items: center; margin-top: 6px; }
+  .legend-item { display: flex; align-items: center; gap: 4px; font-size: 7.5px; color: #888; }
+  .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* Sales bars */
+  .sales-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .sales-branch { font-size: 8.5px; font-weight: 600; color: #333; min-width: 52px; }
+  .sales-bars { flex: 1; }
+  .bar-actual { height: 8px; border-radius: 4px; background: #78C41A; margin-bottom: 2px; }
+  .bar-target { height: 8px; border-radius: 4px; background: #e0e0e0; }
+  .sales-pct { font-size: 8px; font-weight: 700; min-width: 30px; text-align: right; }
+
+  /* Admin view */
+  .admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .admin-card { background: white; border-radius: 8px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .admin-title { font-size: 10px; font-weight: 700; color: #333; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+  .admin-field { margin-bottom: 6px; }
+  .admin-label { font-size: 7.5px; color: #888; margin-bottom: 2px; }
+  .admin-input { width: 100%; height: 20px; background: #f5f5f5; border-radius: 4px; border: 1px solid #e0e0e0; }
+  .admin-btn { background: #78C41A; color: white; font-size: 9px; font-weight: 700; padding: 6px 16px; border-radius: 5px; margin-top: 6px; }
+</style>
+<script>
+  function showView(viewId, el) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById(viewId).classList.add('active');
+    el.classList.add('active');
+  }
+  function showSub(name, el, group) {
+    document.querySelectorAll('.sub-tab[data-group="'+group+'"]').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.querySelectorAll('.subview[data-group="'+group+'"]').forEach(v => v.style.display='none');
+    document.getElementById(name).style.display='block';
+  }
+</script>
+</head>
+<body>
+
+<div class="page-header">
+  <div>
+    <div class="page-header h1" style="font-size:1rem;font-weight:700;color:#fff;">EVS Dashboard — Layout Proposal</div>
+    <div class="subtitle">Click the tabs below to preview each section. The sidebar icons switch between WIP and Sales.</div>
+  </div>
+  <div style="font-size:0.7rem;color:#666;">Option C · Dark Sidebar + White Content</div>
+</div>
+
+<div class="tab-strip">
+  <div class="section-label" style="padding:14px 0 0;align-self:flex-end;">Preview section:</div>
+  <div class="tab active" onclick="showView('view-wip',this)">WIP Dashboard</div>
+  <div class="tab" onclick="showView('view-sales',this)">Sales Dashboard</div>
+  <div class="tab" onclick="showView('view-admin',this)">Admin / Data Entry</div>
+</div>
+
+<div class="view-area" style="padding-top:16px;">
+
+  <!-- ═══════════ WIP DASHBOARD ═══════════ -->
+  <div id="view-wip" class="view active">
+
+    <div class="shell">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="sb-logo">EVS</div>
+        <div class="sb-divider"></div>
+
+        <!-- WIP (active) -->
+        <div class="sb-icon active" title="WIP">
+          <div class="dot"></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#78C41A" stroke-width="2" stroke-linecap="round">
+            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+          <div class="sb-tooltip">WIP Dashboard</div>
+        </div>
+
+        <!-- Sales -->
+        <div class="sb-icon" title="Sales">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="2" stroke-linecap="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <div class="sb-tooltip">Sales Dashboard</div>
+        </div>
+
+        <div class="sb-divider"></div>
+        <!-- Admin -->
+        <div class="sb-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/>
+          </svg>
+          <div class="sb-tooltip">Admin</div>
+        </div>
+      </div>
+
+      <!-- Main -->
+      <div class="main">
+        <!-- Topbar -->
+        <div class="topbar">
+          <div class="topbar-left">
+            <div class="breadcrumb">WIP / <span>Daily Trends</span></div>
+            <div class="sub-tabs">
+              <div class="sub-tab active" data-group="wip" onclick="showSub('wip-daily',this,'wip')">Daily Trends</div>
+              <div class="sub-tab" data-group="wip" onclick="showSub('wip-weekly',this,'wip')">Weekly Snapshot</div>
+            </div>
+          </div>
+          <div class="topbar-right">
+            <div class="live-badge"><div class="live-dot"></div> Live</div>
+            <div style="font-size:9px;color:#aaa;">Last updated: today</div>
+            <div class="avatar">E</div>
+          </div>
+        </div>
+
+        <!-- Hero -->
+        <div class="hero">
+          <div class="hero-left">
+            <div class="hero-eyebrow">WIP Dashboard · All 6 Branches</div>
+            <div class="hero-title">Work In <em>Progress</em></div>
+            <div class="hero-sub">Tracking daily since first entry · trends update on each admin save</div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat">
+              <div class="hero-stat-val">2,409</div>
+              <div class="hero-stat-lbl">Open ROs</div>
+              <div class="hero-stat-delta">↓ -3.2% vs last entry</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-val">2,912</div>
+              <div class="hero-stat-lbl">Sale Orders</div>
+              <div class="hero-stat-delta">↑ +1.1% vs last entry</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-val">1,455</div>
+              <div class="hero-stat-lbl">Warranties</div>
+              <div class="hero-stat-delta">↑ +5.8% vs last entry</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Content -->
+        <div class="content">
+
+          <!-- WIP Daily (default) -->
+          <div id="wip-daily" class="subview" data-group="wip" style="display:block">
+            <!-- KPI Strip: 7 metrics -->
+            <div class="kpi-strip">
+              <div class="kpi-card">
+                <div class="kpi-val">2,912</div>
+                <div class="kpi-lbl">Sale Orders w/o Invoices</div>
+                <div class="kpi-delta down">↑ +24 today</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-val">2,409</div>
+                <div class="kpi-lbl">Open Repair Orders</div>
+                <div class="kpi-delta up">↓ -78 today</div>
+              </div>
+              <div class="kpi-card" style="border-top-color:#5a9015">
+                <div class="kpi-val">1,455</div>
+                <div class="kpi-lbl">Warranties Activated</div>
+                <div class="kpi-delta up">↑ +80 today</div>
+              </div>
+              <div class="kpi-card warn">
+                <div class="kpi-val">5,972</div>
+                <div class="kpi-lbl">ROs w/o Quotations</div>
+                <div class="kpi-delta down">↑ +44 today</div>
+              </div>
+              <div class="kpi-card warn">
+                <div class="kpi-val">905</div>
+                <div class="kpi-lbl">ROs Without Tags</div>
+                <div class="kpi-delta up">↓ -12 today</div>
+              </div>
+              <div class="kpi-card warn">
+                <div class="kpi-val">1,985</div>
+                <div class="kpi-lbl">Quotations Not Approved</div>
+                <div class="kpi-delta down">↑ +6 today</div>
+              </div>
+              <div class="kpi-card warn">
+                <div class="kpi-val">347</div>
+                <div class="kpi-lbl">ROs With No Invoices</div>
+                <div class="kpi-delta up">↓ -8 today</div>
+              </div>
+            </div>
+
+            <!-- Trend chart + branch breakdown -->
+            <div class="panel-row">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">Open ROs — Daily Trend</div>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <div class="panel-badge">All Branches</div>
+                    <div style="font-size:7.5px;color:#aaa;cursor:pointer">Switch metric ▾</div>
+                  </div>
+                </div>
+                <div class="chart-area">
+                  <!-- Fake sparkline SVG -->
+                  <svg viewBox="0 0 300 90" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="lineGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#78C41A" stop-opacity="0.25"/>
+                        <stop offset="100%" stop-color="#78C41A" stop-opacity="0"/>
+                      </linearGradient>
+                    </defs>
+                    <!-- Grid lines -->
+                    <line x1="0" y1="22" x2="300" y2="22" stroke="#f0f0f0" stroke-width="0.5"/>
+                    <line x1="0" y1="44" x2="300" y2="44" stroke="#f0f0f0" stroke-width="0.5"/>
+                    <line x1="0" y1="66" x2="300" y2="66" stroke="#f0f0f0" stroke-width="0.5"/>
+                    <!-- Filled area -->
+                    <path d="M0 55 C20 50, 40 58, 60 52 C80 46, 100 62, 120 58 C140 54, 160 40, 180 44 C200 48, 220 35, 240 38 C260 41, 280 30, 300 28 L300 90 L0 90 Z" fill="url(#lineGrad)"/>
+                    <!-- Line -->
+                    <path d="M0 55 C20 50, 40 58, 60 52 C80 46, 100 62, 120 58 C140 54, 160 40, 180 44 C200 48, 220 35, 240 38 C260 41, 280 30, 300 28" fill="none" stroke="#78C41A" stroke-width="1.5"/>
+                    <!-- Dot at latest point -->
+                    <circle cx="300" cy="28" r="3" fill="#78C41A"/>
+                    <!-- X-axis labels -->
+                    <text x="0" y="88" font-size="7" fill="#ccc">Day 1</text>
+                    <text x="130" y="88" font-size="7" fill="#ccc" text-anchor="middle">→ time</text>
+                    <text x="292" y="88" font-size="7" fill="#78C41A" text-anchor="end" font-weight="600">Today</text>
+                  </svg>
+                </div>
+                <div class="legend">
+                  <div class="legend-item"><div class="legend-dot" style="background:#78C41A"></div> Total across all branches</div>
+                  <div style="font-size:7.5px;color:#aaa;margin-left:auto">Trend builds daily as you update data</div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">Branch Breakdown</div>
+                  <div class="panel-badge">Open ROs</div>
+                </div>
+                <div class="branch-grid">
+                  <div class="branch-card"><div class="bc-name">Dubai</div><div class="bc-stat"><span>Open ROs</span><span>831</span></div><div class="bc-status good">▼ Improving</div></div>
+                  <div class="branch-card alert"><div class="bc-name">Abu Dhabi</div><div class="bc-stat"><span>Open ROs</span><span>685</span></div><div class="bc-status bad">▲ Rising</div></div>
+                  <div class="branch-card"><div class="bc-name">Ajman</div><div class="bc-stat"><span>Open ROs</span><span>402</span></div><div class="bc-status good">▼ Stable</div></div>
+                  <div class="branch-card alert"><div class="bc-name">Sharjah</div><div class="bc-stat"><span>Open ROs</span><span>267</span></div><div class="bc-status bad">▲ Rising</div></div>
+                  <div class="branch-card"><div class="bc-name">Al Ain</div><div class="bc-stat"><span>Open ROs</span><span>97</span></div><div class="bc-status good">▼ Stable</div></div>
+                  <div class="branch-card"><div class="bc-name">Qatar</div><div class="bc-stat"><span>Open ROs</span><span>127</span></div><div class="bc-status good">— Stable</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- WIP Weekly (hidden) -->
+          <div id="wip-weekly" class="subview" data-group="wip" style="display:none">
+            <div class="kpi-strip" style="grid-template-columns:repeat(4,1fr)">
+              <div class="kpi-card"><div class="kpi-val">2,912</div><div class="kpi-lbl">Sale Orders w/o Invoices</div><div class="kpi-delta down">↑ +1.4% vs prev week</div></div>
+              <div class="kpi-card"><div class="kpi-val">2,409</div><div class="kpi-lbl">Open Repair Orders</div><div class="kpi-delta up">↓ -2.1% vs prev week</div></div>
+              <div class="kpi-card" style="border-top-color:#5a9015"><div class="kpi-val">1,455</div><div class="kpi-lbl">Warranties Activated</div><div class="kpi-delta up">↑ +5.8% vs prev week</div></div>
+              <div class="kpi-card warn"><div class="kpi-val">5,972</div><div class="kpi-lbl">ROs w/o Quotations</div><div class="kpi-delta down">↑ +44 vs prev week</div></div>
+            </div>
+            <div class="panel" style="margin-bottom:10px">
+              <div class="panel-header">
+                <div class="panel-title">All WIP Metrics · Week of Apr 4–9</div>
+                <div class="panel-badge">vs previous week</div>
+              </div>
+              <table class="branch-table">
+                <thead>
+                  <tr>
+                    <th>Branch</th>
+                    <th>Sale Orders</th>
+                    <th>Open ROs</th>
+                    <th>Warranties</th>
+                    <th>ROs w/o Quot.</th>
+                    <th>ROs w/o Tags</th>
+                    <th>Quot. Not Approved</th>
+                    <th>ROs No Invoice</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td class="branch-name">Dubai</td><td class="cell-bad">1,028 ↑</td><td class="cell-good">831 ↓</td><td class="cell-good">974</td><td class="cell-bad">27 ↑</td><td class="cell-good">230</td><td class="cell-good">691</td><td class="cell-good">45</td></tr>
+                  <tr><td class="branch-name">Abu Dhabi</td><td class="cell-bad">773 ↑</td><td class="cell-bad">685 ↑</td><td class="cell-good">128</td><td class="cell-bad">1,335 ↑</td><td class="cell-bad">354 ↑</td><td class="cell-bad">524 ↑</td><td class="cell-bad">89 ↑</td></tr>
+                  <tr><td class="branch-name">Ajman</td><td class="cell-good">479</td><td class="cell-good">402 ↓</td><td class="cell-good">202</td><td class="cell-bad">3,226 ↑</td><td class="cell-good">94</td><td class="cell-good">404</td><td class="cell-good">62</td></tr>
+                  <tr><td class="branch-name">Sharjah</td><td class="cell-good">119</td><td class="cell-bad">267 ↑</td><td class="cell-good">85</td><td class="cell-good">135</td><td class="cell-good">93</td><td class="cell-good">65</td><td class="cell-good">38</td></tr>
+                  <tr><td class="branch-name">Al Ain</td><td class="cell-good">161</td><td class="cell-good">97 ↓</td><td class="cell-good">66</td><td class="cell-good">19</td><td class="cell-good">124</td><td class="cell-good">138</td><td class="cell-good">22</td></tr>
+                  <tr><td class="branch-name">Qatar</td><td class="cell-good">352</td><td class="cell-good">127</td><td class="cell-muted">0</td><td class="cell-good">230</td><td class="cell-good">10</td><td class="cell-good">163</td><td class="cell-good">91</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div><!-- /content -->
+      </div><!-- /main -->
+    </div><!-- /shell -->
+    <p style="font-size:0.75rem;color:#666;margin-top:10px;">↑ Click "Weekly Snapshot" tab in the topbar to see the other WIP view.</p>
+  </div>
+
+  <!-- ═══════════ SALES DASHBOARD ═══════════ -->
+  <div id="view-sales" class="view">
+    <div class="shell">
+      <div class="sidebar">
+        <div class="sb-logo">EVS</div>
+        <div class="sb-divider"></div>
+        <div class="sb-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round">
+            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+        </div>
+        <div class="sb-icon active">
+          <div class="dot"></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#78C41A" stroke-width="2" stroke-linecap="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </div>
+        <div class="sb-divider"></div>
+        <div class="sb-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2"/>
+          </svg>
+        </div>
+      </div>
+      <div class="main">
+        <div class="topbar">
+          <div class="topbar-left">
+            <div class="breadcrumb">Sales / <span>Monthly</span></div>
+            <div class="sub-tabs">
+              <div class="sub-tab" data-group="sales" onclick="showSub('sales-daily',this,'sales')">Daily</div>
+              <div class="sub-tab" data-group="sales" onclick="showSub('sales-weekly',this,'sales')">Weekly</div>
+              <div class="sub-tab active" data-group="sales" onclick="showSub('sales-monthly',this,'sales')">Monthly</div>
+            </div>
+          </div>
+          <div class="topbar-right">
+            <div class="live-badge"><div class="live-dot"></div> Live</div>
+            <div class="avatar">E</div>
+          </div>
+        </div>
+        <div class="hero">
+          <div class="hero-left">
+            <div class="hero-eyebrow">Sales Dashboard · Month-to-Date</div>
+            <div class="hero-title">Sales <em>Performance</em></div>
+            <div class="hero-sub">April 2026 · 6 branches · target AED 5,200,000</div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat">
+              <div class="hero-stat-val">AED 598K</div>
+              <div class="hero-stat-lbl">Actual MTD</div>
+              <div class="hero-stat-delta">11.5% of monthly target</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-val" style="color:rgba(255,255,255,0.6);font-size:14px">AED 4.6M</div>
+              <div class="hero-stat-lbl">Remaining to target</div>
+              <div class="hero-stat-delta" style="color:rgba(229,62,62,0.7);">Behind pace</div>
+            </div>
+          </div>
+        </div>
+        <div class="content">
+          <!-- Month to date (shown) -->
+          <div id="sales-monthly" class="subview" data-group="sales" style="display:block">
+            <div class="panel-row">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title">Monthly Actual vs Target</div>
+                  <div class="panel-badge red">Behind pace</div>
+                </div>
+                <!-- Branch sales bars -->
+                <div class="sales-row"><div class="sales-branch">Dubai</div><div class="sales-bars"><div class="bar-actual" style="width:7.72%"></div><div class="bar-target" style="width:100%"></div></div><div class="sales-pct" style="color:#c53030">7.7%</div></div>
+                <div class="sales-row"><div class="sales-branch">Sharjah</div><div class="sales-bars"><div class="bar-actual" style="width:12.9%"></div><div class="bar-target" style="width:100%"></div></div><div class="sales-pct" style="color:#c53030">12.9%</div></div>
+                <div class="sales-row"><div class="sales-branch">Abu Dhabi</div><div class="sales-bars"><div class="bar-actual" style="width:16.3%"></div><div class="bar-target" style="width:100%"></div></div><div class="sales-pct" style="color:#c53030">16.3%</div></div>
+                <div class="sales-row"><div class="sales-branch">Al Ain</div><div class="sales-bars"><div class="bar-actual" style="width:15.4%"></div><div class="bar-target" style="width:100%"></div></div><div class="sales-pct" style="color:#c53030">15.4%</div></div>
+                <div class="sales-row"><div class="sales-branch">Ajman</div><div class="sales-bars"><div class="bar-actual" style="width:4.2%"></div><div class="bar-target" style="width:100%"></div></div><div class="sales-pct" style="color:#c53030">4.2%</div></div>
+                <div class="sales-row"><div class="sales-branch">Qatar</div><div class="sales-bars"><div class="bar-actual" style="width:60%;background:#78C41A"></div><div class="bar-target" style="width:0%"></div></div><div class="sales-pct" style="color:#5a9015">—</div></div>
+                <div class="legend" style="margin-top:8px;">
+                  <div class="legend-item"><div class="legend-dot" style="background:#78C41A"></div>Actual</div>
+                  <div class="legend-item"><div class="legend-dot" style="background:#e0e0e0"></div>Target</div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header"><div class="panel-title">Branch Summary</div><div class="panel-badge">Month-to-date</div></div>
+                <table class="branch-table">
+                  <thead><tr><th>Branch</th><th>Actual</th><th>Target</th><th>Ach %</th></tr></thead>
+                  <tbody>
+                    <tr><td class="branch-name">Dubai</td><td>154,400</td><td>2,000,000</td><td class="cell-bad">7.7%</td></tr>
+                    <tr><td class="branch-name">Sharjah</td><td>154,843</td><td>1,200,000</td><td class="cell-bad">12.9%</td></tr>
+                    <tr><td class="branch-name">Abu Dhabi</td><td>122,464</td><td>750,000</td><td class="cell-bad">16.3%</td></tr>
+                    <tr><td class="branch-name">Al Ain</td><td>84,841</td><td>550,000</td><td class="cell-bad">15.4%</td></tr>
+                    <tr><td class="branch-name">Ajman</td><td>29,529</td><td>700,000</td><td class="cell-bad">4.2%</td></tr>
+                    <tr><td class="branch-name">Qatar</td><td>51,945</td><td>—</td><td class="cell-muted">—</td></tr>
+                    <tr style="border-top:2px solid #78C41A20;background:#f7fff2">
+                      <td class="branch-name" style="color:#5a9015">Total</td>
+                      <td style="font-weight:700">598,022</td>
+                      <td style="color:#aaa">5,200,000</td>
+                      <td class="cell-bad">11.5%</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="prog-track" style="margin-top:10px;height:6px">
+                  <div class="prog-fill danger" style="width:11.5%"></div>
+                </div>
+                <div style="font-size:7.5px;color:#aaa;margin-top:3px">11.5% of monthly target achieved</div>
+              </div>
+            </div>
+          </div>
+          <div id="sales-daily" class="subview" data-group="sales" style="display:none">
+            <div style="padding:40px;text-align:center;color:#aaa;font-size:13px;">Daily view — same layout, filtered to yesterday's sales vs daily target per branch</div>
+          </div>
+          <div id="sales-weekly" class="subview" data-group="sales" style="display:none">
+            <div style="padding:40px;text-align:center;color:#aaa;font-size:13px;">Weekly view — same layout, filtered to current week's sales vs weekly target per branch</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p style="font-size:0.75rem;color:#666;margin-top:10px;">↑ Click Daily / Weekly / Monthly tabs. All three use the same layout with different time windows.</p>
+  </div>
+
+  <!-- ═══════════ ADMIN ═══════════ -->
+  <div id="view-admin" class="view">
+    <div class="shell">
+      <div class="sidebar">
+        <div class="sb-logo">EVS</div>
+        <div class="sb-divider"></div>
+        <div class="sb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+        <div class="sb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="sb-divider"></div>
+        <div class="sb-icon active"><div class="dot"></div><svg viewBox="0 0 24 24" fill="none" stroke="#78C41A" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2"/></svg></div>
+      </div>
+      <div class="main">
+        <div class="topbar">
+          <div class="topbar-left">
+            <div class="breadcrumb">Admin / <span>Update Data</span></div>
+          </div>
+          <div class="topbar-right">
+            <div class="avatar">E</div>
+          </div>
+        </div>
+        <div class="hero">
+          <div class="hero-left">
+            <div class="hero-eyebrow">Admin Panel</div>
+            <div class="hero-title">Update <em>Data</em></div>
+            <div class="hero-sub">Enter today's WIP snapshot and sales figures</div>
+          </div>
+        </div>
+        <div class="content">
+          <div class="admin-grid">
+            <div class="admin-card">
+              <div class="admin-title">📋 WIP Snapshot — Today's Numbers (per branch)</div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px;">
+                <div style="font-size:7.5px;font-weight:700;color:#333;padding:3px 0">Branch</div>
+                <div style="font-size:7.5px;font-weight:700;color:#333;padding:3px 0">Open ROs</div>
+                <div style="font-size:7.5px;font-weight:700;color:#333;padding:3px 0">Sale Orders</div>
+              </div>
+              <div style="font-size:7.5px;color:#aaa;margin-bottom:8px;">+ 5 more fields per branch · date auto-stamps to today</div>
+              <div class="admin-field"><div class="admin-label">Date (auto-filled)</div><div class="admin-input" style="background:#f0fff0;border-color:#78C41A;display:flex;align-items:center;padding-left:6px;font-size:8px;color:#5a9015;">2026-04-11 (today)</div></div>
+              <div class="admin-btn">Save WIP Snapshot →</div>
+              <div style="font-size:7.5px;color:#aaa;margin-top:5px;">Each save appends to the daily trend chart automatically</div>
+            </div>
+            <div class="admin-card">
+              <div class="admin-title">💰 Sales Log — Add Today's Sales (per branch)</div>
+              <div class="admin-field"><div class="admin-label">Date</div><div class="admin-input"></div></div>
+              <div class="admin-field"><div class="admin-label">Dubai — Actual Sales (AED)</div><div class="admin-input"></div></div>
+              <div class="admin-field"><div class="admin-label">Abu Dhabi — Actual Sales (AED)</div><div class="admin-input"></div></div>
+              <div class="admin-field"><div class="admin-label">Ajman — Actual Sales (AED)</div><div class="admin-input"></div></div>
+              <div class="admin-btn">Save Sales Entry →</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p style="font-size:0.75rem;color:#666;margin-top:10px;">↑ Admin splits into two sections: WIP daily snapshot (7 metrics × 6 branches) and Sales log entry.</p>
+  </div>
+
+</div><!-- /view-area -->
+
+</body>
+</html>

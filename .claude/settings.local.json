@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash \"/c/Users/hussi/.claude/plugins/cache/superpowers-extended-cc-marketplace/superpowers-extended-cc/5.2.6/skills/brainstorming/scripts/start-server.sh\" --project-dir \"/c/Users/hussi/OneDrive/Desktop/evs-reports\")",
+      "Bash(python3 -c ':*)",
+      "Bash(py --version)",
+      "Bash(python -c ':*)",
+      "Read(//c/Users/hussi/AppData/Local/Microsoft/WindowsApps/**)",
+      "Read(//c/Users/hussi/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*/python.exe)",
+      "Bash(where.exe python:*)",
+      "Bash(/c/Users/hussi/AppData/Local/Python/bin/python.exe -c ':*)",
+      "Bash(\"/c/Users/hussi/AppData/Local/Python/bin/python.exe\" -m pip install pandas openpyxl -q)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('TOP KEYS:', list\\(d.keys\\(\\)\\)\\); print\\('WEEKLY KEYS:', list\\(d['weekly'].keys\\(\\)\\)\\); print\\('HISTORY LEN:', len\\(d['weekly'].get\\('history',[]\\)\\)\\); h=d['weekly'].get\\('history',[]\\); print\\('FIRST HIST ENTRY:', json.dumps\\(h[0] if h else {}, indent=2\\)[:500] if h else 'empty'\\); print\\('DAILY KEYS:', list\\(d.get\\('daily',{}\\).keys\\(\\)\\)\\); print\\('DAILY HISTORY LEN:', len\\(d.get\\('daily',{}\\).get\\('history',[]\\)\\)\\)\")",
+      "Bash(npm install:*)",
+      "Bash(node -e \"const p = require\\('./package.json'\\); console.log\\('recharts:', p.dependencies?.recharts || p.devDependencies?.recharts || 'NOT FOUND'\\)\")",
+      "Bash(npm run:*)",
+      "Bash(node -e ':*)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" remote -v)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" remote add origin https://github.com/7xein/Reports.git)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" log --oneline -5)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add components/Sidebar.tsx components/HeroBanner.tsx components/Shell.tsx)",
+      "Bash(git -C C:/Users/hussi/OneDrive/Desktop/evs-reports commit -m ':*)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add components/KpiStrip.tsx components/BranchBreakdownGrid.tsx components/TrendChart.tsx components/CyclicTrendChart.tsx)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add app/wip/daily/page.tsx app/wip/weekly/page.tsx components/MetricsTable.tsx)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add components/SalesBars.tsx components/SalesSummaryTable.tsx lib/sales-utils.ts app/sales/daily/page.tsx app/sales/weekly/page.tsx app/sales/monthly/page.tsx)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add app/admin/AdminForm.tsx app/api/data/route.ts)",
+      "Bash(rm -rf app/daily app/weekly)",
+      "Bash([ -d app/regional ])",
+      "Bash(rm -rf app/regional)",
+      "Bash(rm -f app/sales/page.tsx)",
+      "Bash(rm -f components/Nav.tsx components/Section.tsx components/BranchRow.tsx components/CyclicTrendChart.tsx components/Alert.tsx components/Kpi.tsx)",
+      "Bash(git -C \"C:/Users/hussi/OneDrive/Desktop/evs-reports\" add -A)"
+    ]
+  }
+}

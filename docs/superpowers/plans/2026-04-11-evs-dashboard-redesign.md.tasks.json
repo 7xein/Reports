@@ -1,0 +1,75 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-11-evs-dashboard-redesign.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 0: Foundation — Types, Schema, Tailwind, Recharts",
+      "status": "completed",
+      "description": "**Goal:** Establish new type definitions, extend data.json, update Tailwind tokens, install Recharts.\n\n**Files:**\n- Modify: `lib/types.ts`\n- Modify: `data/data.json`\n- Modify: `tailwind.config.js`\n- Modify: `app/globals.css`\n- Modify: `app/layout.tsx`\n\n**Acceptance Criteria:**\n- [ ] WIP_METRICS, WipMetricKey, WipDailyEntry exported from lib/types.ts\n- [ ] ReportData.wipHistory typed as WipDailyEntry[]\n- [ ] data.json has wipHistory: [] and rosWithoutInvoices: 0 for all branches\n- [ ] Tailwind tokens evs-dark, evs-dark-mid, surface available\n- [ ] npm run build passes\n- [ ] recharts installed\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"lib/types.ts\", \"data/data.json\", \"tailwind.config.js\", \"app/globals.css\", \"app/layout.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"WIP_METRICS exported from lib/types.ts\", \"wipHistory in ReportData type\", \"recharts installed\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 1: Shell Components (Sidebar + HeroBanner + Shell)",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Build the three layout primitives wrapping every authenticated page.\n\n**Files:**\n- Create: `components/Sidebar.tsx`\n- Create: `components/HeroBanner.tsx`\n- Create: `components/Shell.tsx`\n\n**Acceptance Criteria:**\n- [ ] Sidebar renders EVS logo, WIP/Sales/Admin icons with tooltips\n- [ ] Active sidebar icon highlighted with green background + dot\n- [ ] HeroBanner accepts eyebrow, title, titleEm, stats\n- [ ] Shell assembles sidebar + sticky topbar + hero + content\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"components/Sidebar.tsx\", \"components/HeroBanner.tsx\", \"components/Shell.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"Sidebar with EVS logo\", \"Shell wrapper works\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: KpiStrip + BranchBreakdownGrid",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Build 7-card KPI strip and 6-branch mini-card grid components.\n\n**Files:**\n- Create: `components/KpiStrip.tsx`\n- Create: `components/BranchBreakdownGrid.tsx`\n\n**Acceptance Criteria:**\n- [ ] KpiStrip renders 7 cards with green/red top border based on trend direction\n- [ ] BranchBreakdownGrid renders 6 cards with improving/worsening border\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"components/KpiStrip.tsx\", \"components/BranchBreakdownGrid.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"7 KPI cards render\", \"branch grid renders\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: TrendChart (Recharts)",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Build Recharts area chart for WIP daily history with metric selector.\n\n**Files:**\n- Create: `components/TrendChart.tsx`\n\n**Acceptance Criteria:**\n- [ ] 'use client' component using Recharts AreaChart\n- [ ] Accepts WipDailyEntry[] and plots selected metric total\n- [ ] Metric selector dropdown switches between 7 WIP fields\n- [ ] Empty state placeholder when entries is empty\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"components/TrendChart.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"Recharts AreaChart renders\", \"metric selector works\", \"empty state shown\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: WIP Daily Trends Page",
+      "status": "pending",
+      "blockedBy": [1, 2, 3],
+      "description": "**Goal:** Implement /wip/daily page combining Shell, KpiStrip, TrendChart, BranchBreakdownGrid.\n\n**Files:**\n- Create: `app/wip/daily/page.tsx`\n\n**Acceptance Criteria:**\n- [ ] Shell renders with WIP section, Daily Trends active\n- [ ] Hero shows Open ROs, Sale Orders, Warranties totals\n- [ ] KpiStrip compares latest vs previous wipHistory entry\n- [ ] TrendChart receives all wipHistory entries\n- [ ] Graceful empty state when wipHistory is empty\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"app/wip/daily/page.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"page renders with shell\", \"hero stats correct\", \"empty state works\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: MetricsTable + WIP Weekly Snapshot Page",
+      "status": "pending",
+      "blockedBy": [1, 2],
+      "description": "**Goal:** Build MetricsTable component and /wip/weekly page.\n\n**Files:**\n- Create: `components/MetricsTable.tsx`\n- Create: `app/wip/weekly/page.tsx`\n\n**Acceptance Criteria:**\n- [ ] MetricsTable renders branches × 7 metrics with red/green colouring\n- [ ] Totals row at bottom\n- [ ] /wip/weekly shows KpiStrip + full table comparing latest vs prior entry\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"components/MetricsTable.tsx\", \"app/wip/weekly/page.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"metrics table renders\", \"week snapshot page works\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Sales Components (SalesBars + SalesSummaryTable)",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Build SalesBars and SalesSummaryTable reusable components.\n\n**Files:**\n- Create: `components/SalesBars.tsx`\n- Create: `components/SalesSummaryTable.tsx`\n\n**Acceptance Criteria:**\n- [ ] SalesBars renders actual (green) vs target (grey) bars per branch, sorted by % desc\n- [ ] SalesSummaryTable renders Branch/Actual/Target/Ach%/Variance + progress bar\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"components/SalesBars.tsx\", \"components/SalesSummaryTable.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"SalesBars sorted by %\", \"SalesSummaryTable with totals row\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Sales Pages (Daily, Weekly, Monthly)",
+      "status": "pending",
+      "blockedBy": [1, 6],
+      "description": "**Goal:** Implement all three sales sub-views. All use the same layout with different time-window logic.\n\n**Files:**\n- Create: `lib/sales-utils.ts`\n- Create: `app/sales/daily/page.tsx`\n- Create: `app/sales/weekly/page.tsx`\n- Create: `app/sales/monthly/page.tsx`\n\n**Acceptance Criteria:**\n- [ ] All three pages render with Shell (Sales section, correct active tab)\n- [ ] Daily: yesterday's actual vs daily target\n- [ ] Weekly: current week vs weekly target\n- [ ] Monthly: month-to-date vs monthly target\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"lib/sales-utils.ts\", \"app/sales/daily/page.tsx\", \"app/sales/weekly/page.tsx\", \"app/sales/monthly/page.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"all 3 pages build\", \"correct time windows\", \"shell renders\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 8: Admin Panel Rework + API",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Replace admin form with two-section WIP+Sales layout, add wip-daily API handler.\n\n**Files:**\n- Modify: `app/admin/AdminForm.tsx`\n- Modify: `app/api/data/route.ts`\n\n**Acceptance Criteria:**\n- [ ] Admin shows WIP Snapshot section (7 metrics × 6 branches grid)\n- [ ] Admin shows Sales Log Entry section (6 branches × date)\n- [ ] wip-daily API handler appends/upserts to wipHistory sorted by date\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"app/admin/AdminForm.tsx\", \"app/api/data/route.ts\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"WIP form has 42 inputs\", \"wip-daily API handler works\", \"sales log entry works\", \"build passes\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 9: Root Redirect + Cleanup",
+      "status": "pending",
+      "blockedBy": [4, 5, 7, 8],
+      "description": "**Goal:** Redirect / to /wip/daily, remove all old routes and unused components.\n\n**Files:**\n- Modify: `app/page.tsx`\n- Delete: `app/weekly/`, `app/daily/`, `app/regional/`\n- Delete: `components/Nav.tsx`, `components/Section.tsx`, `components/BranchRow.tsx`, `components/CyclicTrendChart.tsx`, `components/Alert.tsx`\n\n**Acceptance Criteria:**\n- [ ] / redirects to /wip/daily\n- [ ] No build errors from deleted files\n- [ ] All 7 routes smoke-test in dev\n- [ ] npm run build passes\n\n**Verify:** `npm run build` → `✓ Compiled successfully`\n\n```json:metadata\n{\"files\": [\"app/page.tsx\"], \"verifyCommand\": \"npm run build\", \"acceptanceCriteria\": [\"root redirects\", \"old routes removed\", \"build passes cleanly\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-11T00:00:00.000Z"
+}
