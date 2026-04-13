@@ -1,18 +1,29 @@
 import { ReportData } from './types';
+import defaultData from '../data/data.json';
 
 const DATA_KEY = 'evs_report_data';
 
 /**
- * In production (Vercel) data lives in Vercel KV.
- * In local development it falls back to data/data.json so no KV setup is needed.
+ * Production (Vercel): data lives in Vercel KV (Redis).
+ * Local dev: falls back to data/data.json — no KV setup needed.
+ *
+ * On first production boot, if KV is empty, we auto-seed from the bundled
+ * data/data.json so no manual seeding step is required.
  */
 const useKV = !!process.env.KV_REST_API_URL;
 
-// ── KV helpers (loaded lazily so local dev doesn't require the env vars) ─────
+// ── KV helpers ────────────────────────────────────────────────────────────────
 async function kvGet(): Promise<ReportData> {
   const { kv } = await import('@vercel/kv');
-  const data = await kv.get<ReportData>(DATA_KEY);
-  if (!data) throw new Error('KV store is empty — run /api/seed to initialise.');
+  let data = await kv.get<ReportData>(DATA_KEY);
+
+  if (!data) {
+    // First deploy — auto-seed from the bundled data.json
+    console.log('[data-store] KV empty — seeding from bundled data.json');
+    data = defaultData as unknown as ReportData;
+    await kv.set(DATA_KEY, data);
+  }
+
   return data;
 }
 
@@ -21,7 +32,7 @@ async function kvSet(data: ReportData): Promise<void> {
   await kv.set(DATA_KEY, data);
 }
 
-// ── File-system helpers (local dev only) ─────────────────────────────────────
+// ── File-system helpers (local dev only) ──────────────────────────────────────
 function fsGet(): ReportData {
   const fs   = require('fs')   as typeof import('fs');
   const path = require('path') as typeof import('path');
@@ -30,7 +41,7 @@ function fsGet(): ReportData {
     return JSON.parse(fs.readFileSync(DATA_PATH, 'utf-8')) as ReportData;
   } catch (err) {
     console.error('[data-store] Failed to read data.json:', err);
-    throw new Error('Could not read data.json. Make sure the file exists and contains valid JSON.');
+    throw new Error('Could not read data.json. Make sure the file exists and is valid JSON.');
   }
 }
 
@@ -48,13 +59,11 @@ function fsSet(data: ReportData): void {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/** Reads report data. Async in production (KV), sync-wrapped for local dev. */
 export async function readData(): Promise<ReportData> {
   if (useKV) return kvGet();
   return fsGet();
 }
 
-/** Writes report data. */
 export async function writeData(data: ReportData): Promise<void> {
   if (useKV) return kvSet(data);
   fsSet(data);
