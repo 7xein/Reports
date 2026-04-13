@@ -3,14 +3,20 @@
 import { useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { RegionalSalesEntry } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
+import { getWeekStart } from '@/lib/sales-utils';
+
+type GroupBy = 'day' | 'week' | 'month';
 
 interface SalesTrendChartProps {
   salesLog: RegionalSalesEntry[];
   branches: readonly string[];
+  groupBy?: GroupBy;
+  /** Required when groupBy='week' to align weeks correctly */
+  weekStartRef?: string;
 }
 
 const BRANCH_COLORS: Record<string, string> = {
@@ -22,8 +28,29 @@ const BRANCH_COLORS: Record<string, string> = {
   Qatar:      '#06B6D4',
 };
 
-export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
-  // All branches hidden by default — user clicks to reveal
+function groupKey(date: string, groupBy: GroupBy, weekStartRef?: string): string {
+  if (groupBy === 'month') return date.slice(0, 7); // YYYY-MM
+  if (groupBy === 'week')  return weekStartRef ? getWeekStart(date, weekStartRef) : date.slice(0, 10);
+  return date; // day
+}
+
+function fmtKey(key: string, groupBy: GroupBy): string {
+  if (groupBy === 'month') {
+    // YYYY-MM → "MMM YY"
+    const [y, m] = key.split('-');
+    const d = new Date(Number(y), Number(m) - 1, 1);
+    return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+  }
+  if (groupBy === 'week') {
+    // week start date → "DD MMM"
+    const d = new Date(key + 'T00:00:00');
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  }
+  // day → "MM-DD"
+  return key.slice(5);
+}
+
+export function SalesTrendChart({ salesLog, branches, groupBy = 'day', weekStartRef }: SalesTrendChartProps) {
   const [visibleBranches, setVisibleBranches] = useState<Set<string>>(new Set());
 
   if (salesLog.length === 0) {
@@ -34,17 +61,18 @@ export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
     );
   }
 
-  // Build chart data: one row per date, columns per branch
-  const dateMap = new Map<string, Record<string, number>>();
+  // Build chart data: one row per group key, columns per branch
+  const keyMap = new Map<string, Record<string, number>>();
   for (const entry of salesLog) {
-    if (!dateMap.has(entry.date)) dateMap.set(entry.date, {});
-    const row = dateMap.get(entry.date)!;
+    const key = groupKey(entry.date, groupBy, weekStartRef);
+    if (!keyMap.has(key)) keyMap.set(key, {});
+    const row = keyMap.get(key)!;
     row[entry.branch] = (row[entry.branch] ?? 0) + entry.actualSales;
   }
 
-  const chartData = [...dateMap.entries()]
+  const chartData = [...keyMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, vals]) => ({ date, ...vals }));
+    .map(([key, vals]) => ({ key, label: fmtKey(key, groupBy), ...vals }));
 
   const toggleBranch = (branch: string) => {
     setVisibleBranches((prev) => {
@@ -57,9 +85,13 @@ export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
 
   const noneVisible = visibleBranches.size === 0;
 
+  const pointLabel =
+    groupBy === 'month' ? 'month' :
+    groupBy === 'week'  ? 'week'  : 'day';
+
   return (
     <div>
-      {/* Branch toggle buttons — all off by default, click to enable */}
+      {/* Branch toggle buttons */}
       <div className="flex flex-wrap gap-2 mb-1">
         {branches.map((b) => {
           const active = visibleBranches.has(b);
@@ -85,7 +117,9 @@ export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
         })}
       </div>
       <p className="text-xs text-ink-muted mb-4">
-        {noneVisible ? 'Click a branch to show it on the chart' : `${visibleBranches.size} branch${visibleBranches.size !== 1 ? 'es' : ''} selected`}
+        {noneVisible
+          ? 'Click a branch to show it on the chart'
+          : `${visibleBranches.size} branch${visibleBranches.size !== 1 ? 'es' : ''} selected`}
       </p>
 
       {noneVisible ? (
@@ -97,9 +131,8 @@ export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
           <LineChart data={chartData} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis
-              dataKey="date"
+              dataKey="label"
               tick={{ fontSize: 11, fill: '#aaa' }}
-              tickFormatter={(v: string) => v.slice(5)}
             />
             <YAxis
               tick={{ fontSize: 11, fill: '#aaa' }}
@@ -133,7 +166,7 @@ export function SalesTrendChart({ salesLog, branches }: SalesTrendChartProps) {
       )}
 
       <div className="text-xs text-ink-muted mt-2 text-right">
-        {chartData.length} day{chartData.length !== 1 ? 's' : ''} of data
+        {chartData.length} {pointLabel}{chartData.length !== 1 ? 's' : ''} of data
       </div>
     </div>
   );

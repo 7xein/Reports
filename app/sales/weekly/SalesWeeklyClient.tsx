@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { SalesBars } from '@/components/SalesBars';
 import { SalesSummaryTable } from '@/components/SalesSummaryTable';
+import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { RegionalSalesEntry, RegionalBranchConfig } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
 import { getDailyTarget, sumSalesFor, getWeekStart } from '@/lib/sales-utils';
@@ -109,7 +110,7 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4">
+      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4 mb-4">
         <div className="bg-white rounded-lg p-5 shadow-sm">
           <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-4">Actual vs Target</div>
           <SalesBars rows={rows} />
@@ -118,6 +119,17 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
           <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Branch Summary</div>
           <SalesSummaryTable rows={rows} />
         </div>
+      </div>
+
+      <div className="bg-white rounded-lg p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="text-sm font-bold uppercase tracking-wide text-ink-muted">Sales Trend</div>
+            <div className="text-xs text-ink-muted mt-0.5">Weekly actual sales per branch over time</div>
+          </div>
+          <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">All Weeks</span>
+        </div>
+        <SalesTrendChart salesLog={salesLog} branches={branches} groupBy="week" weekStartRef={weekStartRef} />
       </div>
     </>
   );
