@@ -88,8 +88,13 @@ export async function POST(req: NextRequest) {
   try {
     await writeData(current);
   } catch (err) {
-    console.error('[POST /api/data] writeData failed:', err);
-    return NextResponse.json({ error: 'Failed to save data' }, { status: 500 });
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error('[POST /api/data] writeData failed:', detail);
+    return NextResponse.json({
+      error: 'Failed to save data',
+      detail,
+      usingKV: !!process.env.KV_REST_API_URL,
+    }, { status: 500 });
   }
   return NextResponse.json({ success: true });
 }

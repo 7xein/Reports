@@ -90,7 +90,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      return `Error ${res.status}: ${body?.error ?? res.statusText}`;
+      const detail = body?.detail ? ` — ${body.detail}` : '';
+      const kvStatus = body?.usingKV !== undefined ? ` (KV: ${body.usingKV ? 'yes' : 'NO'})` : '';
+      return `Error ${res.status}: ${body?.error ?? res.statusText}${detail}${kvStatus}`;
     }
     return null;
   }
