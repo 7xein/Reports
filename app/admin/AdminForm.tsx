@@ -81,72 +81,59 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     }));
   }
 
+  async function apiPost(type: string, payload: unknown): Promise<string | null> {
+    const res = await fetch('/api/data', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, payload }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return `Error ${res.status}: ${body?.error ?? res.statusText}`;
+    }
+    return null;
+  }
+
   async function saveWip() {
     setSaving(true);
     setMessage('');
-    try {
-      const res = await fetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'wip-daily', payload: { date: wipDate, values: wipValues } }),
-      });
-      if (!res.ok) throw new Error('Save failed');
-      const total = (initialData.wipHistory?.length ?? 0) + 1;
-      setMessage(`✓ WIP snapshot saved for ${wipDate} (${total} total data points)`);
-    } catch {
-      setMessage('Error saving WIP snapshot');
-    } finally {
-      setSaving(false);
-    }
+    const err = await apiPost('wip-daily', { date: wipDate, values: wipValues });
+    if (err) { setMessage(err); setSaving(false); return; }
+    const total = (initialData.wipHistory?.length ?? 0) + 1;
+    setMessage(`✓ WIP snapshot saved for ${wipDate} (${total} total data points)`);
+    setSaving(false);
   }
 
   async function saveWipWeekly() {
     setSaving(true);
     setMessage('');
-    try {
-      const res = await fetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'wip-weekly', payload: { weekEnding: wipWeekEnding, values: wipWeeklyValues } }),
-      });
-      if (!res.ok) throw new Error('Save failed');
-      setMessage(`✓ Weekly WIP snapshot saved for week ending ${wipWeekEnding}`);
-    } catch {
-      setMessage('Error saving weekly WIP snapshot');
-    } finally {
-      setSaving(false);
-    }
+    const err = await apiPost('wip-weekly', { weekEnding: wipWeekEnding, values: wipWeeklyValues });
+    if (err) { setMessage(err); setSaving(false); return; }
+    setMessage(`✓ Weekly WIP snapshot saved for week ending ${wipWeekEnding}`);
+    setSaving(false);
   }
 
   async function saveSales() {
     setSaving(true);
     setMessage('');
-    try {
-      const newRows: RegionalSalesEntry[] = BRANCHES
-        .map((b) => ({
-          date: newDate,
-          branch: b,
-          actualSales: parseFloat(newEntries[b]?.sales || '0') || 0,
-          notes: newEntries[b]?.notes || '',
-        }))
-        .filter((r) => r.actualSales > 0);
-      const updated = [
-        ...salesLog.filter((e) => !(e.date === newDate && newRows.some((r) => r.branch === e.branch))),
-        ...newRows,
-      ];
-      const res = await fetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'regional-log', payload: updated }),
-      });
-      if (!res.ok) throw new Error('Save failed');
-      setSalesLog(updated);
-      setMessage(`✓ Sales entries saved for ${newDate}`);
-    } catch {
-      setMessage('Error saving sales');
-    } finally {
-      setSaving(false);
-    }
+    const newRows: RegionalSalesEntry[] = BRANCHES
+      .map((b) => ({
+        date: newDate,
+        branch: b,
+        actualSales: parseFloat(newEntries[b]?.sales || '0') || 0,
+        notes: newEntries[b]?.notes || '',
+      }))
+      .filter((r) => r.actualSales > 0);
+    const updated = [
+      ...salesLog.filter((e) => !(e.date === newDate && newRows.some((r) => r.branch === e.branch))),
+      ...newRows,
+    ];
+    const err = await apiPost('regional-log', updated);
+    if (err) { setMessage(err); setSaving(false); return; }
+    setSalesLog(updated);
+    setMessage(`✓ Sales entries saved for ${newDate}`);
+    setSaving(false);
   }
 
   async function handleLogout() {
