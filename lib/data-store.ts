@@ -4,32 +4,41 @@ import defaultData from '../data/data.json';
 const DATA_KEY = 'evs_report_data';
 
 /**
- * Production (Vercel): data lives in Vercel KV (Redis).
- * Local dev: falls back to data/data.json — no KV setup needed.
+ * Production (Vercel): data lives in Upstash Redis.
+ * Local dev: falls back to data/data.json — no Redis setup needed.
  *
- * On first production boot, if KV is empty, we auto-seed from the bundled
+ * On first production boot, if Redis is empty, auto-seeds from the bundled
  * data/data.json so no manual seeding step is required.
  */
-const useKV = !!process.env.KV_REST_API_URL;
+const useRedis = !!process.env.UPSTASH_REDIS_REST_URL;
 
-// ── KV helpers ────────────────────────────────────────────────────────────────
-async function kvGet(): Promise<ReportData> {
-  const { kv } = await import('@vercel/kv');
-  let data = await kv.get<ReportData>(DATA_KEY);
+// ── Redis helpers ─────────────────────────────────────────────────────────────
+async function redisGet(): Promise<ReportData> {
+  const { Redis } = await import('@upstash/redis');
+  const redis = new Redis({
+    url:   process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+  });
+
+  let data = await redis.get<ReportData>(DATA_KEY);
 
   if (!data) {
     // First deploy — auto-seed from the bundled data.json
-    console.log('[data-store] KV empty — seeding from bundled data.json');
+    console.log('[data-store] Redis empty — seeding from bundled data.json');
     data = defaultData as unknown as ReportData;
-    await kv.set(DATA_KEY, data);
+    await redis.set(DATA_KEY, data);
   }
 
   return data;
 }
 
-async function kvSet(data: ReportData): Promise<void> {
-  const { kv } = await import('@vercel/kv');
-  await kv.set(DATA_KEY, data);
+async function redisSet(data: ReportData): Promise<void> {
+  const { Redis } = await import('@upstash/redis');
+  const redis = new Redis({
+    url:   process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+  });
+  await redis.set(DATA_KEY, data);
 }
 
 // ── File-system helpers (local dev only) ──────────────────────────────────────
@@ -60,11 +69,11 @@ function fsSet(data: ReportData): void {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function readData(): Promise<ReportData> {
-  if (useKV) return kvGet();
+  if (useRedis) return redisGet();
   return fsGet();
 }
 
 export async function writeData(data: ReportData): Promise<void> {
-  if (useKV) return kvSet(data);
+  if (useRedis) return redisSet(data);
   fsSet(data);
 }

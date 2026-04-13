@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       error: 'Failed to save data',
       detail,
-      usingKV: !!process.env.KV_REST_API_URL,
+      usingRedis: !!process.env.UPSTASH_REDIS_REST_URL,
     }, { status: 500 });
   }
   return NextResponse.json({ success: true });
