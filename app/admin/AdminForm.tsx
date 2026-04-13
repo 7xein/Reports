@@ -3,6 +3,25 @@
 import { useState } from 'react';
 import { Shell } from '@/components/Shell';
 import { BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry } from '@/lib/types';
+import { getWeekStart } from '@/lib/sales-utils';
+
+function fmtDate(d: string) {
+  return new Date(d + 'T00:00:00').toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
+}
+
+function weekStartOf(weekEnding: string) {
+  const d = new Date(weekEnding + 'T00:00:00');
+  d.setDate(d.getDate() - 6);
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
 
 function lastThursday() {
   const d = new Date();
@@ -213,14 +232,19 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Weekly Snapshot — This Week&apos;s Counts</h2>
             <p className="text-sm text-ink-muted mt-1">Enter the number of each item that occurred <strong>this week only</strong> — not cumulative since July.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-ink-muted">Week ending (Thursday):</label>
-            <input
-              type="date"
-              value={wipWeekEnding}
-              onChange={(e) => setWipWeekEnding(e.target.value)}
-              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
-            />
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-ink-muted">Week ending (Thursday):</label>
+              <input
+                type="date"
+                value={wipWeekEnding}
+                onChange={(e) => setWipWeekEnding(e.target.value)}
+                className="text-sm border border-border rounded px-3 py-1.5 text-ink"
+              />
+            </div>
+            <span className="text-xs text-ink-muted">
+              Covers: <strong>{fmtDate(weekStartOf(wipWeekEnding))}</strong> – <strong>{fmtDate(wipWeekEnding)}</strong>
+            </span>
           </div>
         </div>
 
@@ -272,14 +296,21 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       <div className="bg-white rounded-lg shadow-sm p-6">
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-bold uppercase tracking-wide text-ink">Sales Log — Add Today&apos;s Sales</h2>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-ink-muted">Date:</label>
-            <input
-              type="date"
-              value={newDate}
-              onChange={(e) => setNewDate(e.target.value)}
-              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
-            />
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-ink-muted">Date:</label>
+              <input
+                type="date"
+                value={newDate}
+                onChange={(e) => setNewDate(e.target.value)}
+                className="text-sm border border-border rounded px-3 py-1.5 text-ink"
+              />
+            </div>
+            {initialData.regional.weekStart && (
+              <span className="text-xs text-ink-muted">
+                Week: <strong>{fmtDate(getWeekStart(newDate, initialData.regional.weekStart))}</strong> – <strong>{fmtDate(addDays(getWeekStart(newDate, initialData.regional.weekStart), 6))}</strong>
+              </span>
+            )}
           </div>
         </div>
 

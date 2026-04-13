@@ -6,16 +6,33 @@ export async function GET() {
   if (!isAuthenticated()) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  const data = readData();
-  return NextResponse.json(data);
+  try {
+    const data = await readData();
+    return NextResponse.json(data);
+  } catch (err) {
+    console.error('[GET /api/data]', err);
+    return NextResponse.json({ error: 'Failed to load data' }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
   if (!isAuthenticated() || !isAdminAuthenticated()) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  const body = await req.json();
-  const current = readData();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  let current: Awaited<ReturnType<typeof readData>>;
+  try {
+    current = await readData();
+  } catch (err) {
+    console.error('[POST /api/data] readData failed:', err);
+    return NextResponse.json({ error: 'Failed to load data' }, { status: 500 });
+  }
 
   // body shape: { type: 'weekly' | 'daily', payload: ... }
   if (body.type === 'weekly') {
@@ -68,6 +85,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
   }
 
-  writeData(current);
+  try {
+    await writeData(current);
+  } catch (err) {
+    console.error('[POST /api/data] writeData failed:', err);
+    return NextResponse.json({ error: 'Failed to save data' }, { status: 500 });
+  }
   return NextResponse.json({ success: true });
 }

@@ -64,15 +64,6 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
               })}
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-xs font-bold tracking-wide text-evs-green-dark bg-evs-green/10 px-3 py-1 rounded-full">
-              <span className="w-1.5 h-1.5 rounded-full bg-evs-green animate-pulse inline-block" />
-              Live
-            </span>
-            <div className="w-8 h-8 rounded-full bg-evs-dark flex items-center justify-center text-xs font-bold text-evs-green">
-              E
-            </div>
-          </div>
         </header>
 
         <HeroBanner {...hero} />

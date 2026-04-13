@@ -14,8 +14,8 @@ const SALES_SUB_TABS = [
   { href: '/sales/monthly', label: 'Monthly' },
 ];
 
-export default function SalesMonthlyPage() {
-  const data = readData();
+export default async function SalesMonthlyPage() {
+  const data = await readData();
   const { salesLog, branchConfig } = data.regional;
   const latestDate = latestLogDate(salesLog);
   const monthStart = latestDate ? getMonthStart(latestDate) : '';

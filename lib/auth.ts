@@ -1,15 +1,19 @@
 import { cookies } from 'next/headers';
 
-const SITE_COOKIE = 'evs_auth';
+const SITE_COOKIE  = 'evs_auth';
 const ADMIN_COOKIE = 'evs_admin_auth';
 const COOKIE_VALUE = 'authenticated';
 
 export function getSitePassword(): string {
-  return 'evs2026';
+  const pw = process.env.SITE_PASSWORD;
+  if (!pw) throw new Error('SITE_PASSWORD environment variable is not set');
+  return pw;
 }
 
 export function getAdminPassword(): string {
-  return 'H1u$$230';
+  const pw = process.env.ADMIN_PASSWORD;
+  if (!pw) throw new Error('ADMIN_PASSWORD environment variable is not set');
+  return pw;
 }
 
 export function isAuthenticated(): boolean {

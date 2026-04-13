@@ -1,7 +1,5 @@
 import { Shell } from '@/components/Shell';
-import { KpiStrip } from '@/components/KpiStrip';
-import { TrendChart } from '@/components/TrendChart';
-import { BranchBreakdownGrid } from '@/components/BranchBreakdownGrid';
+import { WipDailyClient } from './WipDailyClient';
 import { readData } from '@/lib/data-store';
 import { BRANCHES, WIP_METRICS, WipMetricKey } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
@@ -32,8 +30,8 @@ function deltaLabel(cur: number, prev: number): string {
   return `${d > 0 ? '↑' : '↓'} ${formatNumber(Math.abs(d))} vs prev`;
 }
 
-export default function WipDailyPage() {
-  const data = readData();
+export default async function WipDailyPage() {
+  const data = await readData();
   const history = [...(data.wipHistory ?? [])].sort((a, b) => a.date.localeCompare(b.date));
 
   const latest = history[history.length - 1];
@@ -48,16 +46,6 @@ export default function WipDailyPage() {
     { value: formatNumber(currentTotals.warrantiesActivated), label: 'Warranties',  sub: prior ? deltaLabel(currentTotals.warrantiesActivated, previousTotals.warrantiesActivated)  : undefined },
   ];
 
-  const latestBranchValues = (key: WipMetricKey) =>
-    latest
-      ? (latest.values[key] as Record<typeof BRANCHES[number], number>)
-      : Object.fromEntries(BRANCHES.map((b) => [b, 0])) as Record<typeof BRANCHES[number], number>;
-
-  const priorBranchValues = (key: WipMetricKey) =>
-    prior
-      ? (prior.values[key] as Record<typeof BRANCHES[number], number>)
-      : Object.fromEntries(BRANCHES.map((b) => [b, 0])) as Record<typeof BRANCHES[number], number>;
-
   return (
     <Shell
       breadcrumbSection="WIP"
@@ -67,36 +55,11 @@ export default function WipDailyPage() {
         eyebrow: `WIP Dashboard · All 6 Branches · ${history.length} data point${history.length !== 1 ? 's' : ''}`,
         title: 'Work In',
         titleEm: 'Progress',
-        sub: 'Trend builds daily as you save WIP snapshots in Admin',
+        sub: 'Click any metric card to change the chart · select a branch in the trend',
         stats: heroStats,
       }}
     >
-      <KpiStrip current={currentTotals} previous={previousTotals} />
-
-      <div className="grid lg:grid-cols-[1.6fr_1fr] gap-4">
-        <div className="bg-white rounded-lg p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Daily Trend</span>
-            <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">All Branches</span>
-          </div>
-          <TrendChart entries={data.wipHistory ?? []} />
-        </div>
-
-        <div className="bg-white rounded-lg p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Branch Breakdown</span>
-            <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">Open ROs</span>
-          </div>
-          <BranchBreakdownGrid
-            metricKey="openRepairOrders"
-            metricLabel="Open ROs"
-            lowerIsBetter
-            current={latestBranchValues('openRepairOrders')}
-            previous={priorBranchValues('openRepairOrders')}
-            branches={BRANCHES}
-          />
-        </div>
-      </div>
+      <WipDailyClient wipHistory={data.wipHistory ?? []} />
     </Shell>
   );
 }

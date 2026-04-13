@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
@@ -11,8 +10,10 @@ const NAV_ITEMS = [
     label: 'WIP Dashboard',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
-        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+        <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+        <rect x="9" y="3" width="6" height="4" rx="1"/>
+        <line x1="9" y1="12" x2="15" y2="12"/>
+        <line x1="9" y1="16" x2="13" y2="16"/>
       </svg>
     ),
   },
@@ -22,7 +23,10 @@ const NAV_ITEMS = [
     label: 'Sales Dashboard',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        <line x1="12" y1="20" x2="12" y2="10"/>
+        <line x1="18" y1="20" x2="18" y2="4"/>
+        <line x1="6" y1="20" x2="6" y2="16"/>
+        <polyline points="2 20 22 20"/>
       </svg>
     ),
   },
@@ -34,8 +38,12 @@ const ADMIN_ITEM = {
   label: 'Admin',
   icon: (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3"/>
-      <path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/>
+      <line x1="4" y1="6" x2="20" y2="6"/>
+      <line x1="4" y1="12" x2="20" y2="12"/>
+      <line x1="4" y1="18" x2="20" y2="18"/>
+      <circle cx="8" cy="6" r="2" fill="currentColor" stroke="none"/>
+      <circle cx="16" cy="12" r="2" fill="currentColor" stroke="none"/>
+      <circle cx="10" cy="18" r="2" fill="currentColor" stroke="none"/>
     </svg>
   ),
 };
@@ -81,14 +89,18 @@ export function Sidebar() {
 
   return (
     <aside className="shell-sidebar">
-      <Link href="/wip/daily" className="flex items-center justify-center w-11 h-11 mb-3">
-        <Image
-          src="/evs-logo-new.png"
+      {/* Logo — fills the full sidebar width */}
+      <Link href="/wip/daily" className="flex items-center justify-center w-full mb-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/evs-logo-nobg.png"
           alt="EVS"
-          width={44}
-          height={44}
-          style={{ objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
-          priority
+          style={{
+            width: 74,
+            height: 'auto',
+            objectFit: 'contain',
+            filter: 'brightness(0) invert(1)',
+          }}
         />
       </Link>
 
