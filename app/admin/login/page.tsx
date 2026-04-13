@@ -35,7 +35,7 @@ export default function AdminLoginPage() {
       <div className="w-full max-w-md">
         <div className="text-center mb-12">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/evs-logo-new.png" alt="EVS" style={{ height: '48px', width: 'auto', margin: '0 auto 24px', mixBlendMode: 'multiply' }} />
+          <img src="/evs-logo-nobg.png" alt="EVS" style={{ height: '64px', width: 'auto', margin: '0 auto 24px' }} />
           <div className="smallcaps text-xs text-ink-muted mb-4">Admin Access</div>
           <h1 className="font-display text-5xl font-light tracking-tight text-ink leading-none">
             Restricted
