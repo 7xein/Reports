@@ -12,10 +12,16 @@ import type { WipMetricKey, Branch } from './types';
 import { BRANCHES } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
-const ODOO_URL    = () => process.env.ODOO_URL!;
-const ODOO_DB     = () => process.env.ODOO_DB!;
-const ODOO_LOGIN  = () => process.env.ODOO_LOGIN!;
-const ODOO_API_KEY = () => process.env.ODOO_API_KEY!;
+function requireEnv(name: string): string {
+  const val = process.env[name];
+  if (!val) throw new Error(`Missing environment variable: ${name} — add it in Vercel Dashboard → Settings → Environment Variables, then redeploy.`);
+  return val;
+}
+
+const ODOO_URL     = () => requireEnv('ODOO_URL');
+const ODOO_DB      = () => requireEnv('ODOO_DB');
+const ODOO_LOGIN   = () => requireEnv('ODOO_LOGIN');
+const ODOO_API_KEY = () => requireEnv('ODOO_API_KEY');
 
 // ── Branch consolidation rules ─────────────────────────────────────
 // Order matches BRANCHES constant: Dubai, Ajman, Sharjah, Abu Dhabi, Al Ain, Qatar
