@@ -67,6 +67,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Check env vars up-front and return a clear error if any are missing
+  const required = ['ODOO_URL', 'ODOO_DB', 'ODOO_LOGIN', 'ODOO_API_KEY'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    return NextResponse.json(
+      { error: 'Sync failed', detail: `Missing environment variables: ${missing.join(', ')} — add them in Vercel → Settings → Environment Variables, then redeploy.` },
+      { status: 500 }
+    );
+  }
+
   try {
     let autoSave = false;
     try {
