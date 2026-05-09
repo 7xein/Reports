@@ -220,7 +220,7 @@ async function metricQuotationsNotApproved() {
 async function metricRosWithoutInvoices() {
   return countByBranch('repair.order', [
     ['state', '!=', 'cancel'],
-    ['x_priority_matrix_status', '!=', 'Invoiced & Closed - X'],
+    ['priority_matrix_status', '!=', 'X'],
     ['tag_ids.name', '!=', 'CANCEL'],
   ]);
 }
