@@ -158,7 +158,7 @@ async function metricOpenRepairOrders() {
  * NOTE: Model name ('warranty.warranty') may need adjustment for your instance.
  */
 async function metricWarrantiesActivated() {
-  const model = 'warranty.warranty';
+  const model = 'fleet.warranty';
   const result = {} as Record<Branch, number>;
 
   for (const branch of BRANCHES) {
