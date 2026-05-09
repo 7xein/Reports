@@ -216,25 +216,13 @@ async function metricQuotationsNotApproved() {
   return countByBranch('sale.order', [['state', '=', 'draft']]);
 }
 
-/** G: "WIP not invoiced" — repair.order
- *  Tries the custom x_priority_matrix_status field first.
- *  Falls back to open (non-cancelled, non-done) ROs if the field doesn't exist.
- */
+/** G: "WIP not invoiced" — repair.order (custom field: x_priority_matrix_status) */
 async function metricRosWithoutInvoices() {
-  try {
-    return await countByBranch('repair.order', [
-      ['state', '!=', 'cancel'],
-      ['x_priority_matrix_status', '!=', 'Invoiced & Closed - X'],
-      ['tag_ids.name', '!=', 'CANCEL'],
-    ]);
-  } catch {
-    console.warn('⚠ x_priority_matrix_status field not found — falling back to open ROs without CANCEL tag');
-    return countByBranch('repair.order', [
-      ['state', '!=', 'cancel'],
-      ['state', '!=', 'done'],
-      ['tag_ids.name', '!=', 'CANCEL'],
-    ]);
-  }
+  return countByBranch('repair.order', [
+    ['state', '!=', 'cancel'],
+    ['x_priority_matrix_status', '!=', 'Invoiced & Closed - X'],
+    ['tag_ids.name', '!=', 'CANCEL'],
+  ]);
 }
 
 // ── Public API ─────────────────────────────────────────────────────
