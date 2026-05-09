@@ -25,8 +25,8 @@ function addDays(dateStr: string, days: number): string {
 
 function lastThursday() {
   const d = new Date();
-  const day = d.getDay(); // 0=Sun, 4=Thu
-  const diff = (day + 3) % 7; // days since last Thursday
+  const day = d.getDay();
+  const diff = (day + 3) % 7;
   d.setDate(d.getDate() - diff);
   return d.toISOString().slice(0, 10);
 }
@@ -49,17 +49,17 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // ── WIP Daily state ────────────────────────────────────────────────────────
-  const [wipDate, setWipDate] = useState(today());
-  const [wipValues, setWipValues] = useState<Record<WipMetricKey, Record<string, number>>>(
-    emptyWipValues()
-  );
+  // ── Odoo sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
-  // ── WIP Weekly state ───────────────────────────────────────────────────────
+  // ── WIP Daily state
+  const [wipDate, setWipDate] = useState(today());
+  const [wipValues, setWipValues] = useState<Record<WipMetricKey, Record<string, number>>>(emptyWipValues());
+
+  // ── WIP Weekly state
   const [wipWeekEnding, setWipWeekEnding] = useState(lastThursday());
-  const [wipWeeklyValues, setWipWeeklyValues] = useState<Record<WipMetricKey, Record<string, number>>>(
-    emptyWipValues()
-  );
+  const [wipWeeklyValues, setWipWeeklyValues] = useState<Record<WipMetricKey, Record<string, number>>>(emptyWipValues());
 
   const [salesLog, setSalesLog] = useState<RegionalSalesEntry[]>(initialData.regional.salesLog);
   const [newDate, setNewDate] = useState(today());
@@ -97,6 +97,54 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     return null;
   }
 
+  // ── Odoo sync handler ─────────────────────────────────────────
+  async function syncFromOdoo() {
+    setSyncing(true);
+    setSyncStatus('idle');
+    setMessage('');
+
+    try {
+      const res = await fetch('/api/sync-odoo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoSave: false }), // preview mode
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const detail = data?.detail || data?.error || 'Unknown error';
+        setMessage(`Odoo sync failed: ${detail}`);
+        setSyncStatus('error');
+        setSyncing(false);
+        return;
+      }
+
+      // Populate the form fields with Odoo data
+      if (data.values) {
+        setWipDate(data.date || today());
+        const newValues = emptyWipValues();
+        for (const metricKey of Object.keys(newValues) as WipMetricKey[]) {
+          if (data.values[metricKey]) {
+            for (const branch of BRANCHES) {
+              newValues[metricKey][branch] = data.values[metricKey][branch] ?? 0;
+            }
+          }
+        }
+        setWipValues(newValues);
+      }
+
+      setSyncStatus('success');
+      setMessage(`✓ Odoo data loaded for ${data.date} — review the numbers below, then click Save`);
+    } catch (err) {
+      setMessage(`Odoo sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      setSyncStatus('error');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function saveWip() {
     setSaving(true);
     setMessage('');
@@ -104,6 +152,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     if (err) { setMessage(err); setSaving(false); return; }
     const total = (initialData.wipHistory?.length ?? 0) + 1;
     setMessage(`✓ WIP snapshot saved for ${wipDate} (${total} total data points)`);
+    setSyncStatus('idle');
     setSaving(false);
   }
 
@@ -155,11 +204,57 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         sub: "Enter today's WIP snapshot and sales figures",
       }}
     >
-      {/* WIP Section */}
+      {/* WIP Daily Section */}
       <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today&apos;s Numbers</h2>
-          <div className="flex items-center gap-2">
+          <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today's Numbers</h2>
+          <div className="flex items-center gap-3">
+            {/* ── Odoo Sync Button ── */}
+            <button
+              onClick={syncFromOdoo}
+              disabled={syncing || saving}
+              className={`
+                inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+                border-2 transition-all duration-200
+                ${syncing
+                  ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+                  : syncStatus === 'success'
+                    ? 'border-evs-green bg-evs-green/5 text-evs-green-dark'
+                    : syncStatus === 'error'
+                      ? 'border-danger/50 bg-danger/5 text-danger'
+                      : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'
+                }
+                disabled:opacity-50
+              `}
+            >
+              {syncing ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Syncing from Odoo…
+                </>
+              ) : syncStatus === 'success' ? (
+                <>
+                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  Synced — Review Below
+                </>
+              ) : (
+                <>
+                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M4 10a6 6 0 0110.472-4M16 10a6 6 0 01-10.472 4" strokeLinecap="round" />
+                    <path d="M15 3v4h-4M5 17v-4h4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Sync from Odoo
+                </>
+              )}
+            </button>
+
+            <div className="w-px h-6 bg-border" />
+
             <label className="text-sm text-ink-muted">Date:</label>
             <input
               type="date"
@@ -169,6 +264,19 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             />
           </div>
         </div>
+
+        {/* Sync status banner */}
+        {syncStatus === 'success' && (
+          <div className="mb-4 px-4 py-2.5 bg-evs-green/5 border border-evs-green/20 rounded-md flex items-center gap-2">
+            <svg className="h-4 w-4 text-evs-green shrink-0" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm text-evs-green-dark">
+              Data pulled from Odoo — review the numbers below and click <strong>Save WIP Snapshot</strong> when ready.
+              You can edit any cell before saving.
+            </span>
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -191,7 +299,14 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                         min="0"
                         value={wipValues[m.key as WipMetricKey][b] || ''}
                         onChange={(e) => setWip(m.key as WipMetricKey, b, e.target.value)}
-                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                        className={`
+                          w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink
+                          focus:border-evs-green focus:outline-none text-sm
+                          ${syncStatus === 'success' && wipValues[m.key as WipMetricKey][b] > 0
+                            ? 'border-evs-green/40 bg-evs-green/5'
+                            : 'border-border'
+                          }
+                        `}
                         placeholder="0"
                       />
                     </td>
@@ -201,13 +316,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             </tbody>
           </table>
         </div>
-
         <div className="mt-5 flex items-center gap-4">
-          <button
-            onClick={saveWip}
-            disabled={saving}
-            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
-          >
+          <button onClick={saveWip} disabled={saving}
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50">
             {saving ? 'Saving…' : 'Save WIP Snapshot →'}
           </button>
           <span className="text-sm text-ink-muted">Each save appends to the Daily Trends chart</span>
@@ -218,25 +329,21 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Weekly Snapshot — This Week&apos;s Counts</h2>
+            <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Weekly Snapshot — This Week's Counts</h2>
             <p className="text-sm text-ink-muted mt-1">Enter the number of each item that occurred <strong>this week only</strong> — not cumulative since July.</p>
           </div>
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2">
               <label className="text-sm text-ink-muted">Week ending (Thursday):</label>
-              <input
-                type="date"
-                value={wipWeekEnding}
+              <input type="date" value={wipWeekEnding}
                 onChange={(e) => setWipWeekEnding(e.target.value)}
-                className="text-sm border border-border rounded px-3 py-1.5 text-ink"
-              />
+                className="text-sm border border-border rounded px-3 py-1.5 text-ink" />
             </div>
             <span className="text-xs text-ink-muted">
               Covers: <strong>{fmtDate(weekStartOf(wipWeekEnding))}</strong> – <strong>{fmtDate(wipWeekEnding)}</strong>
             </span>
           </div>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -253,14 +360,11 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                   <td className="py-2.5 pr-4 text-ink font-medium leading-tight">{m.label}</td>
                   {BRANCHES.map((b) => (
                     <td key={b} className="py-1.5 px-1.5">
-                      <input
-                        type="number"
-                        min="0"
+                      <input type="number" min="0"
                         value={wipWeeklyValues[m.key as WipMetricKey][b] || ''}
                         onChange={(e) => setWipWeekly(m.key as WipMetricKey, b, e.target.value)}
                         className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
-                        placeholder="0"
-                      />
+                        placeholder="0" />
                     </td>
                   ))}
                 </tr>
@@ -268,13 +372,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             </tbody>
           </table>
         </div>
-
         <div className="mt-5 flex items-center gap-4">
-          <button
-            onClick={saveWipWeekly}
-            disabled={saving}
-            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
-          >
+          <button onClick={saveWipWeekly} disabled={saving}
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50">
             {saving ? 'Saving…' : 'Save Weekly Snapshot →'}
           </button>
           <span className="text-sm text-ink-muted">Enter every Thursday — shows on the Weekly Snapshot dashboard</span>
@@ -284,16 +384,12 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       {/* Sales Section */}
       <div className="bg-white rounded-lg shadow-sm p-6">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-bold uppercase tracking-wide text-ink">Sales Log — Add Today&apos;s Sales</h2>
+          <h2 className="text-base font-bold uppercase tracking-wide text-ink">Sales Log — Add Today's Sales</h2>
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2">
               <label className="text-sm text-ink-muted">Date:</label>
-              <input
-                type="date"
-                value={newDate}
-                onChange={(e) => setNewDate(e.target.value)}
-                className="text-sm border border-border rounded px-3 py-1.5 text-ink"
-              />
+              <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)}
+                className="text-sm border border-border rounded px-3 py-1.5 text-ink" />
             </div>
             {initialData.regional.weekStart && (
               <span className="text-xs text-ink-muted">
@@ -302,7 +398,6 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             )}
           </div>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -317,41 +412,28 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                 <tr key={b} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
                   <td className="py-2.5 pr-4 font-semibold text-ink">{b}</td>
                   <td className="py-1.5 px-1.5">
-                    <input
-                      type="number"
-                      min="0"
-                      value={newEntries[b]?.sales ?? ''}
+                    <input type="number" min="0" value={newEntries[b]?.sales ?? ''}
                       onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], sales: e.target.value } }))}
                       className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
-                      placeholder="0"
-                    />
+                      placeholder="0" />
                   </td>
                   <td className="py-1.5 px-1.5">
-                    <input
-                      type="text"
-                      value={newEntries[b]?.notes ?? ''}
+                    <input type="text" value={newEntries[b]?.notes ?? ''}
                       onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], notes: e.target.value } }))}
                       className="w-full px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm"
-                      placeholder="Optional notes"
-                    />
+                      placeholder="Optional notes" />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-
         <div className="mt-5 flex items-center justify-between">
-          <button
-            onClick={saveSales}
-            disabled={saving}
-            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
-          >
+          <button onClick={saveSales} disabled={saving}
+            className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50">
             {saving ? 'Saving…' : 'Save Sales Entry →'}
           </button>
-          <button onClick={handleLogout} className="text-sm text-ink-muted hover:text-ink">
-            Sign out
-          </button>
+          <button onClick={handleLogout} className="text-sm text-ink-muted hover:text-ink">Sign out</button>
         </div>
       </div>
 
