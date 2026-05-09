@@ -221,7 +221,7 @@ async function metricRosWithoutInvoices() {
   return countByBranch('repair.order', [
     ['state', '!=', 'cancel'],
     ['priority_matrix_status', '!=', 'X'],
-    ['tag_ids.name', '!=', 'CANCEL'],
+    ['tag_ids', '!=', 71],
   ]);
 }
 
