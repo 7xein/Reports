@@ -49,9 +49,13 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // ── Odoo sync state
+  // ── Odoo WIP sync state
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  // ── Odoo Sales sync state
+  const [syncingSales, setSyncingSales] = useState(false);
+  const [syncSalesStatus, setSyncSalesStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   // ── WIP Daily state
   const [wipDate, setWipDate] = useState(today());
@@ -142,6 +146,52 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       setSyncStatus('error');
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function syncSalesFromOdoo() {
+    setSyncingSales(true);
+    setSyncSalesStatus('idle');
+    setMessage('');
+
+    try {
+      const res = await fetch('/api/sync-odoo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'sales', date: newDate, autoSave: false }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const detail = data?.detail || data?.error || 'Unknown error';
+        setMessage(`Sales sync failed: ${detail}`);
+        setSyncSalesStatus('error');
+        setSyncingSales(false);
+        return;
+      }
+
+      if (data.sales) {
+        const updated: Record<string, { sales: string; notes: string }> = {};
+        for (const branch of BRANCHES) {
+          const amount = data.sales[branch] ?? 0;
+          updated[branch] = {
+            sales: amount > 0 ? amount.toFixed(2) : '',
+            notes: newEntries[branch]?.notes || '',
+          };
+        }
+        setNewEntries(updated);
+        if (data.date) setNewDate(data.date);
+      }
+
+      setSyncSalesStatus('success');
+      setMessage(`✓ Sales data loaded for ${data.date} — review the numbers below, then click Save`);
+    } catch (err) {
+      setMessage(`Sales sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      setSyncSalesStatus('error');
+    } finally {
+      setSyncingSales(false);
     }
   }
 
@@ -386,9 +436,55 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-bold uppercase tracking-wide text-ink">Sales Log — Add Today's Sales</h2>
           <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {/* ── Odoo Sales Sync Button ── */}
+              <button
+                onClick={syncSalesFromOdoo}
+                disabled={syncingSales || saving}
+                className={`
+                  inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+                  border-2 transition-all duration-200
+                  ${syncingSales
+                    ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+                    : syncSalesStatus === 'success'
+                      ? 'border-evs-green bg-evs-green/5 text-evs-green-dark'
+                      : syncSalesStatus === 'error'
+                        ? 'border-danger/50 bg-danger/5 text-danger'
+                        : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'
+                  }
+                  disabled:opacity-50
+                `}
+              >
+                {syncingSales ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Syncing Sales…
+                  </>
+                ) : syncSalesStatus === 'success' ? (
+                  <>
+                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    Synced — Review Below
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M4 10a6 6 0 0110.472-4M16 10a6 6 0 01-10.472 4" strokeLinecap="round" />
+                      <path d="M15 3v4h-4M5 17v-4h4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Sync from Odoo
+                  </>
+                )}
+              </button>
+
+              <div className="w-px h-6 bg-border" />
+
               <label className="text-sm text-ink-muted">Date:</label>
-              <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)}
+              <input type="date" value={newDate} onChange={(e) => { setNewDate(e.target.value); setSyncSalesStatus('idle'); }}
                 className="text-sm border border-border rounded px-3 py-1.5 text-ink" />
             </div>
             {initialData.regional.weekStart && (
@@ -414,7 +510,11 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                   <td className="py-1.5 px-1.5">
                     <input type="number" min="0" value={newEntries[b]?.sales ?? ''}
                       onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], sales: e.target.value } }))}
-                      className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                      className={`w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
+                        syncSalesStatus === 'success' && parseFloat(newEntries[b]?.sales || '0') > 0
+                          ? 'border-evs-green/40 bg-evs-green/5'
+                          : 'border-border'
+                      }`}
                       placeholder="0" />
                   </td>
                   <td className="py-1.5 px-1.5">

@@ -272,3 +272,61 @@ export async function fetchWipSnapshot(): Promise<OdooWipSnapshot> {
     },
   };
 }
+
+/**
+ * Fetch daily sales (posted customer invoices) from Odoo for a given date.
+ * Uses account.move with move_type = 'out_invoice', state = 'posted',
+ * grouped by company, summing amount_untaxed.
+ *
+ * @param dateStr - The date to fetch sales for (YYYY-MM-DD format).
+ *                  Defaults to yesterday if not provided.
+ */
+export interface OdooSalesSnapshot {
+  date: string;
+  sales: Record<Branch, number>;
+}
+
+export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapshot> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  // Default to yesterday
+  if (!dateStr) {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    dateStr = yesterday.toISOString().split('T')[0];
+  }
+
+  const trackedIds = await allTrackedCompanyIds();
+
+  const groups = await call('account.move', 'read_group', [
+    [
+      ['move_type', '=', 'out_invoice'],
+      ['state', '=', 'posted'],
+      ['date', '=', dateStr],
+      ['company_id', 'in', trackedIds],
+    ],
+  ], {
+    fields: ['company_id', 'amount_untaxed'],
+    groupby: ['company_id'],
+    lazy: true,
+  });
+
+  // Build company_id → amount_untaxed lookup
+  const companyAmountMap: Record<number, number> = {};
+  for (const g of groups) {
+    const cid = g.company_id?.[0];
+    if (cid) {
+      companyAmountMap[cid] = (g.amount_untaxed as number) || 0;
+    }
+  }
+
+  // Consolidate into branches
+  const sales = {} as Record<Branch, number>;
+  for (const branch of BRANCHES) {
+    const ids = await branchCompanyIds(branch);
+    sales[branch] = ids.reduce((sum, id) => sum + (companyAmountMap[id] || 0), 0);
+  }
+
+  return { date: dateStr, sales };
+}

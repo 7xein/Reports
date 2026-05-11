@@ -13,7 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWipSnapshot } from '@/lib/odoo';
+import { fetchWipSnapshot, fetchDailySales } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
 import type { WipDailyEntry } from '@/lib/types';
@@ -77,15 +77,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  let body: Record<string, unknown> = {};
   try {
-    let autoSave = false;
-    try {
-      const body = await request.json();
-      autoSave = body?.autoSave === true;
-    } catch {
-      // No body or invalid JSON — that's fine, default to preview mode
-    }
+    body = await request.json();
+  } catch {
+    // No body or invalid JSON — fine, use defaults
+  }
 
+  // ── Sales sync mode ───────────────────────────────────────────────
+  if (body?.mode === 'sales') {
+    try {
+      const dateStr = typeof body?.date === 'string' ? body.date : undefined;
+      console.log(`🔄 [manual] Starting Odoo sales sync for ${dateStr ?? 'yesterday'}…`);
+      const result = await fetchDailySales(dateStr);
+      console.log(`✅ [manual] Fetched sales for ${result.date}`);
+      return NextResponse.json({
+        success: true,
+        mode: 'sales',
+        date: result.date,
+        sales: result.sales,
+        saved: false,
+      });
+    } catch (error) {
+      console.error('❌ [manual] Odoo sales sync failed:', error);
+      return NextResponse.json(
+        { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
+        { status: 500 }
+      );
+    }
+  }
+
+  // ── WIP sync mode (default) ───────────────────────────────────────
+  try {
+    const autoSave = body?.autoSave === true;
     console.log(`🔄 [manual] Starting Odoo WIP sync (autoSave: ${autoSave})…`);
     const snapshot = await fetchWipSnapshot();
     console.log(`✅ [manual] Fetched snapshot for ${snapshot.date}`);
