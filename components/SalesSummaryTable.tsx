@@ -2,14 +2,21 @@ import { formatCurrency } from '@/lib/format';
 import { SalesBranchRow } from './SalesBars';
 
 interface SalesSummaryTableProps {
-  rows: SalesBranchRow[];
+  rows: (SalesBranchRow & { mtdTarget?: number })[];
 }
 
 export function SalesSummaryTable({ rows }: SalesSummaryTableProps) {
+  const hasMtd = rows.some((r) => r.mtdTarget !== undefined);
+
   const totalActual = rows.reduce((s, r) => s + r.actual, 0);
   const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  const totalMtd = hasMtd ? rows.reduce((s, r) => s + (r.mtdTarget ?? 0), 0) : undefined;
   const totalPct = totalTarget > 0 ? (totalActual / totalTarget) * 100 : null;
   const totalGood = totalPct !== null && totalPct >= 100;
+
+  const headers = hasMtd
+    ? ['Branch', 'Actual', 'MTD Target', 'Target', 'Ach %', 'Variance']
+    : ['Branch', 'Actual', 'Target', 'Ach %', 'Variance'];
 
   function pctStr(actual: number, target: number) {
     if (target === 0) return '—';
@@ -22,7 +29,7 @@ export function SalesSummaryTable({ rows }: SalesSummaryTableProps) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b-2 border-evs-green/20 bg-evs-green/5">
-              {['Branch', 'Actual', 'Target', 'Ach %', 'Variance'].map((h) => (
+              {headers.map((h) => (
                 <th key={h} className={`px-4 py-3 font-semibold uppercase tracking-wide text-ink-muted text-xs ${h === 'Branch' ? 'text-left' : 'text-right'}`}>
                   {h}
                 </th>
@@ -37,6 +44,11 @@ export function SalesSummaryTable({ rows }: SalesSummaryTableProps) {
                 <tr key={r.branch} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
                   <td className="px-4 py-3 font-semibold text-ink">{r.branch}</td>
                   <td className="px-4 py-3 text-right tabular-nums text-ink">{formatCurrency(r.actual)}</td>
+                  {hasMtd && (
+                    <td className="px-4 py-3 text-right tabular-nums text-ink-muted">
+                      {r.mtdTarget !== undefined && r.mtdTarget > 0 ? formatCurrency(r.mtdTarget) : '—'}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-right tabular-nums text-ink-muted">{r.target > 0 ? formatCurrency(r.target) : '—'}</td>
                   <td className={`px-4 py-3 text-right tabular-nums font-semibold ${isGood ? 'text-evs-green-dark' : 'text-danger'}`}>
                     {pctStr(r.actual, r.target)}
@@ -50,6 +62,11 @@ export function SalesSummaryTable({ rows }: SalesSummaryTableProps) {
             <tr className="border-t-2 border-evs-green/20 bg-evs-green/5 font-bold">
               <td className="px-4 py-3 text-evs-green-dark uppercase tracking-wide text-xs">Total</td>
               <td className="px-4 py-3 text-right tabular-nums text-ink">{formatCurrency(totalActual)}</td>
+              {hasMtd && (
+                <td className="px-4 py-3 text-right tabular-nums text-ink-muted">
+                  {totalMtd !== undefined ? formatCurrency(totalMtd) : '—'}
+                </td>
+              )}
               <td className="px-4 py-3 text-right tabular-nums text-ink-muted">{formatCurrency(totalTarget)}</td>
               <td className={`px-4 py-3 text-right tabular-nums font-bold ${totalGood ? 'text-evs-green-dark' : 'text-danger'}`}>
                 {totalPct !== null ? totalPct.toFixed(1) + '%' : '—'}

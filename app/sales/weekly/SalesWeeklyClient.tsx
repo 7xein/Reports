@@ -40,13 +40,18 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
   const weekEnd = selectedWeekStart ? addDays(selectedWeekStart, 6) : '';
   const selectedIdx = allWeekStarts.indexOf(selectedWeekStart);
 
+  const currentDayOfMonth = new Date().getDate();
+
   const rows = branches.map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
     const actual = sumSalesFor(salesLog, b, (e) =>
       selectedWeekStart ? getWeekStart(e.date, weekStartRef) === selectedWeekStart : false
     );
     const target = getDailyTarget(cfg) * 7;
-    return { branch: b, actual, target };
+    const mtdTarget = cfg.daysInMonth > 0
+      ? (cfg.monthlyTarget / cfg.daysInMonth) * currentDayOfMonth
+      : 0;
+    return { branch: b, actual, target, mtdTarget };
   });
 
   const totalActual = rows.reduce((s, r) => s + r.actual, 0);
