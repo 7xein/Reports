@@ -40,7 +40,11 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
   const weekEnd = selectedWeekStart ? addDays(selectedWeekStart, 6) : '';
   const selectedIdx = allWeekStarts.indexOf(selectedWeekStart);
 
-  const currentDayOfMonth = new Date().getDate();
+  const latestSalesDate = useMemo(() => {
+    const dates = salesLog.map((e) => e.date).sort();
+    return dates[dates.length - 1] ?? '';
+  }, [salesLog]);
+  const mtdDay = latestSalesDate ? new Date(latestSalesDate + 'T00:00:00').getDate() : new Date().getDate();
 
   const rows = branches.map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
@@ -49,7 +53,7 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
     );
     const target = getDailyTarget(cfg) * 7;
     const mtdTarget = cfg.daysInMonth > 0
-      ? (cfg.monthlyTarget / cfg.daysInMonth) * currentDayOfMonth
+      ? (cfg.monthlyTarget / cfg.daysInMonth) * mtdDay
       : 0;
     return { branch: b, actual, target, mtdTarget };
   });

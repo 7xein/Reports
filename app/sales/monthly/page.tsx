@@ -21,7 +21,7 @@ export default async function SalesMonthlyPage() {
   const latestDate = latestLogDate(salesLog);
   const monthStart = latestDate ? getMonthStart(latestDate) : '';
 
-  const currentDayOfMonth = new Date().getDate();
+  const mtdDay = latestDate ? new Date(latestDate + 'T00:00:00').getDate() : new Date().getDate();
 
   const rows = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
@@ -31,7 +31,7 @@ export default async function SalesMonthlyPage() {
       (e) => monthStart ? e.date >= monthStart && e.date <= latestDate : false
     );
     const mtdTarget = cfg.daysInMonth > 0
-      ? (cfg.monthlyTarget / cfg.daysInMonth) * currentDayOfMonth
+      ? (cfg.monthlyTarget / cfg.daysInMonth) * mtdDay
       : 0;
     return { branch: b, actual, target: cfg.monthlyTarget, mtdTarget };
   });
