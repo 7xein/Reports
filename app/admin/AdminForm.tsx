@@ -53,6 +53,10 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
+  // ── Odoo Weekly WIP sync state
+  const [syncingWeekly, setSyncingWeekly] = useState(false);
+  const [syncWeeklyStatus, setSyncWeeklyStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
   // ── Odoo Sales sync state
   const [syncingSales, setSyncingSales] = useState(false);
   const [syncSalesStatus, setSyncSalesStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -149,6 +153,54 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     }
   }
 
+  async function syncWeeklyFromOdoo() {
+    setSyncingWeekly(true);
+    setSyncWeeklyStatus('idle');
+    setMessage('');
+
+    try {
+      const endDate = wipWeekEnding;
+      const startDate = addDays(endDate, -7);
+
+      const res = await fetch('/api/sync-odoo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'weekly', startDate, endDate, autoSave: false }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const detail = data?.detail || data?.error || 'Unknown error';
+        setMessage(`Weekly sync failed: ${detail}`);
+        setSyncWeeklyStatus('error');
+        setSyncingWeekly(false);
+        return;
+      }
+
+      if (data.values) {
+        const newValues = emptyWipValues();
+        for (const metricKey of Object.keys(newValues) as WipMetricKey[]) {
+          if (data.values[metricKey]) {
+            for (const branch of BRANCHES) {
+              newValues[metricKey][branch] = data.values[metricKey][branch] ?? 0;
+            }
+          }
+        }
+        setWipWeeklyValues(newValues);
+      }
+
+      setSyncWeeklyStatus('success');
+      setMessage(`✓ Weekly WIP data loaded for ${startDate} → ${endDate} — review the numbers below, then click Save`);
+    } catch (err) {
+      setMessage(`Weekly sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      setSyncWeeklyStatus('error');
+    } finally {
+      setSyncingWeekly(false);
+    }
+  }
+
   async function syncSalesFromOdoo() {
     setSyncingSales(true);
     setSyncSalesStatus('idle');
@@ -212,6 +264,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     const err = await apiPost('wip-weekly', { weekEnding: wipWeekEnding, values: wipWeeklyValues });
     if (err) { setMessage(err); setSaving(false); return; }
     setMessage(`✓ Weekly WIP snapshot saved for week ending ${wipWeekEnding}`);
+    setSyncWeeklyStatus('idle');
     setSaving(false);
   }
 
@@ -383,10 +436,56 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             <p className="text-sm text-ink-muted mt-1">Enter the number of each item that occurred <strong>this week only</strong> — not cumulative since July.</p>
           </div>
           <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {/* ── Odoo Weekly Sync Button ── */}
+              <button
+                onClick={syncWeeklyFromOdoo}
+                disabled={syncingWeekly || saving}
+                className={`
+                  inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+                  border-2 transition-all duration-200
+                  ${syncingWeekly
+                    ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+                    : syncWeeklyStatus === 'success'
+                      ? 'border-evs-green bg-evs-green/5 text-evs-green-dark'
+                      : syncWeeklyStatus === 'error'
+                        ? 'border-danger/50 bg-danger/5 text-danger'
+                        : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'
+                  }
+                  disabled:opacity-50
+                `}
+              >
+                {syncingWeekly ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Syncing from Odoo…
+                  </>
+                ) : syncWeeklyStatus === 'success' ? (
+                  <>
+                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    Synced — Review Below
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M4 10a6 6 0 0110.472-4M16 10a6 6 0 01-10.472 4" strokeLinecap="round" />
+                      <path d="M15 3v4h-4M5 17v-4h4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Sync from Odoo
+                  </>
+                )}
+              </button>
+
+              <div className="w-px h-6 bg-border" />
+
               <label className="text-sm text-ink-muted">Week ending (Thursday):</label>
               <input type="date" value={wipWeekEnding}
-                onChange={(e) => setWipWeekEnding(e.target.value)}
+                onChange={(e) => { setWipWeekEnding(e.target.value); setSyncWeeklyStatus('idle'); }}
                 className="text-sm border border-border rounded px-3 py-1.5 text-ink" />
             </div>
             <span className="text-xs text-ink-muted">
@@ -394,6 +493,20 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             </span>
           </div>
         </div>
+
+        {/* Weekly sync status banner */}
+        {syncWeeklyStatus === 'success' && (
+          <div className="mb-4 px-4 py-2.5 bg-evs-green/5 border border-evs-green/20 rounded-md flex items-center gap-2">
+            <svg className="h-4 w-4 text-evs-green shrink-0" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm text-evs-green-dark">
+              Data pulled from Odoo — review the numbers below and click <strong>Save Weekly Snapshot</strong> when ready.
+              You can edit any cell before saving.
+            </span>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -413,7 +526,14 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                       <input type="number" min="0"
                         value={wipWeeklyValues[m.key as WipMetricKey][b] || ''}
                         onChange={(e) => setWipWeekly(m.key as WipMetricKey, b, e.target.value)}
-                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                        className={`
+                          w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink
+                          focus:border-evs-green focus:outline-none text-sm
+                          ${syncWeeklyStatus === 'success' && wipWeeklyValues[m.key as WipMetricKey][b] > 0
+                            ? 'border-evs-green/40 bg-evs-green/5'
+                            : 'border-border'
+                          }
+                        `}
                         placeholder="0" />
                     </td>
                   ))}

@@ -13,7 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWipSnapshot, fetchDailySales } from '@/lib/odoo';
+import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
 import type { WipDailyEntry } from '@/lib/types';
@@ -100,6 +100,36 @@ export async function POST(request: NextRequest) {
       });
     } catch (error) {
       console.error('❌ [manual] Odoo sales sync failed:', error);
+      return NextResponse.json(
+        { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
+        { status: 500 }
+      );
+    }
+  }
+
+  // ── Weekly WIP sync mode ───────────────────────────────────────────
+  if (body?.mode === 'weekly') {
+    try {
+      const startDate = typeof body?.startDate === 'string' ? body.startDate : undefined;
+      const endDate = typeof body?.endDate === 'string' ? body.endDate : undefined;
+      if (!startDate || !endDate) {
+        return NextResponse.json(
+          { error: 'Sync failed', detail: 'startDate and endDate are required for weekly mode' },
+          { status: 400 }
+        );
+      }
+      console.log(`🔄 [manual] Starting Odoo weekly WIP sync for ${startDate} → ${endDate}…`);
+      const snapshot = await fetchWipWeeklySnapshot(startDate, endDate);
+      console.log(`✅ [manual] Fetched weekly snapshot for ${snapshot.date}`);
+      return NextResponse.json({
+        success: true,
+        mode: 'weekly',
+        date: snapshot.date,
+        values: snapshot.values,
+        saved: false,
+      });
+    } catch (error) {
+      console.error('❌ [manual] Odoo weekly WIP sync failed:', error);
       return NextResponse.json(
         { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
         { status: 500 }

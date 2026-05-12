@@ -273,6 +273,102 @@ export async function fetchWipSnapshot(): Promise<OdooWipSnapshot> {
   };
 }
 
+export async function fetchWipWeeklySnapshot(startDate: string, endDate: string): Promise<OdooWipSnapshot> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const dateRange: [string, string, string][] = [
+    ['create_date', '>=', startDate],
+    ['create_date', '<', endDate],
+  ];
+
+  // Warranties use write_date instead of create_date
+  const warrantyDateRange: [string, string, string][] = [
+    ['write_date', '>=', startDate],
+    ['write_date', '<', endDate],
+  ];
+
+  const [
+    saleOrdersToInvoice,
+    openRepairOrders,
+    warrantiesActivated,
+    rosWithoutQuotations,
+    rosWithoutTags,
+    quotationsNotApproved,
+    rosWithoutInvoices,
+  ] = await Promise.all([
+    countByBranch('sale.order', [
+      ['invoice_ids', '=', false],
+      ['state', '!=', 'cancel'],
+      ...dateRange,
+    ]),
+    countByBranch('repair.order', [
+      ['state', '!=', 'cancel'],
+      ['state', '!=', 'done'],
+      ...dateRange,
+    ]),
+    (async () => {
+      const model = 'fleet.warranty';
+      const result = {} as Record<Branch, number>;
+      for (const branch of BRANCHES) {
+        const ids = await branchCompanyIds(branch);
+        try {
+          result[branch] = await call(model, 'search_count', [[
+            ['state', '=', 'activated'],
+            ['write_uid.company_id', 'in', ids],
+            ...warrantyDateRange,
+          ]]);
+        } catch {
+          try {
+            result[branch] = await call(model, 'search_count', [[
+              ['state', '=', 'activated'],
+              ['company_id', 'in', ids],
+              ...warrantyDateRange,
+            ]]);
+          } catch {
+            result[branch] = 0;
+          }
+        }
+      }
+      return result;
+    })(),
+    countByBranch('repair.order', [
+      ['sale_order_id', '=', false],
+      ['state', '!=', 'cancel'],
+      ['state', '=', 'done'],
+      ...dateRange,
+    ]),
+    countByBranch('repair.order', [
+      ['state', '!=', 'cancel'],
+      ['tag_ids', '=', false],
+      ...dateRange,
+    ]),
+    countByBranch('sale.order', [
+      ['state', '=', 'draft'],
+      ...dateRange,
+    ]),
+    countByBranch('repair.order', [
+      ['state', '!=', 'cancel'],
+      ['priority_matrix_status', '!=', 'X'],
+      ['tag_ids', '!=', 71],
+      ...dateRange,
+    ]),
+  ]);
+
+  return {
+    date: endDate,
+    values: {
+      saleOrdersToInvoice,
+      openRepairOrders,
+      warrantiesActivated,
+      rosWithoutQuotations,
+      rosWithoutTags,
+      quotationsNotApproved,
+      rosWithoutInvoices,
+    },
+  };
+}
+
 /**
  * Fetch daily sales (posted customer invoices) from Odoo for a given date.
  * Uses account.move with move_type = 'out_invoice', state = 'posted',
