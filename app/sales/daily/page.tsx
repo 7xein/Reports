@@ -20,16 +20,11 @@ export default async function SalesDailyPage() {
   const { salesLog, branchConfig } = data.regional;
   const date = latestLogDate(salesLog);
 
-  const mtdDay = date ? new Date(date + 'T00:00:00').getDate() : new Date().getDate();
-
   const rows = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
     const actual = sumSalesFor(salesLog, b, (e) => e.date === date);
     const target = getDailyTarget(cfg);
-    const mtdTarget = cfg.daysInMonth > 0
-      ? (cfg.monthlyTarget / cfg.daysInMonth) * mtdDay
-      : 0;
-    return { branch: b, actual, target, mtdTarget };
+    return { branch: b, actual, target };
   });
 
   const totalActual = rows.reduce((s, r) => s + r.actual, 0);
