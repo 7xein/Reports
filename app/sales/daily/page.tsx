@@ -20,6 +20,12 @@ export default async function SalesDailyPage() {
   const { salesLog, branchConfig } = data.regional;
   const date = latestLogDate(salesLog);
 
+  // Filter sales log to current month only (based on latest entry's month)
+  const currentMonth = date ? date.slice(0, 7) : ''; // "YYYY-MM"
+  const currentMonthSalesLog = currentMonth
+    ? salesLog.filter((e) => e.date.startsWith(currentMonth))
+    : salesLog;
+
   const rows = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
     const actual = sumSalesFor(salesLog, b, (e) => e.date === date);
@@ -64,9 +70,11 @@ export default async function SalesDailyPage() {
             <div className="text-sm font-bold uppercase tracking-wide text-ink-muted">Sales Trend</div>
             <div className="text-xs text-ink-muted mt-0.5">Daily actual sales per branch over time</div>
           </div>
-          <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">All Time</span>
+          <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">
+            {currentMonth ? new Date(currentMonth + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : 'Current Month'}
+          </span>
         </div>
-        <SalesTrendChart salesLog={salesLog} branches={BRANCHES} />
+        <SalesTrendChart salesLog={currentMonthSalesLog} branches={BRANCHES} />
       </div>
     </Shell>
   );

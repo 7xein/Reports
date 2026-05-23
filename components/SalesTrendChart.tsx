@@ -62,10 +62,15 @@ export function SalesTrendChart({ salesLog, branches, groupBy = 'day', weekStart
   }
 
   // Build chart data: one row per group key, columns per branch
+  // Initialize every branch to 0 for each date so lines don't break
   const keyMap = new Map<string, Record<string, number>>();
   for (const entry of salesLog) {
     const key = groupKey(entry.date, groupBy, weekStartRef);
-    if (!keyMap.has(key)) keyMap.set(key, {});
+    if (!keyMap.has(key)) {
+      const row: Record<string, number> = {};
+      for (const b of branches) row[b] = 0;
+      keyMap.set(key, row);
+    }
     const row = keyMap.get(key)!;
     row[entry.branch] = (row[entry.branch] ?? 0) + entry.actualSales;
   }
