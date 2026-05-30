@@ -401,6 +401,7 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
       ['state', '=', 'posted'],
       ['date', '=', dateStr],
       ['company_id', 'in', trackedIds],
+      ['partner_id', 'not ilike', 'EVS Electric'],
     ],
   ], {
     fields: ['company_id', 'amount_untaxed'],
