@@ -28,8 +28,8 @@ const ODOO_API_KEY = () => requireEnv('ODOO_API_KEY');
 export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
   'Dubai':     ['EVS Dubai', 'Emarat - Mahrawan', 'Emarat - Albuhaira'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
-  'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHJ', 'Emarat - Muwafja'],
-  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE AD', 'Al Masaood'],
+  'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
+  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Al Masaood'],
   'Al Ain':    ['EVS ELECTRIC VEHICLE SERVICE AL AIN'],
   'Qatar':     ['EVS ELECTRIC VEHICLE SERVICE QATAR'],
 };
@@ -236,54 +236,6 @@ async function metricRosWithoutInvoices() {
     ]]);
   }
   return result;
-}
-
-/** Diagnostic: returns raw company map + per-company counts for metric G */
-export async function debugMetricG() {
-  cachedUid = null;
-  companyIdCache = null;
-
-  const companyMap = await getCompanyIds();
-  const abuDhabiNames = BRANCH_CLUSTERS['Abu Dhabi'];
-  const sharjahNames = BRANCH_CLUSTERS['Sharjah'];
-
-  const debug: Record<string, unknown> = {
-    allCompanies: Object.entries(companyMap).map(([name, id]) => ({ name, id })),
-    abuDhabi: {},
-    sharjah: {},
-  };
-
-  for (const companyName of abuDhabiNames) {
-    const id = companyMap[companyName];
-    if (!id) {
-      (debug.abuDhabi as Record<string, unknown>)[companyName] = 'NOT FOUND';
-      continue;
-    }
-    const count = await call('repair.order', 'search_count', [[
-      ['state', '!=', 'cancel'],
-      ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', 'not ilike', 'cancel'],
-      ['company_id', '=', id],
-    ]]);
-    (debug.abuDhabi as Record<string, unknown>)[companyName] = { id, count };
-  }
-
-  for (const companyName of sharjahNames) {
-    const id = companyMap[companyName];
-    if (!id) {
-      (debug.sharjah as Record<string, unknown>)[companyName] = 'NOT FOUND';
-      continue;
-    }
-    const count = await call('repair.order', 'search_count', [[
-      ['state', '!=', 'cancel'],
-      ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', 'not ilike', 'cancel'],
-      ['company_id', '=', id],
-    ]]);
-    (debug.sharjah as Record<string, unknown>)[companyName] = { id, count };
-  }
-
-  return debug;
 }
 
 // ── Public API ─────────────────────────────────────────────────────
