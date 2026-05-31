@@ -6,7 +6,7 @@ export type Branch = typeof BRANCHES[number];
 // single-location. Keys for stored sub-values use the form `${branch}__${sub}`.
 export const SUB_BRANCHES: Record<string, string[]> = {
   'Dubai':     ['Main branch', 'Emarat - Albuhaira', 'Emarat - Mahrawan'],
-  'Sharjah':   ['Main branch', 'Emarat - Al Muwafja'],
+  'Sharjah':   ['Main branch', 'Emarat - Muwafja'],
   'Abu Dhabi': ['Main branch', 'Al Masaood'],
 };
 export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];

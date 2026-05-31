@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
 
     // Save directly to the data store (same logic as POST /api/data wip-daily)
     const data = await readData();
-    const entry: WipDailyEntry = { date: snapshot.date, values: snapshot.values };
+    const entry: WipDailyEntry = { date: snapshot.date, values: snapshot.values, subValues: snapshot.subValues };
 
     if (!data.wipHistory) data.wipHistory = [];
     const idx = data.wipHistory.findIndex((e) => e.date === entry.date);
@@ -126,6 +126,7 @@ export async function POST(request: NextRequest) {
         mode: 'weekly',
         date: snapshot.date,
         values: snapshot.values,
+        subValues: snapshot.subValues,
         saved: false,
       });
     } catch (error) {
@@ -147,7 +148,7 @@ export async function POST(request: NextRequest) {
 
     if (autoSave) {
       const data = await readData();
-      const entry: WipDailyEntry = { date: snapshot.date, values: snapshot.values };
+      const entry: WipDailyEntry = { date: snapshot.date, values: snapshot.values, subValues: snapshot.subValues };
       if (!data.wipHistory) data.wipHistory = [];
       const idx = data.wipHistory.findIndex((e) => e.date === entry.date);
       if (idx >= 0) data.wipHistory[idx] = entry;
@@ -161,6 +162,7 @@ export async function POST(request: NextRequest) {
       success: true,
       date: snapshot.date,
       values: snapshot.values,
+      subValues: snapshot.subValues,
       saved: autoSave,
     });
   } catch (error) {

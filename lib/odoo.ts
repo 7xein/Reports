@@ -9,7 +9,7 @@
  */
 
 import type { WipMetricKey, Branch } from './types';
-import { BRANCHES } from './types';
+import { BRANCHES, subKey } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -35,6 +35,25 @@ export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
 };
 
 const ALL_TRACKED_COMPANIES = Object.values(BRANCH_CLUSTERS).flat();
+
+// ── Sub-branch → Odoo company mapping ──────────────────────────────
+// Each dashboard sub-branch corresponds to exactly one Odoo company.
+// Keys/labels mirror SUB_BRANCHES in lib/types.ts.
+const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
+  'Dubai': {
+    'Main branch':        'EVS Dubai',
+    'Emarat - Albuhaira': 'Emarat - Albuhaira',
+    'Emarat - Mahrawan':  'Emarat - Mahrawan',
+  },
+  'Sharjah': {
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE SHARJAH',
+    'Emarat - Muwafja':   'Emarat - Muwafja',
+  },
+  'Abu Dhabi': {
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE ABU DHABI',
+    'Al Masaood':         'Al Masaood',
+  },
+};
 
 // ── Types ──────────────────────────────────────────────────────────
 type OdooDomain = (string | [string, string, unknown])[];
@@ -113,91 +132,123 @@ async function allTrackedCompanyIds(): Promise<number[]> {
   return ALL_TRACKED_COMPANIES.map((n) => map[n]).filter(Boolean);
 }
 
-async function countByBranch(model: string, domain: OdooDomain): Promise<Record<Branch, number>> {
+/** Reverse of getCompanyIds: company id → name. */
+async function companyNameById(): Promise<Record<number, string>> {
+  const map = await getCompanyIds();
+  const out: Record<number, string> = {};
+  for (const [name, id] of Object.entries(map)) out[id] = name;
+  return out;
+}
+
+/** Per-company counts (keyed by company NAME) via a single read_group. */
+async function groupCountByCompany(model: string, domain: OdooDomain): Promise<Record<string, number>> {
   const trackedIds = await allTrackedCompanyIds();
   const fullDomain: OdooDomain = [...domain, ['company_id', 'in', trackedIds]];
-
   const groups: ReadGroupResult[] = await call(model, 'read_group', [fullDomain], {
     fields: ['company_id'],
     groupby: ['company_id'],
     lazy: true,
   });
-
-  const companyCountMap: Record<number, number> = {};
+  const idToName = await companyNameById();
+  const out: Record<string, number> = {};
   for (const g of groups) {
     const cid = g.company_id?.[0];
-    const count = g.company_id_count ?? g.__count ?? 0;
-    if (cid) companyCountMap[cid] = count as number;
+    const count = (g.company_id_count ?? g.__count ?? 0) as number;
+    if (cid && idToName[cid]) out[idToName[cid]] = count;
   }
+  return out;
+}
 
-  const result = {} as Record<Branch, number>;
-  for (const branch of BRANCHES) {
-    const ids = await branchCompanyIds(branch);
-    result[branch] = ids.reduce((sum, id) => sum + (companyCountMap[id] || 0), 0);
+/** Per-company counts (keyed by company NAME) via one search_count per company.
+ *  Use when read_group miscounts (e.g. many2many tag_ids filters). */
+async function searchCountByCompany(model: string, domain: OdooDomain): Promise<Record<string, number>> {
+  const map = await getCompanyIds();
+  const out: Record<string, number> = {};
+  for (const name of ALL_TRACKED_COMPANIES) {
+    const id = map[name];
+    if (!id) { out[name] = 0; continue; }
+    out[name] = await call(model, 'search_count', [[...domain, ['company_id', '=', id]]]);
   }
-  return result;
+  return out;
 }
 
-// ── Metric queries (mirror Odoo saved filters) ─────────────────────
-
-/** A: "WIP daily not invoiced" — sale.order */
-async function metricSaleOrdersToInvoice() {
-  return countByBranch('sale.order', [
-    ['invoice_ids', '=', false],
-    ['state', '!=', 'cancel'],
-  ]);
-}
-
-/** B: "Daily WIP open RO's" — repair.order */
-async function metricOpenRepairOrders() {
-  return countByBranch('repair.order', [
-    ['state', '!=', 'cancel'],
-    ['state', '!=', 'done'],
-  ]);
-}
-
-/**
- * C: "WIP report" — Warranties Activated
- * Queried per-branch cluster to match the UI's per-company-chip behavior.
- * NOTE: Model name ('warranty.warranty') may need adjustment for your instance.
- */
-async function metricWarrantiesActivated() {
-  const model = 'fleet.warranty';
-  const result = {} as Record<Branch, number>;
-
-  for (const branch of BRANCHES) {
-    const ids = await branchCompanyIds(branch);
+/** Warranties activated per company — tries write_uid.company_id, falls back to company_id. */
+async function warrantiesByCompany(extra: OdooDomain = []): Promise<Record<string, number>> {
+  const map = await getCompanyIds();
+  const out: Record<string, number> = {};
+  for (const name of ALL_TRACKED_COMPANIES) {
+    const id = map[name];
+    if (!id) { out[name] = 0; continue; }
     try {
-      result[branch] = await call(model, 'search_count', [[
-        ['state', '=', 'activated'],
-        ['write_uid.company_id', 'in', ids],
+      out[name] = await call('fleet.warranty', 'search_count', [[
+        ['state', '=', 'activated'], ['write_uid.company_id', 'in', [id]], ...extra,
       ]]);
     } catch {
       try {
-        result[branch] = await call(model, 'search_count', [[
-          ['state', '=', 'activated'],
-          ['company_id', 'in', ids],
+        out[name] = await call('fleet.warranty', 'search_count', [[
+          ['state', '=', 'activated'], ['company_id', 'in', [id]], ...extra,
         ]]);
       } catch {
-        console.warn(`⚠ Warranty query failed for ${branch} — setting to 0`);
-        result[branch] = 0;
+        out[name] = 0;
       }
     }
   }
-  return result;
+  return out;
 }
+
+/** Roll a per-company map up into branch totals + per-sub-branch values. */
+function rollUp(perCompany: Record<string, number>): {
+  branchTotals: Record<Branch, number>;
+  subValues: Record<string, number>;
+} {
+  const branchTotals = {} as Record<Branch, number>;
+  const subValues: Record<string, number> = {};
+  for (const branch of BRANCHES) {
+    const companies = BRANCH_CLUSTERS[branch] || [];
+    branchTotals[branch] = companies.reduce((sum, c) => sum + (perCompany[c] ?? 0), 0);
+    const subMap = SUB_BRANCH_COMPANY[branch];
+    if (subMap) {
+      for (const [sub, company] of Object.entries(subMap)) {
+        subValues[subKey(branch, sub)] = perCompany[company] ?? 0;
+      }
+    }
+  }
+  return { branchTotals, subValues };
+}
+
+// ── Metric queries (per-company; mirror Odoo saved filters) ────────
+// Each returns a Record<companyName, count>, later rolled up into branch
+// totals + per-sub-branch values. `extra` carries an optional date range.
+
+/** A: "WIP daily not invoiced" — sale.order */
+const qSaleOrdersToInvoice = (extra: OdooDomain = []) =>
+  groupCountByCompany('sale.order', [['invoice_ids', '=', false], ['state', '!=', 'cancel'], ...extra]);
+
+/** B: "Daily WIP open RO's" — repair.order */
+const qOpenRepairOrders = (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', [['state', '!=', 'cancel'], ['state', '!=', 'done'], ...extra]);
 
 /** D: "Repair Orders completed without quotation" — repair.order */
-async function metricRosWithoutQuotations() {
-  return countByBranch('repair.order', [
-    ['sale_order_id', '=', false],
-    ['state', '!=', 'cancel'],
-    ['state', '=', 'done'],
-  ]);
-}
+const qRosWithoutQuotations = (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', [['sale_order_id', '=', false], ['state', '!=', 'cancel'], ['state', '=', 'done'], ...extra]);
 
-/** E: "No tags weekly WIP" — repair.order (Saturday → Saturday window) */
-async function metricRosWithoutTags() {
+/** E: "No tags WIP" — repair.order */
+const qRosWithoutTags = (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', [['state', '!=', 'cancel'], ['tag_ids', '=', false], ...extra]);
+
+/** F: "WIP Quotes not approved" — sale.order (draft only) */
+const qQuotationsNotApproved = (extra: OdooDomain = []) =>
+  groupCountByCompany('sale.order', [['state', '=', 'draft'], ...extra]);
+
+/** G: "WIP not invoiced" — repair.order. search_count per company because the
+ *  many2many tag_ids filter miscounts under read_group JOINs. */
+const qRosWithoutInvoices = (extra: OdooDomain = []) =>
+  searchCountByCompany('repair.order', [
+    ['state', '!=', 'cancel'], ['priority_matrix_status', '!=', 'X'], ['tag_ids', 'not ilike', 'cancel'], ...extra,
+  ]);
+
+/** Saturday→Saturday window used by the daily "ROs Without Tags" metric. */
+function currentSaturdayWindow(): OdooDomain {
   const now = new Date();
   const day = now.getDay();
   const satOffset = day >= 6 ? 0 : day + 1;
@@ -206,47 +257,37 @@ async function metricRosWithoutTags() {
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(start.getDate() + 7);
-
-  return countByBranch('repair.order', [
-    ['state', '!=', 'cancel'],
-    ['tag_ids', '=', false],
+  return [
     ['create_date', '>=', start.toISOString().split('T')[0]],
     ['create_date', '<', end.toISOString().split('T')[0]],
-  ]);
-}
-
-/** F: "WIP Quotes not approved" — sale.order (draft only) */
-async function metricQuotationsNotApproved() {
-  return countByBranch('sale.order', [['state', '=', 'draft']]);
-}
-
-/** G: "WIP not invoiced" — repair.order
- *  Uses search_count per branch (not read_group) because the many2many
- *  tag_ids filter produces incorrect counts with read_group JOINs.
- */
-async function metricRosWithoutInvoices() {
-  const result = {} as Record<Branch, number>;
-  for (const branch of BRANCHES) {
-    const ids = await branchCompanyIds(branch);
-    result[branch] = await call('repair.order', 'search_count', [[
-      ['state', '!=', 'cancel'],
-      ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', 'not ilike', 'cancel'],
-      ['company_id', 'in', ids],
-    ]]);
-  }
-  return result;
+  ];
 }
 
 // ── Public API ─────────────────────────────────────────────────────
 export interface OdooWipSnapshot {
   date: string;
   values: Record<WipMetricKey, Record<Branch, number>>;
+  subValues: Record<WipMetricKey, Record<string, number>>;
+}
+
+/** Roll up the 7 per-company metric maps into a snapshot (branch totals + sub-branch values). */
+function buildSnapshot(
+  date: string,
+  perCompany: Record<WipMetricKey, Record<string, number>>,
+): OdooWipSnapshot {
+  const values = {} as Record<WipMetricKey, Record<Branch, number>>;
+  const subValues = {} as Record<WipMetricKey, Record<string, number>>;
+  (Object.keys(perCompany) as WipMetricKey[]).forEach((m) => {
+    const { branchTotals, subValues: sv } = rollUp(perCompany[m]);
+    values[m] = branchTotals;
+    subValues[m] = sv;
+  });
+  return { date, values, subValues };
 }
 
 /**
  * Fetch all 7 WIP metrics from Odoo and return a snapshot
- * matching the WipDailyEntry shape used by the admin form.
+ * with branch totals + per-sub-branch detail.
  */
 export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapshot> {
   cachedUid = null;
@@ -263,40 +304,36 @@ export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapsho
     quotationsNotApproved,
     rosWithoutInvoices,
   ] = await Promise.all([
-    metricSaleOrdersToInvoice(),
-    metricOpenRepairOrders(),
-    metricWarrantiesActivated(),
-    metricRosWithoutQuotations(),
-    metricRosWithoutTags(),
-    metricQuotationsNotApproved(),
-    metricRosWithoutInvoices(),
+    qSaleOrdersToInvoice(),
+    qOpenRepairOrders(),
+    warrantiesByCompany(),
+    qRosWithoutQuotations(),
+    qRosWithoutTags(currentSaturdayWindow()),
+    qQuotationsNotApproved(),
+    qRosWithoutInvoices(),
   ]);
 
-  return {
-    date: snapshotDate,
-    values: {
-      saleOrdersToInvoice,
-      openRepairOrders,
-      warrantiesActivated,
-      rosWithoutQuotations,
-      rosWithoutTags,
-      quotationsNotApproved,
-      rosWithoutInvoices,
-    },
-  };
+  return buildSnapshot(snapshotDate, {
+    saleOrdersToInvoice,
+    openRepairOrders,
+    warrantiesActivated,
+    rosWithoutQuotations,
+    rosWithoutTags,
+    quotationsNotApproved,
+    rosWithoutInvoices,
+  });
 }
 
 export async function fetchWipWeeklySnapshot(startDate: string, endDate: string): Promise<OdooWipSnapshot> {
   cachedUid = null;
   companyIdCache = null;
 
-  const dateRange: [string, string, string][] = [
+  const dateRange: OdooDomain = [
     ['create_date', '>=', startDate],
     ['create_date', '<', endDate],
   ];
-
   // Warranties use write_date instead of create_date
-  const warrantyDateRange: [string, string, string][] = [
+  const warrantyDateRange: OdooDomain = [
     ['write_date', '>=', startDate],
     ['write_date', '<', endDate],
   ];
@@ -310,76 +347,24 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
     quotationsNotApproved,
     rosWithoutInvoices,
   ] = await Promise.all([
-    countByBranch('sale.order', [
-      ['invoice_ids', '=', false],
-      ['state', '!=', 'cancel'],
-      ...dateRange,
-    ]),
-    countByBranch('repair.order', [
-      ['state', '!=', 'cancel'],
-      ['state', '!=', 'done'],
-      ...dateRange,
-    ]),
-    (async () => {
-      const model = 'fleet.warranty';
-      const result = {} as Record<Branch, number>;
-      for (const branch of BRANCHES) {
-        const ids = await branchCompanyIds(branch);
-        try {
-          result[branch] = await call(model, 'search_count', [[
-            ['state', '=', 'activated'],
-            ['write_uid.company_id', 'in', ids],
-            ...warrantyDateRange,
-          ]]);
-        } catch {
-          try {
-            result[branch] = await call(model, 'search_count', [[
-              ['state', '=', 'activated'],
-              ['company_id', 'in', ids],
-              ...warrantyDateRange,
-            ]]);
-          } catch {
-            result[branch] = 0;
-          }
-        }
-      }
-      return result;
-    })(),
-    countByBranch('repair.order', [
-      ['sale_order_id', '=', false],
-      ['state', '!=', 'cancel'],
-      ['state', '=', 'done'],
-      ...dateRange,
-    ]),
-    countByBranch('repair.order', [
-      ['state', '!=', 'cancel'],
-      ['tag_ids', '=', false],
-      ...dateRange,
-    ]),
-    countByBranch('sale.order', [
-      ['state', '=', 'draft'],
-      ...dateRange,
-    ]),
-    countByBranch('repair.order', [
-      ['state', '!=', 'cancel'],
-      ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', 'not ilike', 'cancel'],
-      ...dateRange,
-    ]),
+    qSaleOrdersToInvoice(dateRange),
+    qOpenRepairOrders(dateRange),
+    warrantiesByCompany(warrantyDateRange),
+    qRosWithoutQuotations(dateRange),
+    qRosWithoutTags(dateRange),
+    qQuotationsNotApproved(dateRange),
+    qRosWithoutInvoices(dateRange),
   ]);
 
-  return {
-    date: endDate,
-    values: {
-      saleOrdersToInvoice,
-      openRepairOrders,
-      warrantiesActivated,
-      rosWithoutQuotations,
-      rosWithoutTags,
-      quotationsNotApproved,
-      rosWithoutInvoices,
-    },
-  };
+  return buildSnapshot(endDate, {
+    saleOrdersToInvoice,
+    openRepairOrders,
+    warrantiesActivated,
+    rosWithoutQuotations,
+    rosWithoutTags,
+    quotationsNotApproved,
+    rosWithoutInvoices,
+  });
 }
 
 /**

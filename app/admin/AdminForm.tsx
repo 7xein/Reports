@@ -299,15 +299,22 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       // Populate the form fields with Odoo data (keep the user-selected date).
-      // Odoo returns branch-level totals it can't split, so we only fill
-      // single-location branches and leave sub-branch inputs for manual entry.
+      // Multi-site branches fill from per-sub-branch values; single-location
+      // branches fill from the branch total.
       if (data.values) {
         if (data.date) setWipDate(data.date);
         setWipValues((prev) => {
           const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
           for (const m of WIP_METRICS) {
             for (const b of BRANCHES) {
-              if (!hasSubBranches(b)) next[m.key][b] = data.values[m.key]?.[b] ?? 0;
+              if (hasSubBranches(b)) {
+                for (const sub of getSubBranches(b)) {
+                  const k = subKey(b, sub);
+                  next[m.key][k] = data.subValues?.[m.key]?.[k] ?? 0;
+                }
+              } else {
+                next[m.key][b] = data.values[m.key]?.[b] ?? 0;
+              }
             }
           }
           return next;
@@ -315,7 +322,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncStatus('success');
-      setMessage(`✓ Odoo data loaded for ${data.date} — multi-site branches need manual sub-branch entry. Review, then Save`);
+      setMessage(`✓ Odoo data loaded for ${data.date} — review the numbers below, then click Save`);
     } catch (err) {
       setMessage(`Odoo sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncStatus('error');
@@ -355,7 +362,14 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
           for (const m of WIP_METRICS) {
             for (const b of BRANCHES) {
-              if (!hasSubBranches(b)) next[m.key][b] = data.values[m.key]?.[b] ?? 0;
+              if (hasSubBranches(b)) {
+                for (const sub of getSubBranches(b)) {
+                  const k = subKey(b, sub);
+                  next[m.key][k] = data.subValues?.[m.key]?.[k] ?? 0;
+                }
+              } else {
+                next[m.key][b] = data.values[m.key]?.[b] ?? 0;
+              }
             }
           }
           return next;
@@ -363,7 +377,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncWeeklyStatus('success');
-      setMessage(`✓ Weekly WIP data loaded for ${startDate} → ${endDate} — multi-site branches need manual sub-branch entry. Review, then Save`);
+      setMessage(`✓ Weekly WIP data loaded for ${startDate} → ${endDate} — review the numbers below, then click Save`);
     } catch (err) {
       setMessage(`Weekly sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncWeeklyStatus('error');
