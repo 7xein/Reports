@@ -409,15 +409,16 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         return;
       }
 
-      // Odoo returns an overall figure it can't split by warranty — drop it into
-      // the "with warranty" column (the default classification) to reclassify before saving.
-      if (data.sales) {
+      // Odoo splits sales into with-warranty (invoices with a warranty line) and
+      // without-warranty (invoices without one). Fill both inputs directly.
+      if (data.salesWith || data.salesWithout) {
         const updated: Record<string, { withW: string; withoutW: string; notes: string }> = {};
         for (const branch of BRANCHES) {
-          const amount = data.sales[branch] ?? 0;
+          const withAmt    = data.salesWith?.[branch] ?? 0;
+          const withoutAmt = data.salesWithout?.[branch] ?? 0;
           updated[branch] = {
-            withW: amount > 0 ? amount.toFixed(2) : '',
-            withoutW: '',
+            withW: withAmt > 0 ? withAmt.toFixed(2) : '',
+            withoutW: withoutAmt > 0 ? withoutAmt.toFixed(2) : '',
             notes: newEntries[branch]?.notes || '',
           };
         }
@@ -426,7 +427,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncSalesStatus('success');
-      setMessage(`✓ Sales data loaded for ${data.date} — reclassify with/without warranty as needed, then Save`);
+      setMessage(`✓ Sales data loaded for ${data.date} — with/without warranty split from Odoo. Review, then Save`);
     } catch (err) {
       setMessage(`Sales sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncSalesStatus('error');
@@ -774,7 +775,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                     <td className="py-1.5 px-1.5">
                       <input type="number" min="0" value={newEntries[b]?.withoutW ?? ''}
                         onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], withoutW: e.target.value } }))}
-                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                        className={`w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
+                          synced && withoutW > 0 ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
+                        }`}
                         placeholder="0" />
                     </td>
                     <td className="py-1.5 px-2 text-right tabular-nums font-bold text-ink">

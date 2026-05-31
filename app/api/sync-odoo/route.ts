@@ -95,7 +95,8 @@ export async function POST(request: NextRequest) {
         success: true,
         mode: 'sales',
         date: result.date,
-        sales: result.sales,
+        salesWith: result.salesWith,
+        salesWithout: result.salesWithout,
         saved: false,
       });
     } catch (error) {

@@ -377,7 +377,40 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
  */
 export interface OdooSalesSnapshot {
   date: string;
-  sales: Record<Branch, number>;
+  salesWith: Record<Branch, number>;     // invoices containing a warranty line
+  salesWithout: Record<Branch, number>;  // invoices without a warranty line
+}
+
+/** Sum amount_untaxed per branch for posted out-invoices on a date, plus an extra filter. */
+async function salesByBranch(dateStr: string, extra: OdooDomain): Promise<Record<Branch, number>> {
+  const trackedIds = await allTrackedCompanyIds();
+  const groups = await call('account.move', 'read_group', [
+    [
+      ['move_type', '=', 'out_invoice'],
+      ['state', '=', 'posted'],
+      ['date', '=', dateStr],
+      ['company_id', 'in', trackedIds],
+      ['partner_id', 'not ilike', 'EVS Electric'],
+      ...extra,
+    ],
+  ], {
+    fields: ['company_id', 'amount_untaxed'],
+    groupby: ['company_id'],
+    lazy: true,
+  });
+
+  const companyAmountMap: Record<number, number> = {};
+  for (const g of groups) {
+    const cid = g.company_id?.[0];
+    if (cid) companyAmountMap[cid] = (g.amount_untaxed as number) || 0;
+  }
+
+  const out = {} as Record<Branch, number>;
+  for (const branch of BRANCHES) {
+    const ids = await branchCompanyIds(branch);
+    out[branch] = ids.reduce((sum, id) => sum + (companyAmountMap[id] || 0), 0);
+  }
+  return out;
 }
 
 export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapshot> {
@@ -391,37 +424,11 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
     dateStr = yesterday.toISOString().split('T')[0];
   }
 
-  const trackedIds = await allTrackedCompanyIds();
+  // Two complementary queries: invoices WITH a warranty line vs WITHOUT one.
+  const [salesWith, salesWithout] = await Promise.all([
+    salesByBranch(dateStr, [['invoice_line_ids', 'ilike', 'warranty']]),
+    salesByBranch(dateStr, [['invoice_line_ids', 'not ilike', 'warranty']]),
+  ]);
 
-  const groups = await call('account.move', 'read_group', [
-    [
-      ['move_type', '=', 'out_invoice'],
-      ['state', '=', 'posted'],
-      ['date', '=', dateStr],
-      ['company_id', 'in', trackedIds],
-      ['partner_id', 'not ilike', 'EVS Electric'],
-    ],
-  ], {
-    fields: ['company_id', 'amount_untaxed'],
-    groupby: ['company_id'],
-    lazy: true,
-  });
-
-  // Build company_id → amount_untaxed lookup
-  const companyAmountMap: Record<number, number> = {};
-  for (const g of groups) {
-    const cid = g.company_id?.[0];
-    if (cid) {
-      companyAmountMap[cid] = (g.amount_untaxed as number) || 0;
-    }
-  }
-
-  // Consolidate into branches
-  const sales = {} as Record<Branch, number>;
-  for (const branch of BRANCHES) {
-    const ids = await branchCompanyIds(branch);
-    sales[branch] = ids.reduce((sum, id) => sum + (companyAmountMap[id] || 0), 0);
-  }
-
-  return { date: dateStr, sales };
+  return { date: dateStr, salesWith, salesWithout };
 }
