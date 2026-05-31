@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
         success: true,
         mode: 'sales',
         date: result.date,
-        salesWith: result.salesWith,
+        salesTotal: result.salesTotal,
         salesWithout: result.salesWithout,
         saved: false,
       });

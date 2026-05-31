@@ -5,7 +5,7 @@ import { SalesWarrantyDashboard, WarrantyBranchRow } from '@/components/SalesWar
 import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { RegionalSalesEntry, RegionalBranchConfig } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
-import { getDailyTarget, sumSalesFor, sumWarrantyFor, sumNonWarrantyFor, getWeekStart } from '@/lib/sales-utils';
+import { getDailyTarget, sumSalesFor, sumNonWarrantyFor, getWeekStart } from '@/lib/sales-utils';
 
 interface Props {
   salesLog: RegionalSalesEntry[];
@@ -48,7 +48,6 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
     return {
       branch: b,
       overall:         sumSalesFor(salesLog, b, inWeek),
-      withWarranty:    sumWarrantyFor(salesLog, b, inWeek),
       withoutWarranty: sumNonWarrantyFor(salesLog, b, inWeek),
       headlineTarget:  target,
       paceTarget:      target,

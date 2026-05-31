@@ -4,7 +4,7 @@ import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { readData } from '@/lib/data-store';
 import { BRANCHES } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
-import { getDailyTarget, sumSalesFor, sumWarrantyFor, sumNonWarrantyFor, latestLogDate } from '@/lib/sales-utils';
+import { getDailyTarget, sumSalesFor, sumNonWarrantyFor, latestLogDate } from '@/lib/sales-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +34,6 @@ export default async function SalesDailyPage() {
     return {
       branch: b,
       overall,
-      withWarranty:    sumWarrantyFor(salesLog, b, onDay),
       withoutWarranty: sumNonWarrantyFor(salesLog, b, onDay),
       headlineTarget:  target,
       paceTarget:      target,

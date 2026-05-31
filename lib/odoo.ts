@@ -377,7 +377,7 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
  */
 export interface OdooSalesSnapshot {
   date: string;
-  salesWith: Record<Branch, number>;     // invoices containing a warranty line
+  salesTotal: Record<Branch, number>;    // all posted out-invoices
   salesWithout: Record<Branch, number>;  // invoices without a warranty line
 }
 
@@ -424,11 +424,11 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
     dateStr = yesterday.toISOString().split('T')[0];
   }
 
-  // Two complementary queries: invoices WITH a warranty line vs WITHOUT one.
-  const [salesWith, salesWithout] = await Promise.all([
-    salesByBranch(dateStr, [['invoice_line_ids', 'ilike', 'warranty']]),
+  // Total sales (no warranty filter) and the without-warranty subset.
+  const [salesTotal, salesWithout] = await Promise.all([
+    salesByBranch(dateStr, []),
     salesByBranch(dateStr, [['invoice_line_ids', 'not ilike', 'warranty']]),
   ]);
 
-  return { date: dateStr, salesWith, salesWithout };
+  return { date: dateStr, salesTotal, salesWithout };
 }

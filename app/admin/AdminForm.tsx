@@ -240,8 +240,8 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   const [salesLog, setSalesLog] = useState<RegionalSalesEntry[]>(initialData.regional.salesLog);
   const [newDate, setNewDate] = useState(today());
-  const [newEntries, setNewEntries] = useState<Record<string, { withW: string; withoutW: string; notes: string }>>(
-    Object.fromEntries(BRANCHES.map((b) => [b, { withW: '', withoutW: '', notes: '' }]))
+  const [newEntries, setNewEntries] = useState<Record<string, { total: string; withoutW: string; notes: string }>>(
+    Object.fromEntries(BRANCHES.map((b) => [b, { total: '', withoutW: '', notes: '' }]))
   );
 
   function setWip(metric: WipMetricKey, branch: string, val: string) {
@@ -409,15 +409,14 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         return;
       }
 
-      // Odoo splits sales into with-warranty (invoices with a warranty line) and
-      // without-warranty (invoices without one). Fill both inputs directly.
-      if (data.salesWith || data.salesWithout) {
-        const updated: Record<string, { withW: string; withoutW: string; notes: string }> = {};
+      // Odoo returns total sales and the without-warranty subset. Fill both inputs.
+      if (data.salesTotal || data.salesWithout) {
+        const updated: Record<string, { total: string; withoutW: string; notes: string }> = {};
         for (const branch of BRANCHES) {
-          const withAmt    = data.salesWith?.[branch] ?? 0;
+          const totalAmt   = data.salesTotal?.[branch] ?? 0;
           const withoutAmt = data.salesWithout?.[branch] ?? 0;
           updated[branch] = {
-            withW: withAmt > 0 ? withAmt.toFixed(2) : '',
+            total: totalAmt > 0 ? totalAmt.toFixed(2) : '',
             withoutW: withoutAmt > 0 ? withoutAmt.toFixed(2) : '',
             notes: newEntries[branch]?.notes || '',
           };
@@ -427,7 +426,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncSalesStatus('success');
-      setMessage(`✓ Sales data loaded for ${data.date} — with/without warranty split from Odoo. Review, then Save`);
+      setMessage(`✓ Sales data loaded for ${data.date} — total and without-warranty from Odoo. Review, then Save`);
     } catch (err) {
       setMessage(`Sales sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncSalesStatus('error');
@@ -464,14 +463,13 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     setMessage('');
     const newRows: RegionalSalesEntry[] = BRANCHES
       .map((b) => {
-        const withW    = parseFloat(newEntries[b]?.withW || '0') || 0;
+        const total    = parseFloat(newEntries[b]?.total || '0') || 0;
         const withoutW = parseFloat(newEntries[b]?.withoutW || '0') || 0;
         return {
           date: newDate,
           branch: b,
-          actualSales: withW + withoutW,
-          salesWithWarranty: withW,
-          salesWithoutWarranty: withoutW,
+          actualSales: total,
+          salesWithoutWarranty: Math.min(withoutW, total),
           notes: newEntries[b]?.notes || '',
         };
       })
@@ -743,32 +741,30 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             )}
           </div>
         </div>
-        <p className="text-sm text-ink-muted mb-4 -mt-2">Enter sales <strong>with</strong> and <strong>without</strong> warranty per branch — the Overall column auto-sums them.</p>
+        <p className="text-sm text-ink-muted mb-4 -mt-2">Enter <strong>total sales</strong> and <strong>sales without warranty</strong> per branch.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs">Branch</th>
-                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">With Warranty (AED)</th>
+                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Total Sales (AED)</th>
                 <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Without Warranty (AED)</th>
-                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Overall</th>
                 <th className="text-left py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Notes</th>
               </tr>
             </thead>
             <tbody>
               {BRANCHES.map((b, idx) => {
-                const withW    = parseFloat(newEntries[b]?.withW || '0') || 0;
+                const total    = parseFloat(newEntries[b]?.total || '0') || 0;
                 const withoutW = parseFloat(newEntries[b]?.withoutW || '0') || 0;
-                const overall  = withW + withoutW;
                 const synced   = syncSalesStatus === 'success';
                 return (
                   <tr key={b} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
                     <td className="py-2.5 pr-4 font-semibold text-ink">{b}</td>
                     <td className="py-1.5 px-1.5">
-                      <input type="number" min="0" value={newEntries[b]?.withW ?? ''}
-                        onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], withW: e.target.value } }))}
+                      <input type="number" min="0" value={newEntries[b]?.total ?? ''}
+                        onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], total: e.target.value } }))}
                         className={`w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
-                          synced && withW > 0 ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
+                          synced && total > 0 ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
                         }`}
                         placeholder="0" />
                     </td>
@@ -779,9 +775,6 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                           synced && withoutW > 0 ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
                         }`}
                         placeholder="0" />
-                    </td>
-                    <td className="py-1.5 px-2 text-right tabular-nums font-bold text-ink">
-                      {overall > 0 ? formatNumber(overall) : <span className="text-ink-muted font-normal">—</span>}
                     </td>
                     <td className="py-1.5 px-1.5">
                       <input type="text" value={newEntries[b]?.notes ?? ''}

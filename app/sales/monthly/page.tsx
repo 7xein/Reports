@@ -4,7 +4,7 @@ import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { readData } from '@/lib/data-store';
 import { BRANCHES } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
-import { sumSalesFor, sumWarrantyFor, sumNonWarrantyFor, latestLogDate, getMonthStart } from '@/lib/sales-utils';
+import { sumSalesFor, sumNonWarrantyFor, latestLogDate, getMonthStart } from '@/lib/sales-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +29,6 @@ export default async function SalesMonthlyPage() {
     return {
       branch: b,
       overall:         sumSalesFor(salesLog, b, inMonth),
-      withWarranty:    sumWarrantyFor(salesLog, b, inMonth),
       withoutWarranty: sumNonWarrantyFor(salesLog, b, inMonth),
       headlineTarget:  cfg.monthlyTarget, // Monthly Target
       paceTarget:      mtdTarget,         // MTD Target (used for Ach% / Variance)
