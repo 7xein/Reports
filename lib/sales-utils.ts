@@ -14,6 +14,33 @@ export function sumSalesFor(
     .reduce((s, e) => s + e.actualSales, 0);
 }
 
+/** Sum of sales WITH warranty. Legacy rows (no split) contribute 0. */
+export function sumWarrantyFor(
+  salesLog: RegionalSalesEntry[],
+  branch: string,
+  filterFn: (e: RegionalSalesEntry) => boolean
+) {
+  return salesLog
+    .filter((e) => e.branch === branch && filterFn(e))
+    .reduce((s, e) => s + (e.salesWithWarranty ?? 0), 0);
+}
+
+/** Sum of sales WITHOUT warranty. Legacy/unclassified rows count their whole overall as without. */
+export function sumNonWarrantyFor(
+  salesLog: RegionalSalesEntry[],
+  branch: string,
+  filterFn: (e: RegionalSalesEntry) => boolean
+) {
+  return salesLog
+    .filter((e) => e.branch === branch && filterFn(e))
+    .reduce((s, e) => {
+      if (e.salesWithoutWarranty != null) return s + e.salesWithoutWarranty;
+      // unclassified row: treat the whole overall as "without warranty"
+      if (e.salesWithWarranty == null) return s + e.actualSales;
+      return s + Math.max(0, e.actualSales - e.salesWithWarranty);
+    }, 0);
+}
+
 export function getWeekStart(date: string, weekStartIso: string): string {
   const d  = new Date(date);
   const ws = new Date(weekStartIso);

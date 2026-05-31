@@ -1,11 +1,10 @@
 import { Shell } from '@/components/Shell';
-import { SalesBars } from '@/components/SalesBars';
-import { SalesSummaryTable } from '@/components/SalesSummaryTable';
+import { SalesWarrantyDashboard, WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { readData } from '@/lib/data-store';
 import { BRANCHES } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
-import { getDailyTarget, sumSalesFor, latestLogDate } from '@/lib/sales-utils';
+import { getDailyTarget, sumSalesFor, sumWarrantyFor, sumNonWarrantyFor, latestLogDate } from '@/lib/sales-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,15 +25,24 @@ export default async function SalesDailyPage() {
     ? salesLog.filter((e) => e.date.startsWith(currentMonth))
     : salesLog;
 
-  const rows = (BRANCHES as unknown as string[]).map((b) => {
+  const onDay = (e: { date: string }) => e.date === date;
+
+  const rows: WarrantyBranchRow[] = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
-    const actual = sumSalesFor(salesLog, b, (e) => e.date === date);
-    const target = getDailyTarget(cfg);
-    return { branch: b, actual, target };
+    const overall = sumSalesFor(salesLog, b, onDay);
+    const target  = getDailyTarget(cfg);
+    return {
+      branch: b,
+      overall,
+      withWarranty:    sumWarrantyFor(salesLog, b, onDay),
+      withoutWarranty: sumNonWarrantyFor(salesLog, b, onDay),
+      headlineTarget:  target,
+      paceTarget:      target,
+    };
   });
 
-  const totalActual = rows.reduce((s, r) => s + r.actual, 0);
-  const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  const totalActual = rows.reduce((s, r) => s + r.overall, 0);
+  const totalTarget = rows.reduce((s, r) => s + r.paceTarget, 0);
   const pct = totalTarget > 0 ? (totalActual / totalTarget) * 100 : null;
 
   return (
@@ -46,23 +54,22 @@ export default async function SalesDailyPage() {
         eyebrow: `Sales Dashboard · Daily · ${date || '—'}`,
         title: 'Daily Sales',
         titleEm: 'Performance',
-        sub: "Latest day's actual vs daily target across 6 branches",
+        sub: 'Revenue split by warranty attachment, vs daily target',
         stats: [
           { value: formatCurrency(totalActual), label: 'Actual' },
           ...(pct !== null ? [{ value: `${pct.toFixed(1)}%`, label: 'Of Target', sub: totalActual >= totalTarget ? 'On track' : 'Below target' }] : []),
         ],
       }}
     >
-      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4 mb-4">
-        <div className="bg-white rounded-lg p-5 shadow-sm">
-          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-4">Today — Actual vs Target</div>
-          <SalesBars rows={rows} />
-        </div>
-        <div>
-          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Branch Summary</div>
-          <SalesSummaryTable rows={rows} />
-        </div>
-      </div>
+      <SalesWarrantyDashboard
+        rows={rows}
+        salesLabel="Sales Today"
+        targetLabel="Daily Target"
+        pacingTitle="Today vs Daily Target"
+        cap="today"
+      />
+
+      <div className="mt-4" />
 
       <div className="bg-white rounded-lg p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">

@@ -87,7 +87,9 @@ export interface WipWeeklyEntry {
 export interface RegionalSalesEntry {
   date: string;
   branch: string;
-  actualSales: number;
+  actualSales: number;            // OVERALL = withWarranty + withoutWarranty (authoritative)
+  salesWithWarranty?: number;     // optional split
+  salesWithoutWarranty?: number;  // optional split
   notes?: string;
 }
 

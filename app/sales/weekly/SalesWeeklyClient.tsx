@@ -1,12 +1,11 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { SalesBars } from '@/components/SalesBars';
-import { SalesSummaryTable } from '@/components/SalesSummaryTable';
+import { SalesWarrantyDashboard, WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { RegionalSalesEntry, RegionalBranchConfig } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
-import { getDailyTarget, sumSalesFor, getWeekStart } from '@/lib/sales-utils';
+import { getDailyTarget, sumSalesFor, sumWarrantyFor, sumNonWarrantyFor, getWeekStart } from '@/lib/sales-utils';
 
 interface Props {
   salesLog: RegionalSalesEntry[];
@@ -40,17 +39,24 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
   const weekEnd = selectedWeekStart ? addDays(selectedWeekStart, 6) : '';
   const selectedIdx = allWeekStarts.indexOf(selectedWeekStart);
 
-  const rows = branches.map((b) => {
+  const inWeek = (e: RegionalSalesEntry) =>
+    selectedWeekStart ? getWeekStart(e.date, weekStartRef) === selectedWeekStart : false;
+
+  const rows: WarrantyBranchRow[] = branches.map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
-    const actual = sumSalesFor(salesLog, b, (e) =>
-      selectedWeekStart ? getWeekStart(e.date, weekStartRef) === selectedWeekStart : false
-    );
     const target = getDailyTarget(cfg) * 7;
-    return { branch: b, actual, target };
+    return {
+      branch: b,
+      overall:         sumSalesFor(salesLog, b, inWeek),
+      withWarranty:    sumWarrantyFor(salesLog, b, inWeek),
+      withoutWarranty: sumNonWarrantyFor(salesLog, b, inWeek),
+      headlineTarget:  target,
+      paceTarget:      target,
+    };
   });
 
-  const totalActual = rows.reduce((s, r) => s + r.actual, 0);
-  const totalTarget = rows.reduce((s, r) => s + r.target, 0);
+  const totalActual = rows.reduce((s, r) => s + r.overall, 0);
+  const totalTarget = rows.reduce((s, r) => s + r.paceTarget, 0);
   const pct = totalTarget > 0 ? (totalActual / totalTarget) * 100 : null;
 
   if (allWeekStarts.length === 0) {
@@ -110,16 +116,15 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-4 mb-4">
-        <div className="bg-white rounded-lg p-5 shadow-sm">
-          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-4">Actual vs Target</div>
-          <SalesBars rows={rows} />
-        </div>
-        <div>
-          <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Branch Summary</div>
-          <SalesSummaryTable rows={rows} />
-        </div>
-      </div>
+      <SalesWarrantyDashboard
+        rows={rows}
+        salesLabel="Sales This Week"
+        targetLabel="Weekly Target"
+        pacingTitle="This Week vs Weekly Target"
+        cap="this week"
+      />
+
+      <div className="mt-4" />
 
       <div className="bg-white rounded-lg p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">

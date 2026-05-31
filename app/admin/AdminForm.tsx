@@ -240,8 +240,8 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   const [salesLog, setSalesLog] = useState<RegionalSalesEntry[]>(initialData.regional.salesLog);
   const [newDate, setNewDate] = useState(today());
-  const [newEntries, setNewEntries] = useState<Record<string, { sales: string; notes: string }>>(
-    Object.fromEntries(BRANCHES.map((b) => [b, { sales: '', notes: '' }]))
+  const [newEntries, setNewEntries] = useState<Record<string, { withW: string; withoutW: string; notes: string }>>(
+    Object.fromEntries(BRANCHES.map((b) => [b, { withW: '', withoutW: '', notes: '' }]))
   );
 
   function setWip(metric: WipMetricKey, branch: string, val: string) {
@@ -409,12 +409,15 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         return;
       }
 
+      // Odoo returns an overall figure it can't split by warranty — drop it into
+      // the "without warranty" column and let the user reclassify before saving.
       if (data.sales) {
-        const updated: Record<string, { sales: string; notes: string }> = {};
+        const updated: Record<string, { withW: string; withoutW: string; notes: string }> = {};
         for (const branch of BRANCHES) {
           const amount = data.sales[branch] ?? 0;
           updated[branch] = {
-            sales: amount > 0 ? amount.toFixed(2) : '',
+            withW: '',
+            withoutW: amount > 0 ? amount.toFixed(2) : '',
             notes: newEntries[branch]?.notes || '',
           };
         }
@@ -423,7 +426,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncSalesStatus('success');
-      setMessage(`✓ Sales data loaded for ${data.date} — review the numbers below, then click Save`);
+      setMessage(`✓ Sales data loaded for ${data.date} — reclassify with/without warranty as needed, then Save`);
     } catch (err) {
       setMessage(`Sales sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncSalesStatus('error');
@@ -459,12 +462,18 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     setSaving(true);
     setMessage('');
     const newRows: RegionalSalesEntry[] = BRANCHES
-      .map((b) => ({
-        date: newDate,
-        branch: b,
-        actualSales: parseFloat(newEntries[b]?.sales || '0') || 0,
-        notes: newEntries[b]?.notes || '',
-      }))
+      .map((b) => {
+        const withW    = parseFloat(newEntries[b]?.withW || '0') || 0;
+        const withoutW = parseFloat(newEntries[b]?.withoutW || '0') || 0;
+        return {
+          date: newDate,
+          branch: b,
+          actualSales: withW + withoutW,
+          salesWithWarranty: withW,
+          salesWithoutWarranty: withoutW,
+          notes: newEntries[b]?.notes || '',
+        };
+      })
       .filter((r) => r.actualSales > 0);
     const updated = [
       ...salesLog.filter((e) => !(e.date === newDate && newRows.some((r) => r.branch === e.branch))),
@@ -733,37 +742,53 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             )}
           </div>
         </div>
+        <p className="text-sm text-ink-muted mb-4 -mt-2">Enter sales <strong>with</strong> and <strong>without</strong> warranty per branch — the Overall column auto-sums them.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs">Branch</th>
-                <th className="text-left py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Actual Sales (AED)</th>
+                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">With Warranty (AED)</th>
+                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Without Warranty (AED)</th>
+                <th className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Overall</th>
                 <th className="text-left py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs">Notes</th>
               </tr>
             </thead>
             <tbody>
-              {BRANCHES.map((b, idx) => (
-                <tr key={b} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
-                  <td className="py-2.5 pr-4 font-semibold text-ink">{b}</td>
-                  <td className="py-1.5 px-1.5">
-                    <input type="number" min="0" value={newEntries[b]?.sales ?? ''}
-                      onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], sales: e.target.value } }))}
-                      className={`w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
-                        syncSalesStatus === 'success' && parseFloat(newEntries[b]?.sales || '0') > 0
-                          ? 'border-evs-green/40 bg-evs-green/5'
-                          : 'border-border'
-                      }`}
-                      placeholder="0" />
-                  </td>
-                  <td className="py-1.5 px-1.5">
-                    <input type="text" value={newEntries[b]?.notes ?? ''}
-                      onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], notes: e.target.value } }))}
-                      className="w-full px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm"
-                      placeholder="Optional notes" />
-                  </td>
-                </tr>
-              ))}
+              {BRANCHES.map((b, idx) => {
+                const withW    = parseFloat(newEntries[b]?.withW || '0') || 0;
+                const withoutW = parseFloat(newEntries[b]?.withoutW || '0') || 0;
+                const overall  = withW + withoutW;
+                const synced   = syncSalesStatus === 'success';
+                return (
+                  <tr key={b} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
+                    <td className="py-2.5 pr-4 font-semibold text-ink">{b}</td>
+                    <td className="py-1.5 px-1.5">
+                      <input type="number" min="0" value={newEntries[b]?.withW ?? ''}
+                        onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], withW: e.target.value } }))}
+                        className="w-full px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm"
+                        placeholder="0" />
+                    </td>
+                    <td className="py-1.5 px-1.5">
+                      <input type="number" min="0" value={newEntries[b]?.withoutW ?? ''}
+                        onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], withoutW: e.target.value } }))}
+                        className={`w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
+                          synced && withoutW > 0 ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
+                        }`}
+                        placeholder="0" />
+                    </td>
+                    <td className="py-1.5 px-2 text-right tabular-nums font-bold text-ink">
+                      {overall > 0 ? formatNumber(overall) : <span className="text-ink-muted font-normal">—</span>}
+                    </td>
+                    <td className="py-1.5 px-1.5">
+                      <input type="text" value={newEntries[b]?.notes ?? ''}
+                        onChange={(e) => setNewEntries((p) => ({ ...p, [b]: { ...p[b], notes: e.target.value } }))}
+                        className="w-full px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm"
+                        placeholder="Optional notes" />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

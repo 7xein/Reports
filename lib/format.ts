@@ -16,6 +16,12 @@ export function formatCurrencyFull(n: number): string {
   return `AED ${formatNumber(n)}`;
 }
 
+/** Signed AED, e.g. "+AED 14K" / "−AED 124K" (uses a true minus sign). */
+export function formatCurrencySigned(n: number): string {
+  const sign = n < 0 ? '−' : '+';
+  return `${sign}${formatCurrency(Math.abs(n))}`;
+}
+
 export function formatPercent(n: number, withSign = true): string {
   const sign = withSign && n > 0 ? '+' : '';
   return `${sign}${(n * 100).toFixed(1)}%`;
