@@ -427,7 +427,10 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
   // Total sales (no warranty filter) and the without-warranty subset.
   const [salesTotal, salesWithout] = await Promise.all([
     salesByBranch(dateStr, []),
-    salesByBranch(dateStr, [['invoice_line_ids', 'not ilike', 'warranty category']]),
+    salesByBranch(dateStr, [
+      ['invoice_line_ids', 'not ilike', 'warranty category'],
+      ['invoice_line_ids', 'not ilike', 'warranty 5years'],
+    ]),
   ]);
 
   return { date: dateStr, salesTotal, salesWithout };
