@@ -216,13 +216,22 @@ async function metricQuotationsNotApproved() {
   return countByBranch('sale.order', [['state', '=', 'draft']]);
 }
 
-/** G: "WIP not invoiced" — repair.order (custom field: x_priority_matrix_status) */
+/** G: "WIP not invoiced" — repair.order
+ *  Uses search_count per branch (not read_group) because the many2many
+ *  tag_ids filter produces incorrect counts with read_group JOINs.
+ */
 async function metricRosWithoutInvoices() {
-  return countByBranch('repair.order', [
-    ['state', '!=', 'cancel'],
-    ['priority_matrix_status', '!=', 'X'],
-    ['tag_ids', 'not in', [71]],
-  ]);
+  const result = {} as Record<Branch, number>;
+  for (const branch of BRANCHES) {
+    const ids = await branchCompanyIds(branch);
+    result[branch] = await call('repair.order', 'search_count', [[
+      ['state', '!=', 'cancel'],
+      ['priority_matrix_status', '!=', 'X'],
+      ['tag_ids', 'not in', [71]],
+      ['company_id', 'in', ids],
+    ]]);
+  }
+  return result;
 }
 
 // ── Public API ─────────────────────────────────────────────────────
