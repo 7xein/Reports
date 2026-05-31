@@ -13,7 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales } from '@/lib/odoo';
+import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales, debugMetricG } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
 import type { WipDailyEntry } from '@/lib/types';
@@ -82,6 +82,19 @@ export async function POST(request: NextRequest) {
     body = await request.json();
   } catch {
     // No body or invalid JSON — fine, use defaults
+  }
+
+  // ── Debug mode ─────────────────────────────────────────────────────
+  if (body?.mode === 'debug') {
+    try {
+      const result = await debugMetricG();
+      return NextResponse.json(result);
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Debug failed', detail: error instanceof Error ? error.message : String(error) },
+        { status: 500 }
+      );
+    }
   }
 
   // ── Sales sync mode ───────────────────────────────────────────────
