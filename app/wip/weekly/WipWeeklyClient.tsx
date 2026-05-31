@@ -112,7 +112,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
             </span>
           )}
         </div>
-        <MetricsTable branches={BRANCHES} current={currentValues} previous={previousValues} />
+        <MetricsTable branches={BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
       </div>
     </>
   );

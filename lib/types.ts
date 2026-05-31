@@ -1,15 +1,27 @@
 export const BRANCHES = ['Dubai', 'Ajman', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'Qatar'] as const;
 export type Branch = typeof BRANCHES[number];
 
+// ── Sub-branches ──────────────────────────────────────────────────────────
+// Branches that operate multiple service locations. Omitted branches stay
+// single-location. Keys for stored sub-values use the form `${branch}__${sub}`.
+export const SUB_BRANCHES: Record<string, string[]> = {
+  'Dubai':     ['Main branch', 'Emarat - Albuhaira', 'Emarat - Mahrawan'],
+  'Sharjah':   ['Main branch', 'Emarat - Al Muwafja'],
+  'Abu Dhabi': ['Main branch', 'Al Masaood'],
+};
+export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];
+export const hasSubBranches = (b: string): boolean => (SUB_BRANCHES[b]?.length ?? 0) > 0;
+export const subKey = (branch: string, sub: string): string => `${branch}__${sub}`;
+
 // ── WIP metrics (7 fields shown in both WIP dashboard views) ──────────────
 export const WIP_METRICS = [
-  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', lowerIsBetter: true,  isCurrency: false },
-  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         lowerIsBetter: true,  isCurrency: false },
-  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       lowerIsBetter: false, isCurrency: false },
-  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           lowerIsBetter: true,  isCurrency: false },
-  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           lowerIsBetter: true,  isCurrency: false },
-  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    lowerIsBetter: true,  isCurrency: false },
-  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             lowerIsBetter: true,  isCurrency: false },
+  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', short: 'SOs to Invoice', lowerIsBetter: true,  isCurrency: false },
+  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         short: 'Open ROs',       lowerIsBetter: true,  isCurrency: false },
+  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       short: 'Warranties',     lowerIsBetter: false, isCurrency: false },
+  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           short: 'No Quotes',      lowerIsBetter: true,  isCurrency: false },
+  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           short: 'No Tags',        lowerIsBetter: true,  isCurrency: false },
+  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    short: 'Pend. Appr.',    lowerIsBetter: true,  isCurrency: false },
+  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             short: 'No Invoices',    lowerIsBetter: true,  isCurrency: false },
 ] as const;
 export type WipMetricKey = typeof WIP_METRICS[number]['key'];
 
@@ -53,16 +65,23 @@ export interface DailySnapshot {
   values: BranchValues<DailyMetricKey>;
 }
 
+// Per-sub-branch WIP numbers. Keys are `${branch}__${sub}` (see subKey()).
+// Optional & additive: legacy / Odoo-synced snapshots simply omit it, and
+// `values[metric][branch]` always stays the authoritative branch total.
+export type WipSubValues = Record<WipMetricKey, Record<string, number>>;
+
 // ── New: daily WIP history entry — cumulative totals since July, updated daily
 export interface WipDailyEntry {
   date: string;                        // ISO date "2026-04-11"
-  values: BranchValues<WipMetricKey>;
+  values: BranchValues<WipMetricKey>;  // branch totals (authoritative)
+  subValues?: WipSubValues;            // optional per-sub-branch detail
 }
 
 // ── New: weekly WIP entry — this week's counts only (not cumulative), entered Thursday
 export interface WipWeeklyEntry {
   weekEnding: string;                  // ISO date of the Thursday "2026-04-10"
-  values: BranchValues<WipMetricKey>;
+  values: BranchValues<WipMetricKey>;  // branch totals (authoritative)
+  subValues?: WipSubValues;            // optional per-sub-branch detail
 }
 
 export interface RegionalSalesEntry {

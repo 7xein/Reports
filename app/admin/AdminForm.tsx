@@ -1,9 +1,63 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Shell } from '@/components/Shell';
-import { BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry } from '@/lib/types';
+import {
+  BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry,
+  getSubBranches, hasSubBranches, subKey, WipSubValues,
+} from '@/lib/types';
 import { getWeekStart } from '@/lib/sales-utils';
+import { formatNumber } from '@/lib/format';
+
+const BRANCH_COLORS: Record<string, string> = {
+  Dubai:       '#78C41A',
+  Ajman:       '#3B82F6',
+  Sharjah:     '#F59E0B',
+  'Abu Dhabi': '#8B5CF6',
+  'Al Ain':    '#EF4444',
+  Qatar:       '#06B6D4',
+};
+
+/** Enumerate editable input locations: branch name (single) or `${branch}__${sub}`. */
+function wipLocationKeys(): string[] {
+  const keys: string[] = [];
+  for (const b of BRANCHES) {
+    const subs = getSubBranches(b);
+    if (subs.length) subs.forEach((s) => keys.push(subKey(b, s)));
+    else keys.push(b);
+  }
+  return keys;
+}
+
+/** Live branch total for a metric = sum of its sub-inputs, or the single input. */
+function branchTotalOf(
+  values: Record<WipMetricKey, Record<string, number>>,
+  metric: WipMetricKey,
+  branch: string,
+): number {
+  const subs = getSubBranches(branch);
+  if (subs.length) return subs.reduce((s, sub) => s + (values[metric]?.[subKey(branch, sub)] ?? 0), 0);
+  return values[metric]?.[branch] ?? 0;
+}
+
+/** Build the { values, subValues } save payload from per-location inputs. */
+function buildWipPayload(values: Record<WipMetricKey, Record<string, number>>) {
+  const outValues = {} as Record<WipMetricKey, Record<string, number>>;
+  const outSub = {} as WipSubValues;
+  for (const m of WIP_METRICS) {
+    outValues[m.key] = {};
+    outSub[m.key] = {};
+    for (const b of BRANCHES) {
+      outValues[m.key][b] = branchTotalOf(values, m.key, b);
+      if (hasSubBranches(b)) {
+        for (const sub of getSubBranches(b)) {
+          outSub[m.key][subKey(b, sub)] = values[m.key]?.[subKey(b, sub)] ?? 0;
+        }
+      }
+    }
+  }
+  return { values: outValues, subValues: outSub };
+}
 
 function fmtDate(d: string) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-GB', {
@@ -40,9 +94,124 @@ function today() {
 }
 
 function emptyWipValues(): Record<WipMetricKey, Record<string, number>> {
+  const locs = wipLocationKeys();
   return Object.fromEntries(
-    WIP_METRICS.map((m) => [m.key, Object.fromEntries(BRANCHES.map((b) => [b, 0]))])
+    WIP_METRICS.map((m) => [m.key, Object.fromEntries(locs.map((k) => [k, 0]))])
   ) as Record<WipMetricKey, Record<string, number>>;
+}
+
+const inputCls = (highlighted: boolean) =>
+  `w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm ${
+    highlighted ? 'border-evs-green/40 bg-evs-green/5' : 'border-border'
+  }`;
+
+/**
+ * Transposed WIP entry table — rows are locations (branch / sub-branch),
+ * columns are the 7 metric short-labels. Multi-site branches show a bold
+ * header row that auto-sums its sub-branch inputs live, then one input row
+ * per sub-branch. Single-location branches are a single input row.
+ */
+function WipEntryTable({
+  values,
+  setVal,
+  highlight,
+}: {
+  values: Record<WipMetricKey, Record<string, number>>;
+  setVal: (metric: WipMetricKey, locKey: string, val: string) => void;
+  highlight: boolean;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border">
+            <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[190px]">
+              Branch / Site
+            </th>
+            {WIP_METRICS.map((m) => (
+              <th key={m.key} className="text-right py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[92px]">
+                {m.short}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {BRANCHES.map((b) => {
+            const subs = getSubBranches(b);
+            const color = BRANCH_COLORS[b] ?? '#78C41A';
+
+            // Single-location branch → one input row
+            if (!subs.length) {
+              return (
+                <tr key={b} className="border-b border-border">
+                  <td className="py-2.5 pr-4 font-semibold text-ink whitespace-nowrap">
+                    <span className="inline-block w-2 h-2 rounded-full mr-2 align-middle" style={{ background: color }} />
+                    {b}
+                  </td>
+                  {WIP_METRICS.map((m) => {
+                    const v = values[m.key]?.[b] ?? 0;
+                    return (
+                      <td key={m.key} className="py-1.5 px-1.5">
+                        <input
+                          type="number" min="0"
+                          value={v || ''}
+                          onChange={(e) => setVal(m.key, b, e.target.value)}
+                          className={inputCls(highlight && v > 0)}
+                          placeholder="0"
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            }
+
+            // Multi-site branch → bold auto-sum header + one input row per sub-branch
+            return (
+              <Fragment key={b}>
+                <tr className="border-b border-border bg-surface/70">
+                  <td className="py-2.5 pr-4 font-bold text-ink whitespace-nowrap">
+                    <span className="inline-block w-2 h-2 rounded-full mr-2 align-middle" style={{ background: color }} />
+                    {b}
+                    <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-muted border border-border rounded-full px-2 py-0.5">
+                      {subs.length} sites
+                    </span>
+                  </td>
+                  {WIP_METRICS.map((m) => (
+                    <td key={m.key} className="py-2.5 px-2 text-right tabular-nums font-bold text-ink">
+                      {formatNumber(branchTotalOf(values, m.key, b))}
+                    </td>
+                  ))}
+                </tr>
+                {subs.map((s) => {
+                  const key = subKey(b, s);
+                  return (
+                    <tr key={s} className="border-b border-border">
+                      <td className="py-1.5 pr-4 pl-7 text-ink-soft whitespace-nowrap">↳ {s}</td>
+                      {WIP_METRICS.map((m) => {
+                        const v = values[m.key]?.[key] ?? 0;
+                        return (
+                          <td key={m.key} className="py-1.5 px-1.5">
+                            <input
+                              type="number" min="0"
+                              value={v || ''}
+                              onChange={(e) => setVal(m.key, key, e.target.value)}
+                              className={inputCls(highlight && v > 0)}
+                              placeholder="0"
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export function AdminForm({ initialData }: { initialData: ReportData }) {
@@ -129,22 +298,24 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         return;
       }
 
-      // Populate the form fields with Odoo data (keep the user-selected date)
+      // Populate the form fields with Odoo data (keep the user-selected date).
+      // Odoo returns branch-level totals it can't split, so we only fill
+      // single-location branches and leave sub-branch inputs for manual entry.
       if (data.values) {
         if (data.date) setWipDate(data.date);
-        const newValues = emptyWipValues();
-        for (const metricKey of Object.keys(newValues) as WipMetricKey[]) {
-          if (data.values[metricKey]) {
-            for (const branch of BRANCHES) {
-              newValues[metricKey][branch] = data.values[metricKey][branch] ?? 0;
+        setWipValues((prev) => {
+          const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
+          for (const m of WIP_METRICS) {
+            for (const b of BRANCHES) {
+              if (!hasSubBranches(b)) next[m.key][b] = data.values[m.key]?.[b] ?? 0;
             }
           }
-        }
-        setWipValues(newValues);
+          return next;
+        });
       }
 
       setSyncStatus('success');
-      setMessage(`✓ Odoo data loaded for ${data.date} — review the numbers below, then click Save`);
+      setMessage(`✓ Odoo data loaded for ${data.date} — multi-site branches need manual sub-branch entry. Review, then Save`);
     } catch (err) {
       setMessage(`Odoo sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncStatus('error');
@@ -180,19 +351,19 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       if (data.values) {
-        const newValues = emptyWipValues();
-        for (const metricKey of Object.keys(newValues) as WipMetricKey[]) {
-          if (data.values[metricKey]) {
-            for (const branch of BRANCHES) {
-              newValues[metricKey][branch] = data.values[metricKey][branch] ?? 0;
+        setWipWeeklyValues((prev) => {
+          const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
+          for (const m of WIP_METRICS) {
+            for (const b of BRANCHES) {
+              if (!hasSubBranches(b)) next[m.key][b] = data.values[m.key]?.[b] ?? 0;
             }
           }
-        }
-        setWipWeeklyValues(newValues);
+          return next;
+        });
       }
 
       setSyncWeeklyStatus('success');
-      setMessage(`✓ Weekly WIP data loaded for ${startDate} → ${endDate} — review the numbers below, then click Save`);
+      setMessage(`✓ Weekly WIP data loaded for ${startDate} → ${endDate} — multi-site branches need manual sub-branch entry. Review, then Save`);
     } catch (err) {
       setMessage(`Weekly sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncWeeklyStatus('error');
@@ -250,7 +421,8 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   async function saveWip() {
     setSaving(true);
     setMessage('');
-    const err = await apiPost('wip-daily', { date: wipDate, values: wipValues });
+    const { values, subValues } = buildWipPayload(wipValues);
+    const err = await apiPost('wip-daily', { date: wipDate, values, subValues });
     if (err) { setMessage(err); setSaving(false); return; }
     const total = (initialData.wipHistory?.length ?? 0) + 1;
     setMessage(`✓ WIP snapshot saved for ${wipDate} (${total} total data points)`);
@@ -261,7 +433,8 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   async function saveWipWeekly() {
     setSaving(true);
     setMessage('');
-    const err = await apiPost('wip-weekly', { weekEnding: wipWeekEnding, values: wipWeeklyValues });
+    const { values, subValues } = buildWipPayload(wipWeeklyValues);
+    const err = await apiPost('wip-weekly', { weekEnding: wipWeekEnding, values, subValues });
     if (err) { setMessage(err); setSaving(false); return; }
     setMessage(`✓ Weekly WIP snapshot saved for week ending ${wipWeekEnding}`);
     setSyncWeeklyStatus('idle');
@@ -309,8 +482,11 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     >
       {/* WIP Daily Section */}
       <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today's Numbers</h2>
+        <div className="flex items-start justify-between mb-5 gap-4">
+          <div>
+            <h2 className="text-base font-bold uppercase tracking-wide text-ink">WIP Snapshot — Today&apos;s Numbers</h2>
+            <p className="text-sm text-ink-muted mt-1">Branches with multiple sites are entered <strong>per sub-branch</strong> — each branch row auto-sums its sites for every metric.</p>
+          </div>
           <div className="flex items-center gap-3">
             {/* ── Odoo Sync Button ── */}
             <button
@@ -381,44 +557,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[200px]">Metric</th>
-                {BRANCHES.map((b) => (
-                  <th key={b} className="text-center py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[90px]">{b}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {WIP_METRICS.map((m, rowIdx) => (
-                <tr key={m.key} className={`border-b border-border ${rowIdx % 2 === 1 ? 'bg-surface/60' : ''}`}>
-                  <td className="py-2.5 pr-4 text-ink font-medium leading-tight">{m.label}</td>
-                  {BRANCHES.map((b) => (
-                    <td key={b} className="py-1.5 px-1.5">
-                      <input
-                        type="number"
-                        min="0"
-                        value={wipValues[m.key as WipMetricKey][b] || ''}
-                        onChange={(e) => setWip(m.key as WipMetricKey, b, e.target.value)}
-                        className={`
-                          w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink
-                          focus:border-evs-green focus:outline-none text-sm
-                          ${syncStatus === 'success' && wipValues[m.key as WipMetricKey][b] > 0
-                            ? 'border-evs-green/40 bg-evs-green/5'
-                            : 'border-border'
-                          }
-                        `}
-                        placeholder="0"
-                      />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <WipEntryTable values={wipValues} setVal={setWip} highlight={syncStatus === 'success'} />
         <div className="mt-5 flex items-center gap-4">
           <button onClick={saveWip} disabled={saving}
             className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50">
@@ -507,41 +646,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="text-left py-2.5 pr-4 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[200px]">Metric</th>
-                {BRANCHES.map((b) => (
-                  <th key={b} className="text-center py-2.5 px-2 font-semibold uppercase tracking-wide text-ink-muted text-xs min-w-[90px]">{b}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {WIP_METRICS.map((m, rowIdx) => (
-                <tr key={m.key} className={`border-b border-border ${rowIdx % 2 === 1 ? 'bg-surface/60' : ''}`}>
-                  <td className="py-2.5 pr-4 text-ink font-medium leading-tight">{m.label}</td>
-                  {BRANCHES.map((b) => (
-                    <td key={b} className="py-1.5 px-1.5">
-                      <input type="number" min="0"
-                        value={wipWeeklyValues[m.key as WipMetricKey][b] || ''}
-                        onChange={(e) => setWipWeekly(m.key as WipMetricKey, b, e.target.value)}
-                        className={`
-                          w-full px-3 py-1.5 border rounded text-right tabular-nums text-ink
-                          focus:border-evs-green focus:outline-none text-sm
-                          ${syncWeeklyStatus === 'success' && wipWeeklyValues[m.key as WipMetricKey][b] > 0
-                            ? 'border-evs-green/40 bg-evs-green/5'
-                            : 'border-border'
-                          }
-                        `}
-                        placeholder="0" />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <WipEntryTable values={wipWeeklyValues} setVal={setWipWeekly} highlight={syncWeeklyStatus === 'success'} />
         <div className="mt-5 flex items-center gap-4">
           <button onClick={saveWipWeekly} disabled={saving}
             className="px-6 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50">
