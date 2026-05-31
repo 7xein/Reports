@@ -20,14 +20,16 @@ export default async function SalesMonthlyPage() {
   const latestDate = latestLogDate(salesLog);
   const monthStart = latestDate ? getMonthStart(latestDate) : '';
 
-  const mtdDay = latestDate ? new Date(latestDate + 'T00:00:00').getDate() : new Date().getDate();
+  const refDate = latestDate ? new Date(latestDate + 'T00:00:00') : new Date();
+  const mtdDay = refDate.getDate();
+  // Real calendar length of the month (e.g. May = 31) — MTD paces over actual days.
+  const calendarDaysInMonth = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0).getDate();
   const inMonth = (e: { date: string }) => monthStart ? e.date >= monthStart && e.date <= latestDate : false;
 
   const rows: WarrantyBranchRow[] = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
-    // Cap elapsed days at the configured target days so MTD never exceeds the monthly target.
-    const elapsed = Math.min(mtdDay, cfg.daysInMonth);
-    const mtdTarget = cfg.daysInMonth > 0 ? (cfg.monthlyTarget / cfg.daysInMonth) * elapsed : 0;
+    // Prorate the monthly target by calendar progress so MTD never exceeds the monthly target.
+    const mtdTarget = (cfg.monthlyTarget * mtdDay) / calendarDaysInMonth;
     return {
       branch: b,
       overall:         sumSalesFor(salesLog, b, inMonth),
@@ -40,7 +42,6 @@ export default async function SalesMonthlyPage() {
   const totalActual = rows.reduce((s, r) => s + r.overall, 0);
   const totalTarget = rows.reduce((s, r) => s + r.headlineTarget, 0);
   const pct = totalTarget > 0 ? (totalActual / totalTarget) * 100 : null;
-  const daysInMonth = branchConfig[BRANCHES[0]]?.daysInMonth ?? 26;
 
   return (
     <Shell
@@ -65,7 +66,7 @@ export default async function SalesMonthlyPage() {
         pacingTitle="Month-to-Date Pacing"
         cap="MTD"
         isMonthly
-        mtdNote={`Day ${Math.min(mtdDay, daysInMonth)} of ${daysInMonth}`}
+        mtdNote={`Day ${mtdDay} of ${calendarDaysInMonth}`}
       />
 
       <div className="mt-4" />
