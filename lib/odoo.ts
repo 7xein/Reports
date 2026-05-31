@@ -227,7 +227,7 @@ async function metricRosWithoutInvoices() {
     result[branch] = await call('repair.order', 'search_count', [[
       ['state', '!=', 'cancel'],
       ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', 'not in', [71]],
+      ['tag_ids', 'not ilike', 'cancel'],
       ['company_id', 'in', ids],
     ]]);
   }
@@ -359,7 +359,7 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
     countByBranch('repair.order', [
       ['state', '!=', 'cancel'],
       ['priority_matrix_status', '!=', 'X'],
-      ['tag_ids', '!=', 71],
+      ['tag_ids', 'not ilike', 'cancel'],
       ...dateRange,
     ]),
   ]);
