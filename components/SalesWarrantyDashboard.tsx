@@ -118,6 +118,7 @@ export function SalesWarrantyDashboard({
           const fillPct = (r.overall / maxOverall) * 100;
           const wiPct = r.overall > 0 ? (r.withWarranty / r.overall) * 100 : 0;
           const woPct = 100 - wiPct;
+          const ach = r.paceTarget > 0 ? (r.overall / r.paceTarget) * 100 : 0;
           return (
             <div key={r.branch} className="mb-[18px] last:mb-0">
               <div className="flex items-center gap-2.5 mb-[7px]">
@@ -125,7 +126,9 @@ export function SalesWarrantyDashboard({
                 <span className="font-bold whitespace-nowrap">{r.branch}</span>
                 <span className="flex-1" />
                 <span className="font-bold tabular-nums">{formatCurrency(r.overall)}</span>
-                <span className="w-32 text-right text-ink-muted text-xs tabular-nums">{formatCurrency(r.withWarranty)} w/ warranty</span>
+                <span className={`w-32 text-right text-xs tabular-nums font-semibold ${achColor(ach)}`}>
+                  {r.paceTarget > 0 ? `${ach.toFixed(0)}% of target` : '—'}
+                </span>
               </div>
               <div className="h-4 bg-surface rounded-full overflow-hidden">
                 <div className="h-full flex rounded-full overflow-hidden" style={{ width: `${fillPct.toFixed(1)}%`, minWidth: 2 }}>
