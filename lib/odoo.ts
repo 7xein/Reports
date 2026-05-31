@@ -248,11 +248,11 @@ export interface OdooWipSnapshot {
  * Fetch all 7 WIP metrics from Odoo and return a snapshot
  * matching the WipDailyEntry shape used by the admin form.
  */
-export async function fetchWipSnapshot(): Promise<OdooWipSnapshot> {
+export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapshot> {
   cachedUid = null;
   companyIdCache = null;
 
-  const today = new Date().toISOString().split('T')[0];
+  const snapshotDate = dateStr || new Date().toISOString().split('T')[0];
 
   const [
     saleOrdersToInvoice,
@@ -273,7 +273,7 @@ export async function fetchWipSnapshot(): Promise<OdooWipSnapshot> {
   ]);
 
   return {
-    date: today,
+    date: snapshotDate,
     values: {
       saleOrdersToInvoice,
       openRepairOrders,

@@ -140,8 +140,9 @@ export async function POST(request: NextRequest) {
   // ── WIP sync mode (default) ───────────────────────────────────────
   try {
     const autoSave = body?.autoSave === true;
-    console.log(`🔄 [manual] Starting Odoo WIP sync (autoSave: ${autoSave})…`);
-    const snapshot = await fetchWipSnapshot();
+    const dateStr = typeof body?.date === 'string' ? body.date : undefined;
+    console.log(`🔄 [manual] Starting Odoo WIP sync for ${dateStr ?? 'today'} (autoSave: ${autoSave})…`);
+    const snapshot = await fetchWipSnapshot(dateStr);
     console.log(`✅ [manual] Fetched snapshot for ${snapshot.date}`);
 
     if (autoSave) {

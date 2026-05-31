@@ -116,7 +116,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autoSave: false }), // preview mode
+        body: JSON.stringify({ date: wipDate, autoSave: false }), // preview mode
       });
 
       const data = await res.json();
@@ -129,9 +129,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         return;
       }
 
-      // Populate the form fields with Odoo data
+      // Populate the form fields with Odoo data (keep the user-selected date)
       if (data.values) {
-        setWipDate(data.date || today());
+        if (data.date) setWipDate(data.date);
         const newValues = emptyWipValues();
         for (const metricKey of Object.keys(newValues) as WipMetricKey[]) {
           if (data.values[metricKey]) {
@@ -362,7 +362,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             <input
               type="date"
               value={wipDate}
-              onChange={(e) => setWipDate(e.target.value)}
+              onChange={(e) => { setWipDate(e.target.value); setSyncStatus('idle'); }}
               className="text-sm border border-border rounded px-3 py-1.5 text-ink"
             />
           </div>
