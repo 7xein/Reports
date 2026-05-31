@@ -25,7 +25,9 @@ export default async function SalesMonthlyPage() {
 
   const rows: WarrantyBranchRow[] = (BRANCHES as unknown as string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
-    const mtdTarget = cfg.daysInMonth > 0 ? (cfg.monthlyTarget / cfg.daysInMonth) * mtdDay : 0;
+    // Cap elapsed days at the configured target days so MTD never exceeds the monthly target.
+    const elapsed = Math.min(mtdDay, cfg.daysInMonth);
+    const mtdTarget = cfg.daysInMonth > 0 ? (cfg.monthlyTarget / cfg.daysInMonth) * elapsed : 0;
     return {
       branch: b,
       overall:         sumSalesFor(salesLog, b, inMonth),
@@ -63,7 +65,7 @@ export default async function SalesMonthlyPage() {
         pacingTitle="Month-to-Date Pacing"
         cap="MTD"
         isMonthly
-        mtdNote={`Day ${mtdDay} of ${daysInMonth}`}
+        mtdNote={`Day ${Math.min(mtdDay, daysInMonth)} of ${daysInMonth}`}
       />
 
       <div className="mt-4" />
