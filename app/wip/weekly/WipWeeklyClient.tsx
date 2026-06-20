@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import { KpiStrip } from '@/components/KpiStrip';
 import { MetricsTable } from '@/components/MetricsTable';
+import { WipWeeklyTrend } from '@/components/WipWeeklyTrend';
+import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
+import { WipMetricsLegend } from '@/components/WipMetricsLegend';
 import { BRANCHES, WIP_METRICS, WipWeeklyEntry, WipMetricKey, Branch } from '@/lib/types';
 
 function emptyBranchValues(): Record<WipMetricKey, Record<Branch, number>> {
@@ -34,6 +37,7 @@ function weekStartOf(weekEnding: string) {
 
 export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
   const [selectedIdx, setSelectedIdx] = useState(history.length > 0 ? history.length - 1 : 0);
+  const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
 
   if (history.length === 0) {
     return (
@@ -47,11 +51,12 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
   const prior    = selectedIdx > 0 ? history[selectedIdx - 1] : undefined;
 
   const currentValues  = selected.values as unknown as Record<WipMetricKey, Record<Branch, number>>;
-  const previousValues = prior ? prior.values as unknown as Record<WipMetricKey, Record<Branch, number>> : emptyBranchValues();
+  const previousValues = prior ? (prior.values as unknown as Record<WipMetricKey, Record<Branch, number>>) : emptyBranchValues();
 
   const currentTotals  = sumTotals(currentValues);
   const previousTotals = sumTotals(previousValues);
 
+  const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
   const ws = weekStartOf(selected.weekEnding);
 
   return (
@@ -60,9 +65,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
       <div className="bg-white rounded-lg p-4 mb-4 shadow-sm flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <span className="text-sm font-bold text-ink shrink-0">Showing week:</span>
-          <span className="text-sm text-ink-muted font-medium">
-            {fmtDate(ws)} – {fmtDate(selected.weekEnding)}
-          </span>
+          <span className="text-sm text-ink-muted font-medium">{fmtDate(ws)} – {fmtDate(selected.weekEnding)}</span>
           <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-2.5 py-1 rounded-full shrink-0">
             {history.length} week{history.length !== 1 ? 's' : ''} on record
           </span>
@@ -80,14 +83,11 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
             onChange={(e) => setSelectedIdx(Number(e.target.value))}
             className="text-sm border border-border rounded px-3 py-1.5 text-ink bg-white"
           >
-            {history.map((h, i) => {
-              const s = weekStartOf(h.weekEnding);
-              return (
-                <option key={h.weekEnding} value={i}>
-                  {fmtDate(s)} – {fmtDate(h.weekEnding)}
-                </option>
-              );
-            })}
+            {history.map((h, i) => (
+              <option key={h.weekEnding} value={i}>
+                {fmtDate(weekStartOf(h.weekEnding))} – {fmtDate(h.weekEnding)}
+              </option>
+            ))}
           </select>
           <button
             onClick={() => setSelectedIdx(Math.min(history.length - 1, selectedIdx + 1))}
@@ -99,21 +99,38 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
         </div>
       </div>
 
-      <KpiStrip current={currentTotals} previous={previousTotals} />
+      {/* Clickable KPI metric cards */}
+      <KpiStrip current={currentTotals} previous={previousTotals} selectedMetric={selectedMetric} onSelect={setSelectedMetric} />
 
-      <div className="mt-4">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">
-            All WIP Metrics by Branch
-          </span>
-          {prior && (
-            <span className="text-xs text-ink-muted">
-              vs {fmtDate(weekStartOf(prior.weekEnding))} – {fmtDate(prior.weekEnding)}
-            </span>
-          )}
+      {/* Week-over-week trend for the selected metric */}
+      <div className="bg-white rounded-lg p-5 shadow-sm mb-4">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Week-over-Week Trend</span>
+          <span className="text-xs text-ink-muted">Click a metric card above to change</span>
         </div>
-        <MetricsTable branches={BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
+        <div className="text-base font-bold text-ink mb-3">{selectedMeta.label}</div>
+        <WipWeeklyTrend history={history} metric={selectedMetric} />
       </div>
+
+      {/* Branch comparison for the selected metric (this week) */}
+      <BranchBreakdownBars
+        meta={selectedMeta}
+        current={currentValues[selectedMetric] as Record<string, number>}
+        previous={prior ? (previousValues[selectedMetric] as Record<string, number>) : undefined}
+        subValues={selected.subValues?.[selectedMetric]}
+        title={`Branch Comparison — ${selectedMeta.label}`}
+      />
+
+      {/* Full grid, collapsed by default */}
+      <details className="mt-4 group">
+        <summary className="cursor-pointer text-sm font-semibold text-ink-muted hover:text-ink select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-2 mb-3">
+          <span className="text-evs-green-dark transition-transform group-open:rotate-90">▸</span>
+          Show full table — all metrics by branch
+        </summary>
+        <MetricsTable branches={BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
+      </details>
+
+      <WipMetricsLegend />
     </>
   );
 }

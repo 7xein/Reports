@@ -220,32 +220,40 @@ function rollUp(perCompany: Record<string, number>): {
 // Each returns a Record<companyName, count>, later rolled up into branch
 // totals + per-sub-branch values. `extra` carries an optional date range.
 
+// Base domains — defined once and shared by the count builders AND the record
+// export registry below, so the two can never drift out of sync.
+const DOM_SALE_ORDERS_TO_INVOICE: OdooDomain = [['invoice_ids', '=', false], ['state', '!=', 'cancel']];
+const DOM_OPEN_REPAIR_ORDERS: OdooDomain     = [['state', '!=', 'cancel'], ['state', '!=', 'done']];
+const DOM_ROS_WITHOUT_QUOTATIONS: OdooDomain = [['sale_order_id', '=', false], ['state', '!=', 'cancel'], ['state', '=', 'done']];
+const DOM_ROS_WITHOUT_TAGS: OdooDomain        = [['state', '!=', 'cancel'], ['tag_ids', '=', false]];
+const DOM_QUOTATIONS_NOT_APPROVED: OdooDomain = [['state', '=', 'draft']];
+const DOM_ROS_WITHOUT_INVOICES: OdooDomain    = [['state', '!=', 'cancel'], ['priority_matrix_status', '!=', 'X'], ['tag_ids', 'not ilike', 'cancel']];
+const DOM_WARRANTIES_ACTIVATED: OdooDomain    = [['state', '=', 'activated']];
+
 /** A: "WIP daily not invoiced" — sale.order */
 const qSaleOrdersToInvoice = (extra: OdooDomain = []) =>
-  groupCountByCompany('sale.order', [['invoice_ids', '=', false], ['state', '!=', 'cancel'], ...extra]);
+  groupCountByCompany('sale.order', [...DOM_SALE_ORDERS_TO_INVOICE, ...extra]);
 
 /** B: "Daily WIP open RO's" — repair.order */
 const qOpenRepairOrders = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [['state', '!=', 'cancel'], ['state', '!=', 'done'], ...extra]);
+  groupCountByCompany('repair.order', [...DOM_OPEN_REPAIR_ORDERS, ...extra]);
 
 /** D: "Repair Orders completed without quotation" — repair.order */
 const qRosWithoutQuotations = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [['sale_order_id', '=', false], ['state', '!=', 'cancel'], ['state', '=', 'done'], ...extra]);
+  groupCountByCompany('repair.order', [...DOM_ROS_WITHOUT_QUOTATIONS, ...extra]);
 
 /** E: "No tags WIP" — repair.order */
 const qRosWithoutTags = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [['state', '!=', 'cancel'], ['tag_ids', '=', false], ...extra]);
+  groupCountByCompany('repair.order', [...DOM_ROS_WITHOUT_TAGS, ...extra]);
 
 /** F: "WIP Quotes not approved" — sale.order (draft only) */
 const qQuotationsNotApproved = (extra: OdooDomain = []) =>
-  groupCountByCompany('sale.order', [['state', '=', 'draft'], ...extra]);
+  groupCountByCompany('sale.order', [...DOM_QUOTATIONS_NOT_APPROVED, ...extra]);
 
 /** G: "WIP not invoiced" — repair.order. search_count per company because the
  *  many2many tag_ids filter miscounts under read_group JOINs. */
 const qRosWithoutInvoices = (extra: OdooDomain = []) =>
-  searchCountByCompany('repair.order', [
-    ['state', '!=', 'cancel'], ['priority_matrix_status', '!=', 'X'], ['tag_ids', 'not ilike', 'cancel'], ...extra,
-  ]);
+  searchCountByCompany('repair.order', [...DOM_ROS_WITHOUT_INVOICES, ...extra]);
 
 /** Saturday→Saturday window used by the daily "ROs Without Tags" metric. */
 function currentSaturdayWindow(): OdooDomain {
@@ -261,6 +269,46 @@ function currentSaturdayWindow(): OdooDomain {
     ['create_date', '>=', start.toISOString().split('T')[0]],
     ['create_date', '<', end.toISOString().split('T')[0]],
   ];
+}
+
+// ── Record export (live CSV) ───────────────────────────────────────
+// Maps each WIP metric to the model + (lazy) domain + display fields used to
+// pull the ACTUAL matching records — same filters as the counts above.
+const REPAIR_FIELDS   = ['name', 'company_id', 'partner_id', 'create_date', 'state'];
+const SALE_FIELDS     = ['name', 'company_id', 'partner_id', 'date_order', 'amount_total', 'state'];
+const WARRANTY_FIELDS = ['display_name', 'company_id', 'write_date', 'state'];
+
+const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDomain; fields: string[]; warranty?: boolean }> = {
+  saleOrdersToInvoice:  { model: 'sale.order',     domain: () => DOM_SALE_ORDERS_TO_INVOICE,                          fields: SALE_FIELDS },
+  openRepairOrders:     { model: 'repair.order',   domain: () => DOM_OPEN_REPAIR_ORDERS,                              fields: REPAIR_FIELDS },
+  warrantiesActivated:  { model: 'fleet.warranty', domain: () => DOM_WARRANTIES_ACTIVATED,                            fields: WARRANTY_FIELDS, warranty: true },
+  rosWithoutQuotations: { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_QUOTATIONS,                          fields: REPAIR_FIELDS },
+  rosWithoutTags:       { model: 'repair.order',   domain: () => [...DOM_ROS_WITHOUT_TAGS, ...currentSaturdayWindow()], fields: REPAIR_FIELDS },
+  quotationsNotApproved:{ model: 'sale.order',     domain: () => DOM_QUOTATIONS_NOT_APPROVED,                         fields: SALE_FIELDS },
+  rosWithoutInvoices:   { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_INVOICES,                            fields: REPAIR_FIELDS },
+};
+
+/**
+ * Fetch the actual records behind a WIP metric (optionally for one branch),
+ * using the exact same domain the count uses. For CSV export.
+ */
+export async function fetchMetricRecords(metric: WipMetricKey, branch?: Branch): Promise<Record<string, unknown>[]> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const def = METRIC_EXPORT[metric];
+  const ids = branch ? await branchCompanyIds(branch) : await allTrackedCompanyIds();
+  const base = def.domain();
+
+  if (def.warranty) {
+    // Warranty company link may live on write_uid.company_id; fall back to company_id.
+    try {
+      return await call(def.model, 'search_read', [[...base, ['write_uid.company_id', 'in', ids]]], { fields: def.fields, limit: 5000 });
+    } catch {
+      return await call(def.model, 'search_read', [[...base, ['company_id', 'in', ids]]], { fields: def.fields, limit: 5000 });
+    }
+  }
+  return await call(def.model, 'search_read', [[...base, ['company_id', 'in', ids]]], { fields: def.fields, limit: 5000 });
 }
 
 // ── Public API ─────────────────────────────────────────────────────

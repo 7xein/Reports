@@ -1,5 +1,6 @@
 import { Shell } from '@/components/Shell';
-import { SalesWarrantyDashboard, WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
+import { SalesDashboardClient } from '@/components/SalesDashboardClient';
+import { WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { readData } from '@/lib/data-store';
 import { BRANCHES } from '@/lib/types';
@@ -59,7 +60,7 @@ export default async function SalesMonthlyPage() {
         ],
       }}
     >
-      <SalesWarrantyDashboard
+      <SalesDashboardClient
         rows={rows}
         salesLabel="MTD Sales"
         targetLabel="Monthly Target"

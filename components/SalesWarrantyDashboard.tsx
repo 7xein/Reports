@@ -149,7 +149,7 @@ export function SalesWarrantyDashboard({
                 const variance = r.overall - r.paceTarget;
                 const ach = r.paceTarget > 0 ? (r.overall / r.paceTarget) * 100 : 0;
                 return (
-                  <tr key={r.branch} className={`border-b border-border ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
+                  <tr key={r.branch} className={`border-b border-border transition-colors hover:bg-evs-green/5 ${idx % 2 === 1 ? 'bg-surface/60' : ''}`}>
                     <td className="px-4 py-3 font-semibold text-ink whitespace-nowrap">
                       <span className="inline-block w-2 h-2 rounded-full mr-2 align-middle" style={{ background: BRANCH_COLORS[r.branch] ?? '#999' }} />
                       {r.branch}

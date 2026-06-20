@@ -2,10 +2,9 @@
 
 import { useState } from 'react';
 import { TrendChart } from '@/components/TrendChart';
-import {
-  BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch,
-  getSubBranches, subKey,
-} from '@/lib/types';
+import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
+import { WipMetricsLegend } from '@/components/WipMetricsLegend';
+import { BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 
 function emptyMetricTotals(): Record<WipMetricKey, number> {
@@ -39,9 +38,47 @@ const BRANCH_COLORS: Record<string, string> = {
   Qatar:    '#06B6D4',
 };
 
+/** Download the actual records behind a metric (optionally one branch) as CSV, live from Odoo. */
+export async function downloadMetricCsv(
+  metric: WipMetricKey,
+  branch: Branch | undefined,
+  setExportingKey: (k: string | null) => void,
+) {
+  setExportingKey(branch ?? '__all__');
+  try {
+    const res = await fetch('/api/export-odoo', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metric, branch }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Export failed: ${body?.detail || body?.error || res.statusText}`);
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const cd = res.headers.get('Content-Disposition') || '';
+    const fn = cd.match(/filename="(.+?)"/);
+    a.href = url;
+    a.download = fn ? fn[1] : `${metric}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    setExportingKey(null);
+  }
+}
+
 export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) {
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
   const [branchFilter, setBranchFilter] = useState<'all' | Branch>('all');
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
 
   const history = [...wipHistory].sort((a, b) => a.date.localeCompare(b.date));
   const latest = history[history.length - 1];
@@ -139,10 +176,13 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
 
       {/* Branch breakdown — all metrics for selected branch, or all branches for selected metric */}
       {branchFilter === 'all' ? (
-        <AllBranchesPanel
-          latest={latest}
-          prior={prior}
-          selectedMetric={selectedMetric}
+        <BranchBreakdownBars
+          meta={selectedMeta}
+          current={(latest?.values[selectedMetric] ?? {}) as Record<string, number>}
+          previous={prior?.values[selectedMetric] as Record<string, number> | undefined}
+          subValues={latest?.subValues?.[selectedMetric]}
+          onExport={(branch) => downloadMetricCsv(selectedMetric, branch as Branch | undefined, setExportingKey)}
+          exportingKey={exportingKey}
         />
       ) : (
         <SingleBranchPanel
@@ -151,121 +191,13 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
           previousTotals={previousTotals}
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
+          onExport={() => downloadMetricCsv(selectedMetric, branchFilter, setExportingKey)}
+          exporting={exportingKey === branchFilter}
         />
       )}
+
+      <WipMetricsLegend />
     </>
-  );
-}
-
-/* ─── All-branches view: expandable bar breakdown for the selected metric ─ */
-function AllBranchesPanel({
-  latest,
-  prior,
-  selectedMetric,
-}: {
-  latest: WipDailyEntry | undefined;
-  prior: WipDailyEntry | undefined;
-  selectedMetric: WipMetricKey;
-}) {
-  const meta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-
-  const current  = latest ? (latest.values[selectedMetric] as unknown as Record<Branch, number>) : {} as Record<Branch, number>;
-  const previous = prior  ? (prior.values[selectedMetric]  as unknown as Record<Branch, number>) : {} as Record<Branch, number>;
-
-  // Only show expand affordance when this snapshot actually carries sub-branch detail
-  const hasSubData = !!latest?.subValues?.[selectedMetric];
-  const subVal = (branch: string, sub: string) =>
-    latest?.subValues?.[selectedMetric]?.[subKey(branch, sub)] ?? 0;
-
-  const ordered = [...BRANCHES].sort((a, b) => (current[b] ?? 0) - (current[a] ?? 0));
-  const maxVal = Math.max(...BRANCHES.map((b) => current[b] ?? 0), 1);
-
-  const toggle = (b: string) => setExpanded((p) => ({ ...p, [b]: !p[b] }));
-
-  return (
-    <div className="bg-white rounded-lg shadow-sm" style={{ padding: '24px 26px' }}>
-      <div className="flex items-center justify-between mb-[22px]">
-        <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">Branch Breakdown — {meta.label}</span>
-        {hasSubData && (
-          <span className="text-xs text-evs-green-dark font-semibold">click a branch to reveal its sites ↓</span>
-        )}
-      </div>
-
-      <div className="flex flex-col" style={{ gap: 26 }}>
-        {ordered.map((branch) => {
-          const cur   = current[branch]  ?? 0;
-          const prev  = previous[branch] ?? 0;
-          const delta = cur - prev;
-          const isWorse = meta.lowerIsBetter ? delta > 0 : delta < 0;
-          const color = BRANCH_COLORS[branch] ?? '#78C41A';
-          const subs = getSubBranches(branch);
-          const canExpand = hasSubData && subs.length > 0;
-          const isOpen = !!expanded[branch];
-
-          return (
-            <div key={branch} className="py-0.5">
-              <div
-                className={`flex items-center gap-3 ${canExpand ? 'cursor-pointer' : ''}`}
-                onClick={canExpand ? () => toggle(branch) : undefined}
-              >
-                <span
-                  className="inline-block w-3 text-ink-muted transition-transform"
-                  style={{ transform: isOpen ? 'rotate(90deg)' : 'none', opacity: canExpand ? 1 : 0 }}
-                >
-                  ▸
-                </span>
-                <span className="inline-block w-2 h-2 rounded-full" style={{ background: color }} />
-                <span className="font-bold text-ink whitespace-nowrap">{branch}</span>
-                {subs.length > 0 && (
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted border border-border rounded-full px-2 py-0.5">
-                    {subs.length} sites
-                  </span>
-                )}
-                <span className="flex-1" />
-                <span className="font-bold text-base tabular-nums text-ink">{formatNumber(cur)}</span>
-                <span className="w-[78px] text-right text-xs font-semibold">
-                  {delta === 0 ? (
-                    <span className="text-ink-muted">—</span>
-                  ) : (
-                    <span className={isWorse ? 'text-danger' : 'text-evs-green-dark'}>
-                      {delta > 0 ? '▲' : '▼'} {formatNumber(Math.abs(delta))}
-                    </span>
-                  )}
-                </span>
-              </div>
-
-              <div className="h-2 bg-surface rounded-full overflow-hidden" style={{ marginTop: 11 }}>
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: `${(cur / maxVal * 100).toFixed(1)}%`, background: color }}
-                />
-              </div>
-
-              {canExpand && isOpen && (
-                <div className="border-t border-dashed border-border flex flex-col" style={{ marginTop: 18, paddingTop: 16, gap: 16 }}>
-                  {subs.map((s) => {
-                    const sv = subVal(branch, s);
-                    const share = cur > 0 ? (sv / cur) * 100 : 0;
-                    return (
-                      <div key={s} className="flex items-center gap-[10px] text-[13px]" style={{ paddingLeft: 26 }}>
-                        <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: color }} />
-                        <span className="flex-1 text-ink-soft">{s}</span>
-                        <span className="w-16 text-right font-semibold tabular-nums text-ink">{formatNumber(sv)}</span>
-                        <span className="w-[54px] text-right text-ink-muted text-xs tabular-nums">{share.toFixed(0)}%</span>
-                        <div className="h-1.5 bg-surface rounded-full overflow-hidden" style={{ flex: '0 0 160px', marginLeft: 14 }}>
-                          <div className="h-full rounded-full" style={{ width: `${(sv / maxVal * 100).toFixed(1)}%`, background: color, opacity: 0.55 }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 
@@ -276,22 +208,48 @@ function SingleBranchPanel({
   previousTotals,
   selectedMetric,
   onSelectMetric,
+  onExport,
+  exporting,
 }: {
   branch: Branch;
   currentTotals: Record<WipMetricKey, number>;
   previousTotals: Record<WipMetricKey, number>;
   selectedMetric: WipMetricKey;
   onSelectMetric: (k: WipMetricKey) => void;
+  onExport: () => void;
+  exporting: boolean;
 }) {
   const color = BRANCH_COLORS[branch] ?? '#78C41A';
+  const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
 
   return (
     <div className="bg-white rounded-lg p-5 shadow-sm">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3">
         <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">All Metrics — {branch}</span>
-        <span className="text-xs font-semibold px-3 py-1 rounded-full text-white" style={{ backgroundColor: color }}>
-          {branch}
-        </span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onExport}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink-muted hover:text-evs-green-dark border border-border hover:border-evs-green rounded-md px-3 py-1.5 transition-colors cursor-pointer disabled:opacity-50"
+            title={`Export ${branch} — ${selectedMeta.label} records (live from Odoo)`}
+          >
+            {exporting ? (
+              <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                <path d="M10 3v9m0 0l-3.5-3.5M10 12l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M4 14v2a1 1 0 001 1h10a1 1 0 001-1v-2" strokeLinecap="round" />
+              </svg>
+            )}
+            Export {selectedMeta.short}
+          </button>
+          <span className="text-xs font-semibold px-3 py-1 rounded-full text-white" style={{ backgroundColor: color }}>
+            {branch}
+          </span>
+        </div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {WIP_METRICS.map((m) => {

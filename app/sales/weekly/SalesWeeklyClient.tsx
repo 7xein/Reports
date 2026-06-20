@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { SalesWarrantyDashboard, WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
+import { SalesDashboardClient } from '@/components/SalesDashboardClient';
+import { WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
 import { RegionalSalesEntry, RegionalBranchConfig } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
@@ -115,7 +116,7 @@ export function SalesWeeklyClient({ salesLog, branchConfig, weekStartRef, branch
         </div>
       </div>
 
-      <SalesWarrantyDashboard
+      <SalesDashboardClient
         rows={rows}
         salesLabel="Sales This Week"
         targetLabel="Weekly Target"

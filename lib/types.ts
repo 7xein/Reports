@@ -15,13 +15,13 @@ export const subKey = (branch: string, sub: string): string => `${branch}__${sub
 
 // ── WIP metrics (7 fields shown in both WIP dashboard views) ──────────────
 export const WIP_METRICS = [
-  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', short: 'SOs to Invoice', lowerIsBetter: true,  isCurrency: false },
-  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         short: 'Open ROs',       lowerIsBetter: true,  isCurrency: false },
-  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       short: 'Warranties',     lowerIsBetter: false, isCurrency: false },
-  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           short: 'No Quotes',      lowerIsBetter: true,  isCurrency: false },
-  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           short: 'No Tags',        lowerIsBetter: true,  isCurrency: false },
-  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    short: 'Pend. Appr.',    lowerIsBetter: true,  isCurrency: false },
-  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             short: 'No Invoices',    lowerIsBetter: true,  isCurrency: false },
+  { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', short: 'SOs to Invoice', lowerIsBetter: true,  isCurrency: false, description: 'Confirmed sale orders / quotations that still have no invoice generated — billed work not yet invoiced.' },
+  { key: 'openRepairOrders',     label: 'Open Repair Orders',                         short: 'Open ROs',       lowerIsBetter: true,  isCurrency: false, description: 'Repair orders currently in progress — not cancelled and not yet completed.' },
+  { key: 'warrantiesActivated',  label: 'Warranties Activated',                       short: 'Warranties',     lowerIsBetter: false, isCurrency: false, description: 'Warranties activated in the period. Higher is better.' },
+  { key: 'rosWithoutQuotations', label: 'ROs Completed Without Quotations',           short: 'No Quotes',      lowerIsBetter: true,  isCurrency: false, description: 'Repair orders marked done but closed without a linked quotation / sale order.' },
+  { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           short: 'No Tags',        lowerIsBetter: true,  isCurrency: false, description: 'Active repair orders with no tags assigned.' },
+  { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    short: 'Pend. Appr.',    lowerIsBetter: true,  isCurrency: false, description: 'Draft quotations / sale orders still awaiting approval.' },
+  { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             short: 'No Invoices',    lowerIsBetter: true,  isCurrency: false, description: 'Repair orders not yet invoiced & closed (priority-matrix status is not "Invoiced & Closed", and not tagged Cancel).' },
 ] as const;
 export type WipMetricKey = typeof WIP_METRICS[number]['key'];
 
