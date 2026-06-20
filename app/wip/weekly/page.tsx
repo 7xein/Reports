@@ -5,7 +5,7 @@ import { readData } from '@/lib/data-store';
 export const dynamic = 'force-dynamic';
 
 const WIP_SUB_TABS = [
-  { href: '/wip/daily',  label: 'Daily Trends' },
+  { href: '/wip/daily',  label: 'Accumulative' },
   { href: '/wip/weekly', label: 'Weekly Snapshot' },
 ];
 

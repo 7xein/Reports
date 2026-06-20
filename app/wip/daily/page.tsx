@@ -7,7 +7,7 @@ import { formatNumber } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 const WIP_SUB_TABS = [
-  { href: '/wip/daily',  label: 'Daily Trends' },
+  { href: '/wip/daily',  label: 'Accumulative' },
   { href: '/wip/weekly', label: 'Weekly Snapshot' },
 ];
 
@@ -55,7 +55,7 @@ export default async function WipDailyPage() {
         eyebrow: `WIP Dashboard · All 6 Branches · ${history.length} data point${history.length !== 1 ? 's' : ''}`,
         title: 'Work In',
         titleEm: 'Progress',
-        sub: 'Click any metric card to change the chart · select a branch in the trend',
+        sub: 'Accumulative totals from July 2025 to date · click any metric card to change the chart',
         stats: heroStats,
       }}
     >
