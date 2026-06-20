@@ -7,6 +7,7 @@ import { WipWeeklyTrend } from '@/components/WipWeeklyTrend';
 import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
 import { WipMetricsLegend } from '@/components/WipMetricsLegend';
 import { BRANCHES, WIP_METRICS, WipWeeklyEntry, WipMetricKey, Branch } from '@/lib/types';
+import { downloadMetricCsv } from '@/lib/export-csv';
 
 function emptyBranchValues(): Record<WipMetricKey, Record<Branch, number>> {
   return Object.fromEntries(
@@ -35,9 +36,16 @@ function weekStartOf(weekEnding: string) {
   return d.toISOString().slice(0, 10);
 }
 
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
   const [selectedIdx, setSelectedIdx] = useState(history.length > 0 ? history.length - 1 : 0);
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
 
   if (history.length === 0) {
     return (
@@ -119,6 +127,13 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
         previous={prior ? (previousValues[selectedMetric] as Record<string, number>) : undefined}
         subValues={selected.subValues?.[selectedMetric]}
         title={`Branch Comparison — ${selectedMeta.label}`}
+        onExport={(branch) => downloadMetricCsv(
+          selectedMetric,
+          branch,
+          setExportingKey,
+          { start: addDays(selected.weekEnding, -7), end: selected.weekEnding },
+        )}
+        exportingKey={exportingKey}
       />
 
       {/* Full grid, collapsed by default */}

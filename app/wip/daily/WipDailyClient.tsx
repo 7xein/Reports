@@ -6,6 +6,7 @@ import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
 import { WipMetricsLegend } from '@/components/WipMetricsLegend';
 import { BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
+import { downloadMetricCsv } from '@/lib/export-csv';
 
 function emptyMetricTotals(): Record<WipMetricKey, number> {
   return Object.fromEntries(WIP_METRICS.map((m) => [m.key, 0])) as Record<WipMetricKey, number>;
@@ -37,43 +38,6 @@ const BRANCH_COLORS: Record<string, string> = {
   'Al Ain': '#EF4444',
   Qatar:    '#06B6D4',
 };
-
-/** Download the actual records behind a metric (optionally one branch) as CSV, live from Odoo. */
-export async function downloadMetricCsv(
-  metric: WipMetricKey,
-  branch: Branch | undefined,
-  setExportingKey: (k: string | null) => void,
-) {
-  setExportingKey(branch ?? '__all__');
-  try {
-    const res = await fetch('/api/export-odoo', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ metric, branch }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      alert(`Export failed: ${body?.detail || body?.error || res.statusText}`);
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const cd = res.headers.get('Content-Disposition') || '';
-    const fn = cd.match(/filename="(.+?)"/);
-    a.href = url;
-    a.download = fn ? fn[1] : `${metric}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    alert(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
-  } finally {
-    setExportingKey(null);
-  }
-}
 
 export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) {
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');

@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { metric?: string; branch?: string } = {};
+  let body: { metric?: string; branch?: string; start?: string; end?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -77,11 +77,12 @@ export async function POST(req: NextRequest) {
   const branch = body.branch && (BRANCHES as readonly string[]).includes(body.branch)
     ? (body.branch as Branch)
     : undefined;
+  const range = body.start && body.end ? { start: body.start, end: body.end } : undefined;
 
   try {
-    const records = await fetchMetricRecords(metric, branch);
+    const records = await fetchMetricRecords(metric, branch, range);
     const csv = toCsv(records);
-    const date = new Date().toISOString().split('T')[0];
+    const date = range ? range.end : new Date().toISOString().split('T')[0];
     const slug = `${metric}-${branch ? branch.replace(/\s+/g, '') : 'all'}-${date}`;
     return new NextResponse(csv, {
       status: 200,

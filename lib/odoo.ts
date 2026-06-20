@@ -285,7 +285,7 @@ const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDom
   openRepairOrders:     { model: 'repair.order',   domain: () => DOM_OPEN_REPAIR_ORDERS,                              fields: REPAIR_FIELDS },
   warrantiesActivated:  { model: 'fleet.warranty', domain: () => DOM_WARRANTIES_ACTIVATED,                            fields: WARRANTY_FIELDS, warranty: true },
   rosWithoutQuotations: { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_QUOTATIONS,                          fields: REPAIR_FIELDS },
-  rosWithoutTags:       { model: 'repair.order',   domain: () => [...DOM_ROS_WITHOUT_TAGS, ...currentSaturdayWindow()], fields: REPAIR_FIELDS },
+  rosWithoutTags:       { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_TAGS,                                fields: REPAIR_FIELDS },
   quotationsNotApproved:{ model: 'sale.order',     domain: () => DOM_QUOTATIONS_NOT_APPROVED,                         fields: SALE_FIELDS },
   rosWithoutInvoices:   { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_INVOICES,                            fields: REPAIR_FIELDS },
 };
@@ -293,14 +293,32 @@ const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDom
 /**
  * Fetch the actual records behind a WIP metric (optionally for one branch),
  * using the exact same domain the count uses. For CSV export.
+ *
+ * @param range  Weekly export: restrict to a [start, end) window (create_date,
+ *               or write_date for warranties) — mirrors fetchWipWeeklySnapshot.
+ *               When omitted (daily export), "ROs Without Tags" uses the current
+ *               Saturday→Saturday window, matching the daily snapshot.
  */
-export async function fetchMetricRecords(metric: WipMetricKey, branch?: Branch): Promise<Record<string, unknown>[]> {
+export async function fetchMetricRecords(
+  metric: WipMetricKey,
+  branch?: Branch,
+  range?: { start: string; end: string },
+): Promise<Record<string, unknown>[]> {
   cachedUid = null;
   companyIdCache = null;
 
   const def = METRIC_EXPORT[metric];
   const ids = branch ? await branchCompanyIds(branch) : await allTrackedCompanyIds();
-  const base = def.domain();
+
+  let extra: OdooDomain = [];
+  if (range) {
+    extra = def.warranty
+      ? [['write_date', '>=', range.start], ['write_date', '<', range.end]]
+      : [['create_date', '>=', range.start], ['create_date', '<', range.end]];
+  } else if (metric === 'rosWithoutTags') {
+    extra = currentSaturdayWindow();
+  }
+  const base = [...def.domain(), ...extra];
 
   if (def.warranty) {
     // Warranty company link may live on write_uid.company_id; fall back to company_id.
