@@ -27,10 +27,24 @@ function cell(v: unknown): string {
   return s;
 }
 
+const HEADER_LABELS: Record<string, string> = {
+  name: 'Reference',
+  display_name: 'Name',
+  company_id: 'Company / Branch',
+  partner_id: 'Customer',
+  create_date: 'Created On',
+  write_date: 'Updated On',
+  date_order: 'Order Date',
+  amount_total: 'Amount',
+  state: 'Status',
+  create_uid: 'Created By',
+  user_id: 'Responsible',
+};
+
 function toCsv(rows: Record<string, unknown>[]): string {
   if (rows.length === 0) return 'No records found\n';
   const headers = Object.keys(rows[0]).filter((h) => h !== 'id');
-  const lines = [headers.join(',')];
+  const lines = [headers.map((h) => cell(HEADER_LABELS[h] ?? h)).join(',')];
   for (const r of rows) lines.push(headers.map((h) => cell(r[h])).join(','));
   return lines.join('\n');
 }

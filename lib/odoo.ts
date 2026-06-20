@@ -274,9 +274,11 @@ function currentSaturdayWindow(): OdooDomain {
 // ── Record export (live CSV) ───────────────────────────────────────
 // Maps each WIP metric to the model + (lazy) domain + display fields used to
 // pull the ACTUAL matching records — same filters as the counts above.
-const REPAIR_FIELDS   = ['name', 'company_id', 'partner_id', 'create_date', 'state'];
-const SALE_FIELDS     = ['name', 'company_id', 'partner_id', 'date_order', 'amount_total', 'state'];
-const WARRANTY_FIELDS = ['display_name', 'company_id', 'write_date', 'state'];
+// `create_uid` (Created By) exists on every Odoo model; `user_id` (Responsible /
+// Salesperson) is included where the model has it (sale.order).
+const REPAIR_FIELDS   = ['name', 'company_id', 'partner_id', 'create_date', 'state', 'create_uid'];
+const SALE_FIELDS     = ['name', 'company_id', 'partner_id', 'date_order', 'amount_total', 'state', 'user_id', 'create_uid'];
+const WARRANTY_FIELDS = ['display_name', 'company_id', 'write_date', 'state', 'create_uid'];
 
 const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDomain; fields: string[]; warranty?: boolean }> = {
   saleOrdersToInvoice:  { model: 'sale.order',     domain: () => DOM_SALE_ORDERS_TO_INVOICE,                          fields: SALE_FIELDS },
