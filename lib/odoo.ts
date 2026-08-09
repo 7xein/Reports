@@ -397,11 +397,14 @@ export async function fetchRepairOrdersForExport(
   cachedUid = null;
   companyIdCache = null;
 
-  // Only the export branches (Qatar excluded) — build id→branch + the company filter.
+  // Only the MAIN company of each export branch — drop station companies
+  // (Emarat sites, Al Masaood) and Qatar.
+  const companyMap = await getCompanyIds();
   const idToBranch: Record<number, Branch> = {};
   const exportCompanyIds: number[] = [];
   for (const branch of EXPORT_BRANCHES) {
-    for (const id of await branchCompanyIds(branch)) { idToBranch[id] = branch; exportCompanyIds.push(id); }
+    const mainId = companyMap[BRANCH_CLUSTERS[branch][0]];
+    if (mainId) { idToBranch[mainId] = branch; exportCompanyIds.push(mainId); }
   }
 
   // Discover which candidate fields exist (+ their relation/selection metadata).
@@ -493,6 +496,40 @@ export async function fetchRepairOrdersForExport(
     });
   }
   return rows;
+}
+
+/**
+ * Total invoiced sales (posted customer invoices, untaxed) for a Gulf day,
+ * per export branch (main company only; excludes inter-branch "EVS Electric").
+ */
+export async function fetchInvoiceSalesForExport(dateStr: string): Promise<Record<string, number>> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const companyMap = await getCompanyIds();
+  const idToBranch: Record<number, string> = {};
+  const ids: number[] = [];
+  const result: Record<string, number> = {};
+  for (const branch of EXPORT_BRANCHES) {
+    result[branch] = 0;
+    const id = companyMap[BRANCH_CLUSTERS[branch][0]];
+    if (id) { idToBranch[id] = branch; ids.push(id); }
+  }
+
+  const groups = (await call('account.move', 'read_group', [[
+    ['move_type', '=', 'out_invoice'],
+    ['state', '=', 'posted'],
+    ['date', '=', dateStr],
+    ['company_id', 'in', ids],
+    ['partner_id', 'not ilike', 'EVS Electric'],
+  ]], { fields: ['company_id', 'amount_untaxed'], groupby: ['company_id'], lazy: true })) as ReadGroupResult[];
+
+  for (const g of groups) {
+    const cid = g.company_id?.[0];
+    const branch = cid != null ? idToBranch[cid] : undefined;
+    if (branch) result[branch] += (g.amount_untaxed as number) || 0;
+  }
+  return result;
 }
 
 // ── Public API ─────────────────────────────────────────────────────

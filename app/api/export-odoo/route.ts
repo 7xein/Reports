@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx-js-style';
-import { fetchMetricRecords, fetchRepairOrdersForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
+import { fetchMetricRecords, fetchRepairOrdersForExport, fetchInvoiceSalesForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { WIP_METRICS, WipMetricKey, BRANCHES, Branch } from '@/lib/types';
 
@@ -49,13 +49,18 @@ function boldHeaderRow(ws: XLSX.WorkSheet) {
   }
 }
 
-function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received') {
+function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: number) {
   const aoa: (string | number)[][] = [XLSX_COLS, ...rows.map(rowToArr), []];
   if (type === 'wip') {
     aoa.push([`Total: ${rows.length} repair orders`]);
   } else {
     const closed = rows.filter((r) => r.closed).length;
-    aoa.push([`Total Received: ${rows.length}`], [`Closed (X status): ${closed}`], [`Unclosed: ${rows.length - closed}`]);
+    aoa.push(
+      [`Total Received: ${rows.length}`],
+      [`Closed (X status): ${closed}`],
+      [`Unclosed: ${rows.length - closed}`],
+      [`Invoice Sales (AED): ${Math.round(invoiceSales ?? 0).toLocaleString('en-US')}`],
+    );
   }
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = autoWidth(aoa);
@@ -63,25 +68,26 @@ function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received') {
   return ws;
 }
 
-function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received'): ArrayBuffer {
+function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: Record<string, number>): ArrayBuffer {
   const wb = XLSX.utils.book_new();
 
   if (type === 'received') {
-    const sum: (string | number)[][] = [['Branch', 'Total Received', 'Closed', 'Unclosed']];
-    let tR = 0, tC = 0, tU = 0;
+    const sum: (string | number)[][] = [['Branch', 'Total Received', 'Closed', 'Unclosed', 'Invoice Sales (AED)']];
+    let tR = 0, tC = 0, tU = 0, tS = 0;
     for (const b of EXPORT_BRANCHES) {
       const br = rows.filter((r) => r.branch === b);
       const c = br.filter((r) => r.closed).length;
-      sum.push([b, br.length, c, br.length - c]);
-      tR += br.length; tC += c; tU += br.length - c;
+      const s = Math.round(invoiceSales?.[b] ?? 0);
+      sum.push([b, br.length, c, br.length - c, s]);
+      tR += br.length; tC += c; tU += br.length - c; tS += s;
     }
-    sum.push(['Total', tR, tC, tU]);
+    sum.push(['Total', tR, tC, tU, tS]);
     const ws = XLSX.utils.aoa_to_sheet(sum);
     ws['!cols'] = autoWidth(sum);
     boldHeaderRow(ws);
     // Bold the final Total row too.
     const lastRow = sum.length - 1;
-    for (let c = 0; c < 4; c++) {
+    for (let c = 0; c < 5; c++) {
       const addr = XLSX.utils.encode_cell({ r: lastRow, c });
       if (ws[addr]) ws[addr].s = { font: { bold: true } };
     }
@@ -89,7 +95,7 @@ function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received'): 
   }
 
   for (const b of EXPORT_BRANCHES) {
-    XLSX.utils.book_append_sheet(wb, branchSheet(rows.filter((r) => r.branch === b), type), b);
+    XLSX.utils.book_append_sheet(wb, branchSheet(rows.filter((r) => r.branch === b), type, invoiceSales?.[b]), b);
   }
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 }
@@ -162,7 +168,8 @@ export async function POST(req: NextRequest) {
     const dateStr = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : yesterdayGulf();
     try {
       const rows = await fetchRepairOrdersForExport(dateStr, { wipOnly: body.type === 'wip' });
-      const buffer = buildWorkbook(rows, body.type);
+      const invoiceSales = body.type === 'received' ? await fetchInvoiceSalesForExport(dateStr) : undefined;
+      const buffer = buildWorkbook(rows, body.type, invoiceSales);
       const filename = body.type === 'wip' ? `WIP_Export_${dateStr}.xlsx` : `Received_JCs_${dateStr}.xlsx`;
       return new NextResponse(buffer, {
         status: 200,
