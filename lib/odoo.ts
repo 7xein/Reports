@@ -367,6 +367,9 @@ function fmtGulfDate(raw: unknown): string {
 const m2oName = (v: unknown): string => (Array.isArray(v) ? String(v[1] ?? '') : '');
 const m2oId = (v: unknown): number | null => (Array.isArray(v) ? (v[0] as number) : null);
 
+/** Branches included in the admin Excel exports (Qatar excluded per request). */
+export const EXPORT_BRANCHES = BRANCHES.filter((b) => b !== 'Qatar') as Branch[];
+
 /** priority_matrix_status letter codes → human labels. */
 const PRIORITY_MATRIX_LABELS: Record<string, string> = {
   K: 'Car Not In',
@@ -394,10 +397,11 @@ export async function fetchRepairOrdersForExport(
   cachedUid = null;
   companyIdCache = null;
 
-  const trackedIds = await allTrackedCompanyIds();
+  // Only the export branches (Qatar excluded) — build id→branch + the company filter.
   const idToBranch: Record<number, Branch> = {};
-  for (const branch of BRANCHES) {
-    for (const id of await branchCompanyIds(branch)) idToBranch[id] = branch;
+  const exportCompanyIds: number[] = [];
+  for (const branch of EXPORT_BRANCHES) {
+    for (const id of await branchCompanyIds(branch)) { idToBranch[id] = branch; exportCompanyIds.push(id); }
   }
 
   // Discover which candidate fields exist (+ their relation/selection metadata).
@@ -417,7 +421,7 @@ export async function fetchRepairOrdersForExport(
   const domain: OdooDomain = [
     ['create_date', '>=', start],
     ['create_date', '<=', end],
-    ['company_id', 'in', trackedIds],
+    ['company_id', 'in', exportCompanyIds],
   ];
   if (opts.wipOnly) domain.push(['priority_matrix_status', '!=', 'X']);
 

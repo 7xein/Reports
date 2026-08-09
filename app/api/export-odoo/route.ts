@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx-js-style';
-import { fetchMetricRecords, fetchRepairOrdersForExport, RepairOrderExportRow } from '@/lib/odoo';
+import { fetchMetricRecords, fetchRepairOrdersForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { WIP_METRICS, WipMetricKey, BRANCHES, Branch } from '@/lib/types';
 
@@ -69,7 +69,7 @@ function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received'): 
   if (type === 'received') {
     const sum: (string | number)[][] = [['Branch', 'Total Received', 'Closed', 'Unclosed']];
     let tR = 0, tC = 0, tU = 0;
-    for (const b of BRANCHES) {
+    for (const b of EXPORT_BRANCHES) {
       const br = rows.filter((r) => r.branch === b);
       const c = br.filter((r) => r.closed).length;
       sum.push([b, br.length, c, br.length - c]);
@@ -88,7 +88,7 @@ function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received'): 
     XLSX.utils.book_append_sheet(wb, ws, 'Summary');
   }
 
-  for (const b of BRANCHES) {
+  for (const b of EXPORT_BRANCHES) {
     XLSX.utils.book_append_sheet(wb, branchSheet(rows.filter((r) => r.branch === b), type), b);
   }
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
