@@ -335,13 +335,14 @@ export async function fetchMetricRecords(
 export interface RepairOrderExportRow {
   branch: Branch;
   roNumber: string;
-  tags: string;
+  tags: string;            // tag_ids + x_studio_stages_tags names, combined
   createdBy: string;
   createdOn: string;       // DD/MM/YYYY (Gulf time)
   customerName: string;
   customerMobile: string;
-  vehicle: string;
-  stage: string;
+  vehicle: string;         // fleet_id
+  stage: string;           // stage_id
+  repairStatus: string;    // state (human label)
   priorityMatrixStatus: string;
   closed: boolean;         // priority_matrix_status === 'X'
 }
@@ -385,14 +386,16 @@ export async function fetchRepairOrdersForExport(
     for (const id of await branchCompanyIds(branch)) idToBranch[id] = branch;
   }
 
-  // Discover which candidate fields actually exist on this instance's repair.order.
-  const fieldsMeta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+  // Discover which candidate fields exist (+ their relation/selection metadata).
+  const fieldsMeta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as Record<string, { relation?: string; selection?: [string, string][] }>;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(fieldsMeta, f);
-  const vehicleField = ['vehicle_id', 'lot_id', 'x_vehicle_id', 'x_vehicle'].find(has);
+  const vehicleField = ['fleet_id', 'vehicle_id', 'lot_id', 'x_vehicle_id', 'x_vehicle'].find(has);
   const phoneField   = ['partner_phone', 'partner_mobile', 'mobile', 'phone'].find(has);
+  // Many2many "tag" fields to merge into the Tags column.
+  const tagFields = ['tag_ids', 'x_studio_stages_tags'].filter(has);
 
   const fields = ['name', 'company_id', 'create_date', 'priority_matrix_status'];
-  for (const f of ['tag_ids', 'create_uid', 'partner_id', 'stage_id', 'state']) if (has(f)) fields.push(f);
+  for (const f of ['create_uid', 'partner_id', 'stage_id', 'state', ...tagFields]) if (has(f)) fields.push(f);
   if (phoneField) fields.push(phoneField);
   if (vehicleField) fields.push(vehicleField);
 
@@ -406,17 +409,24 @@ export async function fetchRepairOrdersForExport(
 
   const records = (await call('repair.order', 'search_read', [domain], { fields, limit: 0 })) as Record<string, unknown>[];
 
-  // Batch-resolve tag names.
-  const tagNames: Record<number, string> = {};
-  if (has('tag_ids')) {
-    const allTagIds = [...new Set(records.flatMap((r) => (r.tag_ids as number[] | undefined) ?? []))];
-    if (allTagIds.length) {
-      try {
-        const tags = (await call('repair.tag', 'read', [allTagIds], { fields: ['name'] })) as { id: number; name: string }[];
-        for (const t of tags) tagNames[t.id] = t.name;
-      } catch { /* tag model/name unavailable — leave blank */ }
-    }
+  // Batch-resolve tag names per m2m field, reading names from each field's real comodel.
+  const tagNamesByField: Record<string, Record<number, string>> = {};
+  for (const tf of tagFields) {
+    const relation = fieldsMeta[tf]?.relation;
+    if (!relation) continue;
+    const ids = [...new Set(records.flatMap((r) => (r[tf] as number[] | undefined) ?? []))];
+    if (!ids.length) continue;
+    try {
+      const recs = (await call(relation, 'read', [ids], { fields: ['display_name'] })) as { id: number; display_name?: string }[];
+      const map: Record<number, string> = {};
+      for (const t of recs) map[t.id] = t.display_name || '';
+      tagNamesByField[tf] = map;
+    } catch { /* comodel unreadable — skip this field */ }
   }
+
+  // Human labels for the state selection field.
+  const stateLabels: Record<string, string> = {};
+  for (const [k, v] of fieldsMeta.state?.selection ?? []) stateLabels[k] = v;
 
   // Batch-resolve customer phone when it isn't on repair.order directly.
   const phoneByPartner: Record<number, string> = {};
@@ -441,17 +451,26 @@ export async function fetchRepairOrdersForExport(
       ? (r[phoneField] as string | false | undefined) || ''
       : (pid != null ? phoneByPartner[pid] || '' : '');
     const pms = (r.priority_matrix_status as string | false) || '';
+    const state = (r.state as string | false) || '';
+
+    // Combine all tag-field names into one Tags cell.
+    const tagParts: string[] = [];
+    for (const tf of tagFields) {
+      const map = tagNamesByField[tf] ?? {};
+      for (const id of (r[tf] as number[] | undefined) ?? []) if (map[id]) tagParts.push(map[id]);
+    }
 
     rows.push({
       branch,
       roNumber: (r.name as string) || '',
-      tags: ((r.tag_ids as number[] | undefined) ?? []).map((id) => tagNames[id]).filter(Boolean).join(', '),
+      tags: tagParts.join(', '),
       createdBy: m2oName(r.create_uid),
       createdOn: fmtGulfDate(r.create_date),
       customerName: m2oName(r.partner_id),
       customerMobile: String(phone || ''),
       vehicle: vehicleField ? m2oName(r[vehicleField]) : '',
-      stage: m2oName(r.stage_id) || ((r.state as string) || ''),
+      stage: m2oName(r.stage_id),
+      repairStatus: stateLabels[state] || state,
       priorityMatrixStatus: pms,
       closed: pms === 'X',
     });

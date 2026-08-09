@@ -19,10 +19,10 @@ export const maxDuration = 60;
 const VALID_METRICS = new Set(WIP_METRICS.map((m) => m.key));
 
 // ── Excel (repair-order) export helpers ────────────────────────────
-const XLSX_COLS = ['RO Number', 'Tags', 'Created By', 'Created On', 'Customer Name', 'Customer Mobile', 'Vehicle', 'Stage', 'Priority Matrix Status'];
+const XLSX_COLS = ['RO Number', 'Tags', 'Created By', 'Created On', 'Customer Name', 'Customer Mobile', 'Vehicle', 'Stage', 'Repair Status', 'Priority Matrix Status'];
 
 function rowToArr(r: RepairOrderExportRow): string[] {
-  return [r.roNumber, r.tags, r.createdBy, r.createdOn, r.customerName, r.customerMobile, r.vehicle, r.stage, r.priorityMatrixStatus];
+  return [r.roNumber, r.tags, r.createdBy, r.createdOn, r.customerName, r.customerMobile, r.vehicle, r.stage, r.repairStatus, r.priorityMatrixStatus];
 }
 
 function autoWidth(aoa: (string | number)[][]): { wch: number }[] {
