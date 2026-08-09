@@ -367,6 +367,21 @@ function fmtGulfDate(raw: unknown): string {
 const m2oName = (v: unknown): string => (Array.isArray(v) ? String(v[1] ?? '') : '');
 const m2oId = (v: unknown): number | null => (Array.isArray(v) ? (v[0] as number) : null);
 
+/** priority_matrix_status letter codes → human labels. */
+const PRIORITY_MATRIX_LABELS: Record<string, string> = {
+  K: 'Car Not In',
+  H: 'No Action Taken',
+  A: 'Awaiting Quotation',
+  P: 'Awaiting Parts',
+  I: 'Awaiting Labour',
+  L: 'Labour Paused',
+  W: 'Work In Progress',
+  C: 'Labour Complete',
+  G: 'QC Complete',
+  D: 'Vehicle Ready',
+  X: 'Closed and Invoiced',
+};
+
 /**
  * Fetch repair-order records for one Gulf day, consolidated by branch, for Excel export.
  * @param opts.wipOnly  true → only priority_matrix_status != 'X' (WIP export);
@@ -469,7 +484,7 @@ export async function fetchRepairOrdersForExport(
       customerMobile: String(phone || ''),
       vehicle: vehicleField ? m2oName(r[vehicleField]) : '',
       repairStatus: stateLabels[state] || state,
-      priorityMatrixStatus: pms,
+      priorityMatrixStatus: PRIORITY_MATRIX_LABELS[pms] || pms,
       closed: pms === 'X',
     });
   }
