@@ -341,7 +341,6 @@ export interface RepairOrderExportRow {
   customerName: string;
   customerMobile: string;
   vehicle: string;         // fleet_id
-  stage: string;           // stage_id
   repairStatus: string;    // state (human label)
   priorityMatrixStatus: string;
   closed: boolean;         // priority_matrix_status === 'X'
@@ -395,7 +394,7 @@ export async function fetchRepairOrdersForExport(
   const tagFields = ['tag_ids', 'x_studio_stages_tags'].filter(has);
 
   const fields = ['name', 'company_id', 'create_date', 'priority_matrix_status'];
-  for (const f of ['create_uid', 'partner_id', 'stage_id', 'state', ...tagFields]) if (has(f)) fields.push(f);
+  for (const f of ['create_uid', 'partner_id', 'state', ...tagFields]) if (has(f)) fields.push(f);
   if (phoneField) fields.push(phoneField);
   if (vehicleField) fields.push(vehicleField);
 
@@ -469,7 +468,6 @@ export async function fetchRepairOrdersForExport(
       customerName: m2oName(r.partner_id),
       customerMobile: String(phone || ''),
       vehicle: vehicleField ? m2oName(r[vehicleField]) : '',
-      stage: m2oName(r.stage_id),
       repairStatus: stateLabels[state] || state,
       priorityMatrixStatus: pms,
       closed: pms === 'X',
