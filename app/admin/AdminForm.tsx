@@ -93,6 +93,12 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function yesterday() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function emptyWipValues(): Record<WipMetricKey, Record<string, number>> {
   const locs = wipLocationKeys();
   return Object.fromEntries(
@@ -217,6 +223,10 @@ function WipEntryTable({
 export function AdminForm({ initialData }: { initialData: ReportData }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+
+  // ── Odoo Excel export state
+  const [exportDate, setExportDate] = useState(yesterday());
+  const [exporting, setExporting] = useState<'wip' | 'received' | null>(null);
 
   // ── Odoo WIP sync state
   const [syncing, setSyncing] = useState(false);
@@ -488,6 +498,40 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
   async function handleLogout() {
     await fetch('/api/auth', { method: 'DELETE' }).catch(() => {});
     window.location.href = '/login';
+  }
+
+  async function exportFromOdoo(type: 'wip' | 'received') {
+    setExporting(type);
+    setMessage('');
+    try {
+      const res = await fetch('/api/export-odoo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, date: exportDate }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setMessage(`Export failed: ${body?.detail || body?.error || res.statusText}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const cd = res.headers.get('Content-Disposition') || '';
+      const fn = cd.match(/filename="(.+?)"/);
+      a.href = url;
+      a.download = fn ? fn[1] : (type === 'wip' ? `WIP_Export_${exportDate}.xlsx` : `Received_JCs_${exportDate}.xlsx`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage(`✓ ${type === 'wip' ? 'WIP' : 'Received JCs'} Excel exported for ${exportDate}`);
+    } catch (err) {
+      setMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(null);
+    }
   }
 
   return (
@@ -794,6 +838,50 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
             {saving ? 'Saving…' : 'Save Sales Entry →'}
           </button>
           <button onClick={handleLogout} className="text-sm text-ink-muted hover:text-ink">Sign out</button>
+        </div>
+      </div>
+
+      {/* Odoo Exports Section */}
+      <div className="bg-white rounded-lg shadow-sm p-6 mt-5">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-base font-bold uppercase tracking-wide text-ink">Odoo Exports</h2>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-ink-muted">Date:</label>
+            <input
+              type="date"
+              value={exportDate}
+              onChange={(e) => setExportDate(e.target.value)}
+              className="text-sm border border-border rounded px-3 py-1.5 text-ink"
+            />
+          </div>
+        </div>
+        <p className="text-sm text-ink-muted mb-5">Downloads an Excel file with one tab per branch, pulled live from Odoo for the selected day.</p>
+        <div className="flex flex-wrap items-center gap-3">
+          {([
+            { type: 'wip' as const, label: "Export Day's WIP", hint: 'Open ROs (priority ≠ X)' },
+            { type: 'received' as const, label: 'Export Received JCs', hint: 'All ROs created + closed/unclosed totals' },
+          ]).map(({ type, label, hint }) => (
+            <button
+              key={type}
+              onClick={() => exportFromOdoo(type)}
+              disabled={exporting !== null}
+              title={hint}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors disabled:opacity-50"
+            >
+              {exporting === type ? (
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                  <path d="M10 3v9m0 0l-3.5-3.5M10 12l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M4 14v2a1 1 0 001 1h10a1 1 0 001-1v-2" strokeLinecap="round" />
+                </svg>
+              )}
+              {exporting === type ? 'Exporting…' : label}
+            </button>
+          ))}
         </div>
       </div>
 

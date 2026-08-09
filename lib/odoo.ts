@@ -331,6 +331,134 @@ export async function fetchMetricRecords(
   return await call(def.model, 'search_read', [[...base, ['company_id', 'in', ids]]], { fields: def.fields, limit: 5000 });
 }
 
+// ── Repair-order record export (Excel) ─────────────────────────────
+export interface RepairOrderExportRow {
+  branch: Branch;
+  roNumber: string;
+  tags: string;
+  createdBy: string;
+  createdOn: string;       // DD/MM/YYYY (Gulf time)
+  customerName: string;
+  customerMobile: string;
+  vehicle: string;
+  stage: string;
+  priorityMatrixStatus: string;
+  closed: boolean;         // priority_matrix_status === 'X'
+}
+
+/** UTC window covering a Gulf (UTC+4) calendar day, as Odoo datetime strings. */
+function gulfDayWindowUtc(dateStr: string): { start: string; end: string } {
+  const fmt = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
+  return {
+    start: fmt(new Date(`${dateStr}T00:00:00+04:00`)),
+    end:   fmt(new Date(`${dateStr}T23:59:59+04:00`)),
+  };
+}
+
+/** Odoo UTC datetime 'YYYY-MM-DD HH:MM:SS' → 'DD/MM/YYYY' in Gulf time. */
+function fmtGulfDate(raw: unknown): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const d = new Date(raw.replace(' ', 'T') + 'Z');
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Dubai', day: '2-digit', month: '2-digit', year: 'numeric',
+  }).format(d);
+}
+
+const m2oName = (v: unknown): string => (Array.isArray(v) ? String(v[1] ?? '') : '');
+const m2oId = (v: unknown): number | null => (Array.isArray(v) ? (v[0] as number) : null);
+
+/**
+ * Fetch repair-order records for one Gulf day, consolidated by branch, for Excel export.
+ * @param opts.wipOnly  true → only priority_matrix_status != 'X' (WIP export);
+ *                       false → all repair orders (Received export).
+ */
+export async function fetchRepairOrdersForExport(
+  dateStr: string,
+  opts: { wipOnly: boolean },
+): Promise<RepairOrderExportRow[]> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const trackedIds = await allTrackedCompanyIds();
+  const idToBranch: Record<number, Branch> = {};
+  for (const branch of BRANCHES) {
+    for (const id of await branchCompanyIds(branch)) idToBranch[id] = branch;
+  }
+
+  // Discover which candidate fields actually exist on this instance's repair.order.
+  const fieldsMeta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+  const has = (f: string) => Object.prototype.hasOwnProperty.call(fieldsMeta, f);
+  const vehicleField = ['vehicle_id', 'lot_id', 'x_vehicle_id', 'x_vehicle'].find(has);
+  const phoneField   = ['partner_phone', 'partner_mobile', 'mobile', 'phone'].find(has);
+
+  const fields = ['name', 'company_id', 'create_date', 'priority_matrix_status'];
+  for (const f of ['tag_ids', 'create_uid', 'partner_id', 'stage_id', 'state']) if (has(f)) fields.push(f);
+  if (phoneField) fields.push(phoneField);
+  if (vehicleField) fields.push(vehicleField);
+
+  const { start, end } = gulfDayWindowUtc(dateStr);
+  const domain: OdooDomain = [
+    ['create_date', '>=', start],
+    ['create_date', '<=', end],
+    ['company_id', 'in', trackedIds],
+  ];
+  if (opts.wipOnly) domain.push(['priority_matrix_status', '!=', 'X']);
+
+  const records = (await call('repair.order', 'search_read', [domain], { fields, limit: 0 })) as Record<string, unknown>[];
+
+  // Batch-resolve tag names.
+  const tagNames: Record<number, string> = {};
+  if (has('tag_ids')) {
+    const allTagIds = [...new Set(records.flatMap((r) => (r.tag_ids as number[] | undefined) ?? []))];
+    if (allTagIds.length) {
+      try {
+        const tags = (await call('repair.tag', 'read', [allTagIds], { fields: ['name'] })) as { id: number; name: string }[];
+        for (const t of tags) tagNames[t.id] = t.name;
+      } catch { /* tag model/name unavailable — leave blank */ }
+    }
+  }
+
+  // Batch-resolve customer phone when it isn't on repair.order directly.
+  const phoneByPartner: Record<number, string> = {};
+  if (!phoneField && has('partner_id')) {
+    const partnerIds = [...new Set(records.map((r) => m2oId(r.partner_id)).filter((x): x is number => x != null))];
+    if (partnerIds.length) {
+      try {
+        const partners = (await call('res.partner', 'read', [partnerIds], { fields: ['mobile', 'phone'] })) as { id: number; mobile?: string | false; phone?: string | false }[];
+        for (const p of partners) phoneByPartner[p.id] = (p.mobile || p.phone || '') as string;
+      } catch { /* ignore */ }
+    }
+  }
+
+  const rows: RepairOrderExportRow[] = [];
+  for (const r of records) {
+    const cid = m2oId(r.company_id);
+    const branch = cid != null ? idToBranch[cid] : undefined;
+    if (!branch) continue; // skip non-tracked companies (EV HUB, CarDIP, …)
+
+    const pid = m2oId(r.partner_id);
+    const phone = phoneField
+      ? (r[phoneField] as string | false | undefined) || ''
+      : (pid != null ? phoneByPartner[pid] || '' : '');
+    const pms = (r.priority_matrix_status as string | false) || '';
+
+    rows.push({
+      branch,
+      roNumber: (r.name as string) || '',
+      tags: ((r.tag_ids as number[] | undefined) ?? []).map((id) => tagNames[id]).filter(Boolean).join(', '),
+      createdBy: m2oName(r.create_uid),
+      createdOn: fmtGulfDate(r.create_date),
+      customerName: m2oName(r.partner_id),
+      customerMobile: String(phone || ''),
+      vehicle: vehicleField ? m2oName(r[vehicleField]) : '',
+      stage: m2oName(r.stage_id) || ((r.state as string) || ''),
+      priorityMatrixStatus: pms,
+      closed: pms === 'X',
+    });
+  }
+  return rows;
+}
+
 // ── Public API ─────────────────────────────────────────────────────
 export interface OdooWipSnapshot {
   date: string;
