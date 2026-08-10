@@ -107,6 +107,13 @@ function yesterdayGulf(): string {
   return gulf.toISOString().slice(0, 10);
 }
 
+/** April 1st of the season the given date falls in (previous year if before Apr 1). */
+function aprilFirstFor(dateStr: string): string {
+  const y = Number(dateStr.slice(0, 4));
+  const apr = `${y}-04-01`;
+  return dateStr >= apr ? apr : `${y - 1}-04-01`;
+}
+
 /** Flatten an Odoo cell to a CSV-safe string (many2one [id, "Name"] → "Name"). */
 function cell(v: unknown): string {
   let s: string;
@@ -161,7 +168,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Admin Excel export (repair orders, one sheet per branch) ──────
-  if (body.type === 'wip' || body.type === 'wip-weekly' || body.type === 'received') {
+  if (body.type === 'wip' || body.type === 'wip-todate' || body.type === 'received') {
     if (!isAdminAuthenticated()) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -170,13 +177,13 @@ export async function POST(req: NextRequest) {
     try {
       const rows = await fetchRepairOrdersForExport(dateStr, {
         wipOnly: !received,
-        days: body.type === 'wip-weekly' ? 7 : 1,
+        startDate: body.type === 'wip-todate' ? aprilFirstFor(dateStr) : undefined,
       });
       const invoiceSales = received ? await fetchInvoiceSalesForExport(dateStr) : undefined;
       const buffer = buildWorkbook(rows, received ? 'received' : 'wip', invoiceSales);
       const filename =
         body.type === 'received'    ? `Received_JCs_${dateStr}.xlsx` :
-        body.type === 'wip-weekly'  ? `WIP_Weekly_Export_${dateStr}.xlsx` :
+        body.type === 'wip-todate'  ? `WIP_SinceApr01_${dateStr}.xlsx` :
                                       `WIP_Export_${dateStr}.xlsx`;
       return new NextResponse(buffer, {
         status: 200,

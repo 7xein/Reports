@@ -226,7 +226,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   // ── Odoo Excel export state
   const [exportDate, setExportDate] = useState(yesterday());
-  const [exporting, setExporting] = useState<'wip' | 'wip-weekly' | 'received' | null>(null);
+  const [exporting, setExporting] = useState<'wip' | 'wip-todate' | 'received' | null>(null);
 
   // ── Odoo WIP sync state
   const [syncing, setSyncing] = useState(false);
@@ -500,16 +500,16 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     window.location.href = '/login';
   }
 
-  async function exportFromOdoo(type: 'wip' | 'wip-weekly' | 'received') {
+  async function exportFromOdoo(type: 'wip' | 'wip-todate' | 'received') {
     setExporting(type);
     setMessage('');
     const fallbackName =
       type === 'received'   ? `Received_JCs_${exportDate}.xlsx` :
-      type === 'wip-weekly' ? `WIP_Weekly_Export_${exportDate}.xlsx` :
+      type === 'wip-todate' ? `WIP_SinceApr01_${exportDate}.xlsx` :
                               `WIP_Export_${exportDate}.xlsx`;
     const okLabel =
       type === 'received'   ? 'Received JCs' :
-      type === 'wip-weekly' ? "Week's WIP" : "Day's WIP";
+      type === 'wip-todate' ? 'WIP since Apr 1' : "Day's WIP";
     try {
       const res = await fetch('/api/export-odoo', {
         method: 'POST',
@@ -866,7 +866,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         <div className="flex flex-wrap items-center gap-3">
           {([
             { type: 'wip' as const, label: "Export Day's WIP", hint: 'Open ROs (priority ≠ X) for the selected day' },
-            { type: 'wip-weekly' as const, label: "Export Week's WIP", hint: 'Open ROs (priority ≠ X) over the last 7 days' },
+            { type: 'wip-todate' as const, label: 'Export WIP Since Apr 1', hint: 'Open ROs (priority ≠ X) created from 1 Apr to the selected date' },
             { type: 'received' as const, label: 'Export Received JCs', hint: 'All ROs created + closed/unclosed totals + invoice sales' },
           ]).map(({ type, label, hint }) => (
             <button
