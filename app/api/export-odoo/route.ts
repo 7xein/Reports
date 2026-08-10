@@ -161,16 +161,23 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Admin Excel export (repair orders, one sheet per branch) ──────
-  if (body.type === 'wip' || body.type === 'received') {
+  if (body.type === 'wip' || body.type === 'wip-weekly' || body.type === 'received') {
     if (!isAdminAuthenticated()) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const dateStr = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : yesterdayGulf();
+    const received = body.type === 'received';
     try {
-      const rows = await fetchRepairOrdersForExport(dateStr, { wipOnly: body.type === 'wip' });
-      const invoiceSales = body.type === 'received' ? await fetchInvoiceSalesForExport(dateStr) : undefined;
-      const buffer = buildWorkbook(rows, body.type, invoiceSales);
-      const filename = body.type === 'wip' ? `WIP_Export_${dateStr}.xlsx` : `Received_JCs_${dateStr}.xlsx`;
+      const rows = await fetchRepairOrdersForExport(dateStr, {
+        wipOnly: !received,
+        days: body.type === 'wip-weekly' ? 7 : 1,
+      });
+      const invoiceSales = received ? await fetchInvoiceSalesForExport(dateStr) : undefined;
+      const buffer = buildWorkbook(rows, received ? 'received' : 'wip', invoiceSales);
+      const filename =
+        body.type === 'received'    ? `Received_JCs_${dateStr}.xlsx` :
+        body.type === 'wip-weekly'  ? `WIP_Weekly_Export_${dateStr}.xlsx` :
+                                      `WIP_Export_${dateStr}.xlsx`;
       return new NextResponse(buffer, {
         status: 200,
         headers: {

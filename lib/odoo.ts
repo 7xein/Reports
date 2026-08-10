@@ -355,6 +355,13 @@ function gulfDayWindowUtc(dateStr: string): { start: string; end: string } {
   };
 }
 
+/** Shift a YYYY-MM-DD date by a number of days. */
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 /** Odoo UTC datetime 'YYYY-MM-DD HH:MM:SS' → 'DD/MM/YYYY' in Gulf time. */
 function fmtGulfDate(raw: unknown): string {
   if (!raw || typeof raw !== 'string') return '';
@@ -386,13 +393,14 @@ const PRIORITY_MATRIX_LABELS: Record<string, string> = {
 };
 
 /**
- * Fetch repair-order records for one Gulf day, consolidated by branch, for Excel export.
+ * Fetch repair-order records for a Gulf date window, consolidated by branch, for Excel export.
  * @param opts.wipOnly  true → only priority_matrix_status != 'X' (WIP export);
  *                       false → all repair orders (Received export).
+ * @param opts.days     window length ending on dateStr (default 1 = single day; 7 = week).
  */
 export async function fetchRepairOrdersForExport(
   dateStr: string,
-  opts: { wipOnly: boolean },
+  opts: { wipOnly: boolean; days?: number },
 ): Promise<RepairOrderExportRow[]> {
   cachedUid = null;
   companyIdCache = null;
@@ -420,7 +428,10 @@ export async function fetchRepairOrdersForExport(
   if (phoneField) fields.push(phoneField);
   if (vehicleField) fields.push(vehicleField);
 
-  const { start, end } = gulfDayWindowUtc(dateStr);
+  const days = opts.days ?? 1;
+  const startDate = days > 1 ? shiftDate(dateStr, -(days - 1)) : dateStr;
+  const start = gulfDayWindowUtc(startDate).start; // start-of-day GST, `days` back
+  const end = gulfDayWindowUtc(dateStr).end;       // end-of-day GST on dateStr
   const domain: OdooDomain = [
     ['create_date', '>=', start],
     ['create_date', '<=', end],

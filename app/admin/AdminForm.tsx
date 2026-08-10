@@ -226,7 +226,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   // ── Odoo Excel export state
   const [exportDate, setExportDate] = useState(yesterday());
-  const [exporting, setExporting] = useState<'wip' | 'received' | null>(null);
+  const [exporting, setExporting] = useState<'wip' | 'wip-weekly' | 'received' | null>(null);
 
   // ── Odoo WIP sync state
   const [syncing, setSyncing] = useState(false);
@@ -500,9 +500,16 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
     window.location.href = '/login';
   }
 
-  async function exportFromOdoo(type: 'wip' | 'received') {
+  async function exportFromOdoo(type: 'wip' | 'wip-weekly' | 'received') {
     setExporting(type);
     setMessage('');
+    const fallbackName =
+      type === 'received'   ? `Received_JCs_${exportDate}.xlsx` :
+      type === 'wip-weekly' ? `WIP_Weekly_Export_${exportDate}.xlsx` :
+                              `WIP_Export_${exportDate}.xlsx`;
+    const okLabel =
+      type === 'received'   ? 'Received JCs' :
+      type === 'wip-weekly' ? "Week's WIP" : "Day's WIP";
     try {
       const res = await fetch('/api/export-odoo', {
         method: 'POST',
@@ -521,12 +528,12 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       const cd = res.headers.get('Content-Disposition') || '';
       const fn = cd.match(/filename="(.+?)"/);
       a.href = url;
-      a.download = fn ? fn[1] : (type === 'wip' ? `WIP_Export_${exportDate}.xlsx` : `Received_JCs_${exportDate}.xlsx`);
+      a.download = fn ? fn[1] : fallbackName;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-      setMessage(`✓ ${type === 'wip' ? 'WIP' : 'Received JCs'} Excel exported for ${exportDate}`);
+      setMessage(`✓ ${okLabel} Excel exported for ${exportDate}`);
     } catch (err) {
       setMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -858,8 +865,9 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         <p className="text-sm text-ink-muted mb-5">Downloads an Excel file with one tab per branch, pulled live from Odoo for the selected day.</p>
         <div className="flex flex-wrap items-center gap-3">
           {([
-            { type: 'wip' as const, label: "Export Day's WIP", hint: 'Open ROs (priority ≠ X)' },
-            { type: 'received' as const, label: 'Export Received JCs', hint: 'All ROs created + closed/unclosed totals' },
+            { type: 'wip' as const, label: "Export Day's WIP", hint: 'Open ROs (priority ≠ X) for the selected day' },
+            { type: 'wip-weekly' as const, label: "Export Week's WIP", hint: 'Open ROs (priority ≠ X) over the last 7 days' },
+            { type: 'received' as const, label: 'Export Received JCs', hint: 'All ROs created + closed/unclosed totals + invoice sales' },
           ]).map(({ type, label, hint }) => (
             <button
               key={type}
