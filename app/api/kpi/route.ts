@@ -54,7 +54,8 @@ export async function GET(req: NextRequest) {
       weekParam && /^\d{4}-\d{2}-\d{2}$/.test(weekParam) ? weekParam : undefined,
       config.weekStartDay,
     );
-    const key = `kpi:${weekStart}`;
+    // Config version is part of the key so saving new config busts the cache.
+    const key = `kpi:${weekStart}:${config.updatedAt ?? 'v0'}`;
 
     if (useRedis && !refresh) {
       try {

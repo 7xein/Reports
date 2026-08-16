@@ -82,7 +82,12 @@ export async function POST(req: NextRequest) {
     }
     current.wipWeeklyHistory.sort((a: import('@/lib/types').WipWeeklyEntry, b: import('@/lib/types').WipWeeklyEntry) => a.weekEnding.localeCompare(b.weekEnding));
   } else if (body.type === 'kpi-config') {
-    current.kpiConfig = body.payload as import('@/lib/types').KpiConfig;
+    // Stamp the save time — it's part of the KPI cache key, so saving config
+    // immediately invalidates any previously cached KPI trees.
+    current.kpiConfig = {
+      ...(body.payload as import('@/lib/types').KpiConfig),
+      updatedAt: new Date().toISOString(),
+    };
   } else {
     return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
   }

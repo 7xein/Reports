@@ -291,13 +291,24 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const roster = config.saRoster ?? [];
   const rosterById = new Map(roster.map((r) => [r.odooUserId, r]));
 
+  // Rostered advisors who have at least one record somewhere this week. Anyone
+  // with none still gets listed (under their assigned branch) showing N/A, so a
+  // freshly-added advisor is visible rather than silently missing.
+  const activeRostered = new Set(
+    evals.map((e) => e.userId).filter((id): id is number => id != null && rosterById.has(id)),
+  );
+
   const branches: BranchNode[] = BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
     const kpis = aggregate(branchEvals, enabled);
 
     // Only rostered users surface as SAs; everyone still counts in branch totals.
-    const userIds = [...new Set(branchEvals.map((e) => e.userId).filter((x): x is number => x != null))]
+    const withRecords = [...new Set(branchEvals.map((e) => e.userId).filter((x): x is number => x != null))]
       .filter((id) => rosterById.has(id));
+    const idleHere = roster
+      .filter((r) => r.branch === b && !activeRostered.has(r.odooUserId))
+      .map((r) => r.odooUserId);
+    const userIds = [...new Set([...withRecords, ...idleHere])];
 
     const serviceAdvisors: SaNode[] = userIds.map((id) => {
       const mine = branchEvals.filter((e) => e.userId === id);
@@ -322,6 +333,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   if (!roster.length) {
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
+  } else if (activeRostered.size === 0) {
+    notes.push(`${roster.length} service advisor(s) are on the roster but none created records in this week — check the week selected, or that the roster is pointing at the right Odoo users.`);
   }
 
   const companyKpis = aggregate(evals, enabled);

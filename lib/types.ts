@@ -151,6 +151,8 @@ export interface KpiConfig {
   };
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
+  /** Set on save — part of the KPI cache key so config edits take effect immediately. */
+  updatedAt?: string;
 }
 
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
