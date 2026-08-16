@@ -136,7 +136,84 @@ function selectorDomain(sel: StageSelector): OdooDomain {
 
 // ── Engine ─────────────────────────────────────────────────────────
 type Rec = Record<string, unknown>;
+type FieldsMeta = Record<string, { type?: string; selection?: [string, string][] }>;
 const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [number, string]) : null);
+
+/**
+ * The tracked field + the human labels Odoo stores in its change log for a
+ * configured selector. Only selection fields (state / priority matrix) are
+ * resolvable this way; stage/tag mappings fall back to date proxies.
+ */
+function trackedField(sel: StageSelector, meta: FieldsMeta): { field: string; labels: string[] } | null {
+  const field = sel.kind === 'state' ? 'state' : sel.kind === 'priority' ? 'priority_matrix_status' : null;
+  if (!field) return null;
+  const options = meta[field]?.selection ?? [];
+  const labels = sel.values
+    .map((v) => options.find(([code]) => code === String(v))?.[1])
+    .filter((x): x is string => !!x);
+  return labels.length ? { field, labels } : null;
+}
+
+/**
+ * When each RO actually entered the given state, read from Odoo's chatter/tracking
+ * log (mail.message + mail.tracking.value). Returns roId → epoch ms of the most
+ * recent transition into one of `labels`. Returns {} if tracking isn't readable,
+ * so callers fall back to a date proxy.
+ */
+async function stateEntryTimes(roIds: number[], field: string, labels: string[]): Promise<Record<number, number>> {
+  if (!roIds.length || !labels.length) return {};
+  try {
+    // Messages on these ROs that carry field-change tracking.
+    const msgs = (await call('mail.message', 'search_read', [[
+      ['model', '=', 'repair.order'],
+      ['res_id', 'in', roIds],
+      ['tracking_value_ids', '!=', false],
+    ]], { fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0 })) as Rec[];
+    if (!msgs.length) return {};
+
+    const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
+    if (!tvIds.length) return {};
+
+    // Odoo 17 links the changed field via field_id (m2o); older versions store the
+    // technical name in `field`.
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+    let fieldId: number | null = null;
+    if (useFieldId) {
+      const fr = (await call('ir.model.fields', 'search_read', [[
+        ['model', '=', 'repair.order'], ['name', '=', field],
+      ]], { fields: ['id'], limit: 1 })) as { id: number }[];
+      fieldId = fr[0]?.id ?? null;
+    }
+
+    const ref = useFieldId ? 'field_id' : 'field';
+    const tvs = (await call('mail.tracking.value', 'read', [tvIds], { fields: [ref, 'new_value_char'] })) as Rec[];
+
+    // Tracking rows that represent a transition INTO one of our target states.
+    const hits = new Set<number>();
+    for (const tv of tvs) {
+      const val = tv.new_value_char;
+      if (typeof val !== 'string' || !labels.includes(val)) continue;
+      if (useFieldId) { if (fieldId == null || m2o(tv[ref])?.[0] !== fieldId) continue; }
+      else if (tv[ref] !== field) continue;
+      hits.add(tv.id as number);
+    }
+    if (!hits.size) return {};
+
+    const out: Record<number, number> = {};
+    for (const m of msgs) {
+      const ids = (m.tracking_value_ids as number[] | undefined) ?? [];
+      if (!ids.some((id) => hits.has(id))) continue;
+      const t = odooTime(m.date);
+      const rid = m.res_id as number;
+      if (t == null) continue;
+      if (out[rid] == null || t > out[rid]) out[rid] = t; // most recent entry
+    }
+    return out;
+  } catch {
+    return {}; // tracking unavailable — caller falls back
+  }
+}
 
 export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): Promise<KpiTree> {
   const notes: string[] = [];
@@ -154,7 +231,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   for (const b of BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
 
   // Which optional fields exist on this instance?
-  const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+  const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'selection'] })) as FieldsMeta;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
   // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
   // otherwise falls back to create_date — deliberately NOT write_date, which any
@@ -169,7 +246,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     create_date: 'age of the repair order (no stage-change stamp available)',
     write_date: 'time since last modification — any edit resets this clock',
   };
-  const snapshotNote = `Point-in-time: reflects open ROs right now, not the selected week. Measured by ${AGE_LABEL[ageField] ?? ageField}.`;
+  let snapshotNote = `Point-in-time: reflects open ROs right now, not the selected week. Measured by ${AGE_LABEL[ageField] ?? ageField}.`;
+  let usedTrackingForAging = false;
   if (ageField === 'write_date') {
     notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
@@ -225,12 +303,49 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
-  // ── KPI 4 — in-repair ROs must already have a quotation ──
+  // ── KPI 4 — a quotation must exist BEFORE repair starts ──
+  // Uses the chatter log to get the moment the RO entered "under repair", so this
+  // checks the real sequence (quote created first) rather than just "a quote exists".
   if (on(4) && has('sale_order_id')) {
     const inRepair = (await call('repair.order', 'search_read', [[
       ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
     ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id'], limit: 0 })) as Rec[];
-    for (const r of inRepair) push(4, r, m2o(r.sale_order_id) != null, (r.name as string) || '');
+
+    const tf = trackedField(config.stageMap.underRepair, meta);
+    const entered = tf
+      ? await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels)
+      : {};
+
+    // Quotation creation times.
+    const soIds = [...new Set(inRepair.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
+    const soCreated: Record<number, number> = {};
+    if (soIds.length) {
+      try {
+        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
+        for (const so of sos) {
+          const t = odooTime(so.create_date);
+          if (t != null) soCreated[so.id as number] = t;
+        }
+      } catch { /* fall back to existence-only below */ }
+    }
+
+    let sequenceChecked = 0;
+    for (const r of inRepair) {
+      const ref = (r.name as string) || '';
+      const soId = m2o(r.sale_order_id)?.[0] ?? null;
+      if (soId == null) { push(4, r, false, ref); continue; } // no quote at all
+      const startedAt = entered[r.id as number];
+      const quotedAt = soCreated[soId];
+      if (startedAt != null && quotedAt != null) {
+        sequenceChecked++;
+        push(4, r, quotedAt <= startedAt, ref); // quote must pre-date repair start
+      } else {
+        push(4, r, true, ref); // quote exists but the sequence can't be verified
+      }
+    }
+    if (inRepair.length && sequenceChecked === 0) {
+      notes.push('KPI 4 could not read repair-start times from the chatter log, so it only checks that a quotation exists.');
+    }
   }
 
   // ── KPI 5 — tag within N minutes of creation ──
@@ -291,14 +406,23 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ...selectorDomain(sel),
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
+
+    // Prefer the real "entered this state" timestamp from the chatter log.
+    const tf = trackedField(sel, meta);
+    const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
+    if (Object.keys(entered).length) usedTrackingForAging = true;
+
     const limitMs = days * 86400_000;
     for (const r of recs) {
-      const since = odooTime(r[ageField]) ?? odooTime(r.create_date);
+      const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
       if (since == null) continue;
       push(kpiId, r, now - since <= limitMs, (r.name as string) || '');
     }
   }
 
+  if (usedTrackingForAging) {
+    snapshotNote = 'Point-in-time: reflects open ROs right now, not the selected week. Measured from when each vehicle actually entered this state (Odoo chatter log).';
+  }
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');
   }
