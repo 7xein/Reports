@@ -68,28 +68,32 @@ function KpiRow({ cell, expandable = false }: { cell: KpiCell; expandable?: bool
   const na = cell.pct === null;
   return (
     <div className="py-3 border-b border-border last:border-b-0">
+      {/* Header line — the bar lives on its own line below so it can never be
+          squeezed out when this row wraps on narrow screens. */}
       <div className="flex items-center gap-3 flex-wrap">
-        <span className="font-semibold text-ink text-sm min-w-[190px]">
+        <span className="font-semibold text-ink text-sm">
           {cell.name}
           {cell.snapshot && (
             <span className="ml-1.5 text-ink-muted cursor-help"
               title={cell.note || 'Point-in-time: reflects open ROs right now, not the selected week.'}>ⓘ</span>
           )}
         </span>
-        <div className="flex-1 min-w-[140px] h-2 bg-border rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${na ? '' : b.bar}`}
-            style={{
-              width: `${na ? 0 : Math.min(cell.pct as number, 100)}%`,
-              // keep a sliver visible for very small non-zero percentages
-              minWidth: !na && (cell.pct as number) > 0 ? 3 : 0,
-            }}
-          />
-        </div>
-        <span className={`text-sm font-bold tabular-nums w-16 text-right ${b.text}`}>{fmtPct(cell.pct)}</span>
+        <span className="flex-1" />
+        <span className={`text-sm font-bold tabular-nums ${b.text}`}>{fmtPct(cell.pct)}</span>
         <span className="text-xs text-ink-muted tabular-nums w-20 text-right">
           {na ? '—' : `${cell.compliant}/${cell.applicable}`}
         </span>
+      </div>
+
+      <div className="h-2 bg-border rounded-full overflow-hidden mt-2">
+        <div
+          className={`h-full rounded-full transition-all ${na ? '' : b.bar}`}
+          style={{
+            width: `${na ? 0 : Math.min(cell.pct as number, 100)}%`,
+            // keep a sliver visible for very small non-zero percentages
+            minWidth: !na && (cell.pct as number) > 0 ? 3 : 0,
+          }}
+        />
       </div>
       {na && <div className="text-xs text-ink-muted mt-1">N/A — no applicable records this week.</div>}
       {expandable && cell.violations.length > 0 && (
