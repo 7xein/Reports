@@ -104,20 +104,23 @@ export interface RegionalData {
 }
 
 // ── KPI section ───────────────────────────────────────────────────────────
+// Display order: per-job compliance first, then the "sitting too long" rules.
+// `id` values are stable (they're stored in config) — only the order changes.
 export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
-  { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
   { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
   { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
+  { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
+  { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
+  { id: 9, name: 'Open repair orders',       rule: 'A repair order should not stay open beyond the allowed number of days.' },
   { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An RO cannot await parts for more than 14 days.' },
   { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
-  { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
-/** KPIs 6 & 7 are point-in-time (current state), so they ignore the week window. */
-export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
+/** Point-in-time KPIs (current state), so they ignore the week window. */
+export const SNAPSHOT_KPI_IDS: number[] = [6, 7, 9];
 
 /**
  * How a workflow state is identified on repair.order. This Odoo instance keeps
@@ -145,8 +148,10 @@ export interface KpiConfig {
     awaitingLabourDays: number;
     /** Grace after a vehicle reaches delivery before "Invoice on delivery" judges it. */
     invoiceGraceMinutes?: number;
-    /** Window KPIs 6 & 7 measure against — all ROs created in the last N days. */
+    /** Window KPIs 6, 7 & 9 measure against — all ROs created in the last N days. */
     snapshotBaselineDays?: number;
+    /** Max days an RO may stay open (KPI 9). Set 0 to flag any still-open RO. */
+    openRoDays?: number;
   };
   stageMap: {
     repaired: StageSelector;
@@ -156,6 +161,8 @@ export interface KpiConfig {
     /** Tags that mark a vehicle as on/off site (CAR-IN / CAR-OUT). Leave empty
      *  to auto-detect tags named like "CAR IN" / "CAR-OUT". */
     presenceTags: StageSelector;
+    /** States that count as CLOSED. Anything else is an open RO (KPI 9). */
+    closed: StageSelector;
   };
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
@@ -173,16 +180,17 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, openRoDays: 14 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
     awaitingParts:  { kind: 'priority', values: ['P'] },            // Awaiting Parts
     awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
     presenceTags:   { kind: 'tag',      values: [] },               // empty → auto-detect CAR-IN / CAR-OUT
+    closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9],
   ageBasis: 'auto',
 };
 

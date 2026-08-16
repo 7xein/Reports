@@ -18,14 +18,16 @@ interface OdooOptions {
   };
 }
 
-type MapKey = 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags';
+type MapKey = 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'closed';
 const MAP_LABELS: Record<MapKey, string> = {
   repaired: 'Repaired', underRepair: 'Under repair',
   awaitingParts: 'Awaiting parts', awaitingLabour: 'Awaiting labour',
   presenceTags: 'Car in / out tags',
+  closed: 'Closed / completed',
 };
 const MAP_HINTS: Partial<Record<MapKey, string>> = {
   presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
+  closed: 'Anything NOT in these states counts as an open repair order.',
 };
 
 export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) {
@@ -194,7 +196,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['invoiceGraceMinutes', 'Invoice grace after delivery (minutes)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
-          ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],
+          ['openRoDays', 'Open repair order max age (days, 0 = any open RO)'],
+          ['snapshotBaselineDays', 'Awaiting parts/labour/open compared against last N days'],
         ] as const).map(([k, label]) => (
           <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
             {label}

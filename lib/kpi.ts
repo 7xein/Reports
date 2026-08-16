@@ -134,6 +134,15 @@ function selectorDomain(sel: StageSelector): OdooDomain {
   return [['priority_matrix_status', 'in', sel.values]];
 }
 
+/** Inverse of selectorDomain — e.g. "not closed" = every open RO. */
+function selectorDomainNot(sel: StageSelector): OdooDomain {
+  if (!sel || !sel.values?.length) return []; // nothing marked closed → everything is open
+  if (sel.kind === 'state') return [['state', 'not in', sel.values]];
+  if (sel.kind === 'stage') return [['stage_id', 'not in', sel.values]];
+  if (sel.kind === 'tag')   return [['tag_ids', 'not in', sel.values]];
+  return [['priority_matrix_status', 'not in', sel.values]];
+}
+
 // ── Engine ─────────────────────────────────────────────────────────
 type Rec = Record<string, unknown>;
 type FieldsMeta = Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
@@ -489,7 +498,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   }
 
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
-  if (on(6) || on(7)) {
+  if (on(6) || on(7) || on(9)) {
     // Baseline population: every RO created in the last N days. Scoring stuck
     // vehicles against the whole workload (rather than only against other stuck
     // vehicles) is what makes these percentages meaningful.
@@ -533,6 +542,33 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // Stuck vehicles older than the window still count against us.
       for (const [id, r] of overdue) {
         if (!seen.has(id)) push(kpiId, r, false, (r.name as string) || '');
+      }
+    }
+
+    // ── KPI 9 — repair orders shouldn't stay open too long ──
+    if (on(9)) {
+      const maxDays = config.thresholds.openRoDays ?? 14;
+      const openROs = (await call('repair.order', 'search_read', [[
+        ...selectorDomainNot(config.stageMap.closed),
+        ['company_id', 'in', trackedIds],
+      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
+
+      const limitMs = maxDays * 86400_000;
+      const stillOpen = new Map<number, Rec>();
+      for (const r of openROs) {
+        const created = odooTime(r.create_date);
+        if (created == null) continue;
+        if (now - created > limitMs) stillOpen.set(r.id as number, r);
+      }
+
+      const seen = new Set<number>();
+      for (const r of baseROs) {
+        const id = r.id as number;
+        seen.add(id);
+        push(9, r, !stillOpen.has(id), (r.name as string) || '');
+      }
+      for (const [id, r] of stillOpen) {
+        if (!seen.has(id)) push(9, r, false, (r.name as string) || '');
       }
     }
   }
