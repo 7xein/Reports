@@ -18,10 +18,14 @@ interface OdooOptions {
   };
 }
 
-type MapKey = 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour';
+type MapKey = 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags';
 const MAP_LABELS: Record<MapKey, string> = {
   repaired: 'Repaired', underRepair: 'Under repair',
   awaitingParts: 'Awaiting parts', awaitingLabour: 'Awaiting labour',
+  presenceTags: 'Car in / out tags',
+};
+const MAP_HINTS: Partial<Record<MapKey, string>> = {
+  presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
 };
 
 export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) {
@@ -144,7 +148,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       <div className="text-sm font-bold text-ink mb-3">1. State mapping</div>
       <div className="space-y-4 mb-6">
         {(Object.keys(MAP_LABELS) as MapKey[]).map((key) => {
-          const sel = cfg.stageMap[key];
+          const sel = cfg.stageMap[key] ?? { kind: 'tag' as StageSelectorKind, values: [] };
           const list = optionsFor(sel.kind);
           return (
             <div key={key} className="border border-border rounded-md p-3">
@@ -159,6 +163,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                 ))}
                 <span className="text-xs text-ink-muted">{sel.values.length} selected</span>
               </div>
+              {MAP_HINTS[key] && <div className="text-xs text-ink-muted mb-2">{MAP_HINTS[key]}</div>}
               {list.length === 0 ? (
                 <div className="text-xs text-ink-muted">No {sel.kind} options available on this instance.</div>
               ) : (

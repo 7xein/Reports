@@ -136,7 +136,27 @@ function selectorDomain(sel: StageSelector): OdooDomain {
 
 // ── Engine ─────────────────────────────────────────────────────────
 type Rec = Record<string, unknown>;
-type FieldsMeta = Record<string, { type?: string; selection?: [string, string][] }>;
+type FieldsMeta = Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
+
+/** Matches tag names like "CAR-IN", "CAR IN", "CAR OUT", "car_out". */
+const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
+
+/**
+ * Tag ids that mark a vehicle in/out. Uses the configured ids when set, otherwise
+ * auto-detects tags named like CAR-IN / CAR-OUT so the KPI works out of the box.
+ */
+async function resolvePresenceTagIds(configured: (string | number)[], meta: FieldsMeta): Promise<number[]> {
+  const explicit = (configured ?? []).map(Number).filter((n) => Number.isFinite(n));
+  if (explicit.length) return explicit;
+  const relation = meta.tag_ids?.relation;
+  if (!relation) return [];
+  try {
+    const recs = (await call(relation, 'search_read', [[]], { fields: ['display_name'], limit: 500 })) as { id: number; display_name?: string }[];
+    return recs.filter((t) => PRESENCE_TAG_RE.test(t.display_name || '')).map((t) => t.id);
+  } catch {
+    return [];
+  }
+}
 const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [number, string]) : null);
 
 /**
@@ -254,7 +274,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   for (const b of BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
 
   // Which optional fields exist on this instance?
-  const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'selection'] })) as FieldsMeta;
+  const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
   // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
   // otherwise falls back to create_date — deliberately NOT write_date, which any
@@ -406,19 +426,32 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
-  // ── KPI 5 — tag within N minutes of creation ──
-  if (on(5)) {
+  // ── KPIs 5 & 8 — tagging on ROs created this week ──
+  if (on(5) || on(8)) {
     const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
       fields: ['name', 'create_uid', 'company_id', 'create_date', 'tag_ids'], limit: 0,
     })) as Rec[];
     const graceMs = (config.thresholds.tagMinutes ?? 60) * 60_000;
+
+    // Tags that mark the vehicle in/out (KPI 8).
+    const presence = new Set(
+      on(8) ? await resolvePresenceTagIds(config.stageMap.presenceTags?.values ?? [], meta) : [],
+    );
+
     for (const r of weekROs) {
       const created = odooTime(r.create_date);
       // Only judge ROs that have had their full grace period.
       if (created == null || now - created < graceMs) continue;
-      const tagged = ((r.tag_ids as number[] | undefined) ?? []).length > 0;
-      push(5, r, tagged, (r.name as string) || '');
+      const tags = (r.tag_ids as number[] | undefined) ?? [];
+      const ref = (r.name as string) || '';
+      if (on(5)) push(5, r, tags.length > 0, ref);
+      if (on(8) && presence.size) push(8, r, tags.some((id) => presence.has(id)), ref);
     }
+
+    if (on(8) && !presence.size) {
+      notes.push('KPI 8 is inactive — no CAR-IN / CAR-OUT tags were found. Pick them under "Car in / out tags" in Admin → KPI Configuration.');
+    }
+
     // RO volume per SA (used for the "N ROs this week" badge).
     for (const r of weekROs) {
       const uid = m2o(r.create_uid)?.[0];

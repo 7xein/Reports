@@ -112,6 +112,7 @@ export const KPI_DEFINITIONS = [
   { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
   { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An RO cannot await parts for more than 14 days.' },
   { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
+  { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
@@ -150,6 +151,9 @@ export interface KpiConfig {
     underRepair: StageSelector;
     awaitingParts: StageSelector;
     awaitingLabour: StageSelector;
+    /** Tags that mark a vehicle as on/off site (CAR-IN / CAR-OUT). Leave empty
+     *  to auto-detect tags named like "CAR IN" / "CAR-OUT". */
+    presenceTags: StageSelector;
   };
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
@@ -173,9 +177,10 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
     awaitingParts:  { kind: 'priority', values: ['P'] },            // Awaiting Parts
     awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
+    presenceTags:   { kind: 'tag',      values: [] },               // empty → auto-detect CAR-IN / CAR-OUT
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8],
   ageBasis: 'auto',
 };
 
