@@ -56,7 +56,7 @@ const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
 };
 
 // ── Types ──────────────────────────────────────────────────────────
-type OdooDomain = (string | [string, string, unknown])[];
+export type OdooDomain = (string | [string, string, unknown])[];
 
 interface ReadGroupResult {
   company_id?: [number, string];
@@ -96,7 +96,7 @@ async function authenticate(): Promise<number> {
   return uid;
 }
 
-async function call(model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
+export async function call(model: string, method: string, args: unknown[], kwargs: Record<string, unknown> = {}) {
   const uid = await authenticate();
   return jsonRpc(`${ODOO_URL()}/jsonrpc`, 'call', {
     service: 'object',
@@ -108,7 +108,7 @@ async function call(model: string, method: string, args: unknown[], kwargs: Reco
 // ── Helpers ────────────────────────────────────────────────────────
 let companyIdCache: Record<string, number> | null = null;
 
-async function getCompanyIds(): Promise<Record<string, number>> {
+export async function getCompanyIds(): Promise<Record<string, number>> {
   if (companyIdCache) return companyIdCache;
   // Use search_read to get the actual 'name' field (not display_name from name_search)
   const companies: { id: number; name: string }[] = await call('res.company', 'search_read', [[]], {
@@ -120,14 +120,14 @@ async function getCompanyIds(): Promise<Record<string, number>> {
   return companyIdCache;
 }
 
-async function branchCompanyIds(branch: Branch): Promise<number[]> {
+export async function branchCompanyIds(branch: Branch): Promise<number[]> {
   const map = await getCompanyIds();
   return (BRANCH_CLUSTERS[branch] || [])
     .map((n) => { const id = map[n]; if (!id) console.warn(`⚠ Company "${n}" not found in Odoo`); return id; })
     .filter(Boolean);
 }
 
-async function allTrackedCompanyIds(): Promise<number[]> {
+export async function allTrackedCompanyIds(): Promise<number[]> {
   const map = await getCompanyIds();
   return ALL_TRACKED_COMPANIES.map((n) => map[n]).filter(Boolean);
 }
@@ -372,7 +372,7 @@ const m2oId = (v: unknown): number | null => (Array.isArray(v) ? (v[0] as number
 export const EXPORT_BRANCHES = BRANCHES.filter((b) => b !== 'Qatar') as Branch[];
 
 /** priority_matrix_status letter codes → human labels. */
-const PRIORITY_MATRIX_LABELS: Record<string, string> = {
+export const PRIORITY_MATRIX_LABELS: Record<string, string> = {
   K: 'Car Not In',
   H: 'No Action Taken',
   A: 'Awaiting Quotation',
@@ -706,4 +706,102 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
   ]);
 
   return { date: dateStr, salesTotal, salesWithout };
+}
+
+// ── KPI: live option lists + field verification ────────────────────
+export interface KpiOdooOptions {
+  /** priority_matrix_status selection values (this instance's real workflow). */
+  priorityOptions: { value: string; label: string }[];
+  /** repair.order stage records, if the model actually has stage_id. */
+  stages: { id: number; name: string }[];
+  /** repair.order tag records. */
+  tags: { id: number; name: string }[];
+  /** Users who created ROs in the last 90 days — SA roster candidates. */
+  users: { id: number; name: string; roCount: number }[];
+  /** fields_get verification, surfaced in the admin UI. */
+  fieldReport: {
+    hasStageId: boolean;
+    hasState: boolean;
+    hasPriorityMatrixStatus: boolean;
+    hasDateLastStageUpdate: boolean;
+    hasSaleOrderId: boolean;
+    stageAgeField: string;   // date_last_stage_update, else write_date
+    notes: string[];
+  };
+}
+
+export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const meta = (await call('repair.order', 'fields_get', [], {
+    attributes: ['string', 'type', 'relation', 'selection'],
+  })) as Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
+  const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
+
+  const notes: string[] = [];
+
+  // Priority matrix — prefer Odoo's own selection labels, fall back to our map.
+  let priorityOptions = (meta.priority_matrix_status?.selection ?? []).map(([value, label]) => ({ value, label }));
+  if (!priorityOptions.length) {
+    priorityOptions = Object.entries(PRIORITY_MATRIX_LABELS).map(([value, label]) => ({ value, label }));
+  }
+
+  // Stages (only if stage_id genuinely exists on this model).
+  let stages: { id: number; name: string }[] = [];
+  if (has('stage_id') && meta.stage_id?.relation) {
+    try {
+      const recs = (await call(meta.stage_id.relation, 'search_read', [[]], { fields: ['display_name'], limit: 200 })) as { id: number; display_name?: string }[];
+      stages = recs.map((r) => ({ id: r.id, name: r.display_name || `#${r.id}` }));
+    } catch { notes.push('stage_id exists but its stage model could not be read.'); }
+  } else {
+    notes.push('repair.order has no usable stage_id — map states via Priority Matrix instead.');
+  }
+
+  // Tags.
+  let tags: { id: number; name: string }[] = [];
+  if (has('tag_ids') && meta.tag_ids?.relation) {
+    try {
+      const recs = (await call(meta.tag_ids.relation, 'search_read', [[]], { fields: ['display_name'], limit: 300 })) as { id: number; display_name?: string }[];
+      tags = recs.map((r) => ({ id: r.id, name: r.display_name || `#${r.id}` }));
+    } catch { notes.push('tag_ids comodel could not be read.'); }
+  }
+
+  // SA candidates: who created ROs in the last 90 days (grouped, not row-by-row).
+  const since = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+  const trackedIds = await allTrackedCompanyIds();
+  const users: { id: number; name: string; roCount: number }[] = [];
+  try {
+    const groups = (await call('repair.order', 'read_group', [[
+      ['create_date', '>=', since],
+      ['company_id', 'in', trackedIds],
+    ]], { fields: ['create_uid'], groupby: ['create_uid'], lazy: true })) as ReadGroupResult[];
+    for (const g of groups) {
+      const u = g.create_uid as [number, string] | undefined;
+      if (!u) continue;
+      users.push({ id: u[0], name: u[1], roCount: (g.create_uid_count ?? g.__count ?? 0) as number });
+    }
+    users.sort((a, b) => b.roCount - a.roCount);
+  } catch { notes.push('Could not group ROs by creator for the SA roster.'); }
+
+  const hasDateLastStageUpdate = has('date_last_stage_update');
+  if (!hasDateLastStageUpdate) {
+    notes.push('date_last_stage_update is not available — KPIs 6 & 7 use write_date as a proxy for time-in-state.');
+  }
+
+  return {
+    priorityOptions,
+    stages,
+    tags,
+    users,
+    fieldReport: {
+      hasStageId: has('stage_id'),
+      hasState: has('state'),
+      hasPriorityMatrixStatus: has('priority_matrix_status'),
+      hasDateLastStageUpdate,
+      hasSaleOrderId: has('sale_order_id'),
+      stageAgeField: hasDateLastStageUpdate ? 'date_last_stage_update' : 'write_date',
+      notes,
+    },
+  };
 }

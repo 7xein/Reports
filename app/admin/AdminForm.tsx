@@ -8,6 +8,7 @@ import {
 } from '@/lib/types';
 import { getWeekStart } from '@/lib/sales-utils';
 import { formatNumber } from '@/lib/format';
+import { KpiConfigCard } from './KpiConfigCard';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai:       '#78C41A',
@@ -892,6 +893,8 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
           ))}
         </div>
       </div>
+
+      <KpiConfigCard initialConfig={initialData.kpiConfig} />
 
       {message && (
         <div className={`mt-4 text-sm font-semibold ${message.startsWith('✓') ? 'text-evs-green-dark' : 'text-danger'}`}>

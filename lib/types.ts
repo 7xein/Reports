@@ -103,6 +103,83 @@ export interface RegionalData {
   salesLog: RegionalSalesEntry[];
 }
 
+// ── KPI section ───────────────────────────────────────────────────────────
+export const KPI_DEFINITIONS = [
+  { id: 1, name: 'Invoice on repair',        rule: 'Invoices must be raised as soon as a vehicle is repaired.' },
+  { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
+  { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
+  { id: 4, name: 'Quote before repair',      rule: 'A quotation must exist before repair work starts.' },
+  { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
+  { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An RO cannot await parts for more than 14 days.' },
+  { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
+] as const;
+export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
+
+/** KPIs 6 & 7 are point-in-time (current state), so they ignore the week window. */
+export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
+
+/**
+ * How a workflow state is identified on repair.order. This Odoo instance keeps
+ * its workflow in `priority_matrix_status` (stage_id is unused), but stage/tag
+ * are supported so the mapping stays configurable.
+ */
+export type StageSelectorKind = 'priority' | 'stage' | 'tag';
+export interface StageSelector {
+  kind: StageSelectorKind;
+  values: (string | number)[];
+}
+
+export interface SaRosterEntry {
+  odooUserId: number;
+  name: string;
+  branch: string;
+}
+
+export interface KpiConfig {
+  weekStartDay: number;                 // 6 = Saturday
+  thresholds: {
+    quoteApprovalDays: number;
+    tagMinutes: number;
+    awaitingPartsDays: number;
+    awaitingLabourDays: number;
+  };
+  stageMap: {
+    repaired: StageSelector;
+    underRepair: StageSelector;
+    awaitingParts: StageSelector;
+    awaitingLabour: StageSelector;
+  };
+  saRoster: SaRosterEntry[];
+  enabledKpis: number[];
+}
+
+/** Safe defaults, using the priority-matrix codes this instance actually uses. */
+export const DEFAULT_KPI_CONFIG: KpiConfig = {
+  weekStartDay: 6,
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2 },
+  stageMap: {
+    repaired:       { kind: 'priority', values: ['C', 'G', 'D'] }, // Labour Complete / QC Complete / Vehicle Ready
+    underRepair:    { kind: 'priority', values: ['W'] },           // Work In Progress
+    awaitingParts:  { kind: 'priority', values: ['P'] },           // Awaiting Parts
+    awaitingLabour: { kind: 'priority', values: ['I'] },           // Awaiting Labour
+  },
+  saRoster: [],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7],
+};
+
+/** Merge a stored (possibly partial/legacy) config over the defaults. */
+export function withKpiDefaults(cfg?: Partial<KpiConfig> | null): KpiConfig {
+  if (!cfg) return DEFAULT_KPI_CONFIG;
+  return {
+    ...DEFAULT_KPI_CONFIG,
+    ...cfg,
+    thresholds: { ...DEFAULT_KPI_CONFIG.thresholds, ...(cfg.thresholds ?? {}) },
+    stageMap:   { ...DEFAULT_KPI_CONFIG.stageMap,   ...(cfg.stageMap ?? {}) },
+    saRoster:   cfg.saRoster ?? DEFAULT_KPI_CONFIG.saRoster,
+    enabledKpis: cfg.enabledKpis ?? DEFAULT_KPI_CONFIG.enabledKpis,
+  };
+}
+
 export interface ReportData {
   weekly: {
     targets: BranchValues<WeeklyMetricKey>;
@@ -119,4 +196,5 @@ export interface ReportData {
   regional: RegionalData;
   wipHistory: WipDailyEntry[];         // cumulative daily snapshots (trend chart)
   wipWeeklyHistory: WipWeeklyEntry[];  // week-only counts entered every Thursday
+  kpiConfig?: KpiConfig;               // optional — falls back to DEFAULT_KPI_CONFIG
 }

@@ -1,0 +1,335 @@
+/**
+ * KPI engine — computes the Company → Branch → Service Advisor tree from live Odoo data.
+ *
+ * Approach: each KPI produces a flat list of Evaluations
+ * ({ kpiId, branch, user, compliant, ref }). One aggregator then rolls that list
+ * up at any level, so SA / branch / company numbers all come from the same source
+ * and can never disagree.
+ *
+ * Weekly window: Saturday 00:00 → Friday 23:59 Gulf time (UTC+4).
+ */
+
+import {
+  BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS,
+} from './types';
+import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
+
+// ── Week helpers ───────────────────────────────────────────────────
+const GULF_OFFSET_MS = 4 * 3600 * 1000;
+
+/** "Now" shifted into Gulf time so UTC getters read as local Gulf values. */
+function gulfNow(): Date {
+  return new Date(Date.now() + GULF_OFFSET_MS);
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The Saturday starting the week that contains `iso` (or the current week). */
+export function weekStartFor(iso?: string, weekStartDay = 6): string {
+  const base = iso ? new Date(`${iso}T00:00:00Z`) : gulfNow();
+  const day = base.getUTCDay();                       // 0=Sun … 6=Sat
+  const back = (day - weekStartDay + 7) % 7;          // days since the week start
+  const d = new Date(base);
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Gulf calendar date → Odoo UTC datetime string. */
+function gulfToUtc(iso: string, endOfDay = false): string {
+  const d = new Date(`${iso}T${endOfDay ? '23:59:59' : '00:00:00'}+04:00`);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/** Parse an Odoo UTC datetime ('YYYY-MM-DD HH:MM:SS') to epoch ms. */
+function odooTime(raw: unknown): number | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const t = Date.parse(raw.replace(' ', 'T') + 'Z');
+  return Number.isNaN(t) ? null : t;
+}
+
+// ── Result shapes ──────────────────────────────────────────────────
+export interface KpiCell {
+  id: number;
+  name: string;
+  compliant: number;
+  applicable: number;
+  pct: number | null;        // null = N/A (nothing applicable)
+  snapshot: boolean;         // true = point-in-time KPI (ignores the week window)
+  violations: string[];      // capped at 50
+}
+
+export interface SaNode {
+  odooUserId: number;
+  name: string;
+  achievement: number | null;
+  roCount: number;
+  kpis: KpiCell[];
+}
+
+export interface BranchNode {
+  name: string;
+  achievement: number | null;
+  applicableTotal: number;
+  kpis: KpiCell[];
+  serviceAdvisors: SaNode[];
+}
+
+export interface KpiTree {
+  week: { start: string; end: string };
+  generatedAt: string;
+  company: { achievement: number | null; kpis: KpiCell[] };
+  branches: BranchNode[];
+  notes: string[];
+}
+
+interface Evaluation {
+  kpiId: number;
+  branch: Branch;
+  userId: number | null;
+  userName: string;
+  compliant: boolean;
+  ref: string;
+}
+
+// ── Aggregation ────────────────────────────────────────────────────
+const VIOLATION_CAP = 50;
+
+function aggregate(evals: Evaluation[], enabled: number[]): KpiCell[] {
+  return KPI_DEFINITIONS.filter((d) => enabled.includes(d.id)).map((d) => {
+    const mine = evals.filter((e) => e.kpiId === d.id);
+    const compliant = mine.filter((e) => e.compliant).length;
+    const applicable = mine.length;
+    return {
+      id: d.id,
+      name: d.name,
+      compliant,
+      applicable,
+      pct: applicable > 0 ? (compliant / applicable) * 100 : null,
+      snapshot: SNAPSHOT_KPI_IDS.includes(d.id),
+      violations: mine.filter((e) => !e.compliant).map((e) => e.ref).slice(0, VIOLATION_CAP),
+    };
+  });
+}
+
+/** Overall achievement = mean of the KPI percentages that have applicable records. */
+function overall(cells: KpiCell[]): number | null {
+  const active = cells.filter((c) => c.pct !== null);
+  if (!active.length) return null;
+  return active.reduce((s, c) => s + (c.pct as number), 0) / active.length;
+}
+
+// ── Odoo domain from a configured selector ─────────────────────────
+function selectorDomain(sel: StageSelector): OdooDomain {
+  if (!sel || !sel.values?.length) return [['id', '=', 0]]; // unmapped → matches nothing
+  if (sel.kind === 'stage') return [['stage_id', 'in', sel.values]];
+  if (sel.kind === 'tag')   return [['tag_ids', 'in', sel.values]];
+  return [['priority_matrix_status', 'in', sel.values]];
+}
+
+// ── Engine ─────────────────────────────────────────────────────────
+type Rec = Record<string, unknown>;
+const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [number, string]) : null);
+
+export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): Promise<KpiTree> {
+  const notes: string[] = [];
+  const start = weekStartFor(weekStartIso, config.weekStartDay ?? 6);
+  const endExclusive = addDaysIso(start, 7);
+  const end = addDaysIso(start, 6);
+  const wStart = gulfToUtc(start);
+  const wEnd = gulfToUtc(endExclusive);
+  const now = Date.now();
+
+  const trackedIds = await allTrackedCompanyIds();
+
+  // company id → branch
+  const idToBranch: Record<number, Branch> = {};
+  for (const b of BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
+
+  // Which optional fields exist on this instance?
+  const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+  const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
+  const ageField = has('date_last_stage_update') ? 'date_last_stage_update' : 'write_date';
+  if (ageField === 'write_date') {
+    notes.push('date_last_stage_update is unavailable — KPIs 6 & 7 use write_date as a proxy for time-in-state.');
+  }
+  if (!has('sale_order_id')) {
+    notes.push('repair.order has no sale_order_id — KPIs 1, 3 and 4 cannot be evaluated.');
+  }
+
+  const evals: Evaluation[] = [];
+  const roCountByUser: Record<number, number> = {};
+
+  const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string) => {
+    const cid = m2o(rec.company_id)?.[0];
+    const branch = cid != null ? idToBranch[cid] : undefined;
+    if (!branch) return; // untracked company (EV HUB, CarDIP, …)
+    const u = m2o(rec.create_uid);
+    evals.push({
+      kpiId, branch,
+      userId: u?.[0] ?? null,
+      userName: u?.[1] ?? 'Unknown',
+      compliant, ref,
+    });
+  };
+
+  const weekDomain: OdooDomain = [
+    ['create_date', '>=', wStart],
+    ['create_date', '<', wEnd],
+    ['company_id', 'in', trackedIds],
+  ];
+  const enabled = config.enabledKpis ?? [];
+  const on = (id: number) => enabled.includes(id);
+
+  // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
+  if ((on(1) || on(3)) && has('sale_order_id')) {
+    const repaired = (await call('repair.order', 'search_read', [[
+      ...selectorDomain(config.stageMap.repaired), ...weekDomain,
+    ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id'], limit: 0 })) as Rec[];
+
+    // Which of the linked sale orders actually have invoices?
+    const soIds = [...new Set(repaired.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
+    const invoiced = new Set<number>();
+    if (on(1) && soIds.length) {
+      try {
+        const sos = (await call('sale.order', 'read', [soIds], { fields: ['invoice_ids'] })) as { id: number; invoice_ids?: number[] }[];
+        for (const so of sos) if ((so.invoice_ids ?? []).length) invoiced.add(so.id);
+      } catch { notes.push('Could not read sale.order invoice_ids — KPI 1 may be understated.'); }
+    }
+
+    for (const r of repaired) {
+      const ref = (r.name as string) || '';
+      const soId = m2o(r.sale_order_id)?.[0] ?? null;
+      if (on(3)) push(3, r, soId != null, ref);
+      if (on(1)) push(1, r, soId != null && invoiced.has(soId), ref);
+    }
+  }
+
+  // ── KPI 4 — in-repair ROs must already have a quotation ──
+  if (on(4) && has('sale_order_id')) {
+    const inRepair = (await call('repair.order', 'search_read', [[
+      ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
+    ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id'], limit: 0 })) as Rec[];
+    for (const r of inRepair) push(4, r, m2o(r.sale_order_id) != null, (r.name as string) || '');
+  }
+
+  // ── KPI 5 — tag within N minutes of creation ──
+  if (on(5)) {
+    const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
+      fields: ['name', 'create_uid', 'company_id', 'create_date', 'tag_ids'], limit: 0,
+    })) as Rec[];
+    const graceMs = (config.thresholds.tagMinutes ?? 60) * 60_000;
+    for (const r of weekROs) {
+      const created = odooTime(r.create_date);
+      // Only judge ROs that have had their full grace period.
+      if (created == null || now - created < graceMs) continue;
+      const tagged = ((r.tag_ids as number[] | undefined) ?? []).length > 0;
+      push(5, r, tagged, (r.name as string) || '');
+    }
+    // RO volume per SA (used for the "N ROs this week" badge).
+    for (const r of weekROs) {
+      const uid = m2o(r.create_uid)?.[0];
+      const cid = m2o(r.company_id)?.[0];
+      if (uid != null && cid != null && idToBranch[cid]) roCountByUser[uid] = (roCountByUser[uid] ?? 0) + 1;
+    }
+  }
+
+  // ── KPI 2 — quotation approval within N days ──
+  if (on(2)) {
+    const limitMs = (config.thresholds.quoteApprovalDays ?? 7) * 86400_000;
+    // (a) Still-open quotations: compliant while they're inside the window.
+    const open = (await call('sale.order', 'search_read', [[
+      ['state', 'in', ['draft', 'sent']],
+      ['company_id', 'in', trackedIds],
+    ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
+    for (const q of open) {
+      const created = odooTime(q.create_date);
+      if (created == null) continue;
+      push(2, q, now - created <= limitMs, (q.name as string) || '');
+    }
+    // (b) Quotations confirmed during the week: was approval inside the window?
+    const confirmed = (await call('sale.order', 'search_read', [[
+      ['state', 'in', ['sale', 'done']],
+      ['date_order', '>=', wStart], ['date_order', '<', wEnd],
+      ['company_id', 'in', trackedIds],
+    ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'date_order'], limit: 0 })) as Rec[];
+    for (const q of confirmed) {
+      const created = odooTime(q.create_date);
+      const approved = odooTime(q.date_order);
+      if (created == null || approved == null) continue;
+      push(2, q, approved - created <= limitMs, (q.name as string) || '');
+    }
+  }
+
+  // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
+  for (const [kpiId, sel, days] of [
+    [6, config.stageMap.awaitingParts,  config.thresholds.awaitingPartsDays  ?? 14],
+    [7, config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2],
+  ] as const) {
+    if (!on(kpiId)) continue;
+    const recs = (await call('repair.order', 'search_read', [[
+      ...selectorDomain(sel),
+      ['company_id', 'in', trackedIds],
+    ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
+    const limitMs = days * 86400_000;
+    for (const r of recs) {
+      const since = odooTime(r[ageField]) ?? odooTime(r.create_date);
+      if (since == null) continue;
+      push(kpiId, r, now - since <= limitMs, (r.name as string) || '');
+    }
+  }
+
+  if (SNAPSHOT_KPI_IDS.some(on)) {
+    notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');
+  }
+
+  // ── Roll up ────────────────────────────────────────────────────────
+  const roster = config.saRoster ?? [];
+  const rosterById = new Map(roster.map((r) => [r.odooUserId, r]));
+
+  const branches: BranchNode[] = BRANCHES.map((b) => {
+    const branchEvals = evals.filter((e) => e.branch === b);
+    const kpis = aggregate(branchEvals, enabled);
+
+    // Only rostered users surface as SAs; everyone still counts in branch totals.
+    const userIds = [...new Set(branchEvals.map((e) => e.userId).filter((x): x is number => x != null))]
+      .filter((id) => rosterById.has(id));
+
+    const serviceAdvisors: SaNode[] = userIds.map((id) => {
+      const mine = branchEvals.filter((e) => e.userId === id);
+      const cells = aggregate(mine, enabled);
+      return {
+        odooUserId: id,
+        name: rosterById.get(id)?.name || mine[0]?.userName || `User ${id}`,
+        achievement: overall(cells),
+        roCount: roCountByUser[id] ?? 0,
+        kpis: cells,
+      };
+    }).sort((a, b2) => (b2.achievement ?? -1) - (a.achievement ?? -1));
+
+    return {
+      name: b,
+      achievement: overall(kpis),
+      applicableTotal: kpis.reduce((s, c) => s + c.applicable, 0),
+      kpis,
+      serviceAdvisors,
+    };
+  });
+
+  if (!roster.length) {
+    notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
+  }
+
+  const companyKpis = aggregate(evals, enabled);
+
+  return {
+    week: { start, end },
+    generatedAt: new Date().toISOString(),
+    company: { achievement: overall(companyKpis), kpis: companyKpis },
+    branches,
+    notes,
+  };
+}

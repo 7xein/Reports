@@ -81,6 +81,8 @@ export async function POST(req: NextRequest) {
       current.wipWeeklyHistory.push(entry);
     }
     current.wipWeeklyHistory.sort((a: import('@/lib/types').WipWeeklyEntry, b: import('@/lib/types').WipWeeklyEntry) => a.weekEnding.localeCompare(b.weekEnding));
+  } else if (body.type === 'kpi-config') {
+    current.kpiConfig = body.payload as import('@/lib/types').KpiConfig;
   } else {
     return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
   }

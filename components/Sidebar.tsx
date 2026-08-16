@@ -30,6 +30,18 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: '/kpi',
+    group: 'kpi',
+    label: 'KPI Dashboard',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 20a8 8 0 1 0-8-8" />
+        <path d="M12 12l4.5-4.5" />
+        <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+      </svg>
+    ),
+  },
 ];
 
 const ADMIN_ITEM = {
@@ -83,6 +95,7 @@ export function Sidebar() {
   function isActive(group: string) {
     if (group === 'wip')   return pathname.startsWith('/wip');
     if (group === 'sales') return pathname.startsWith('/sales');
+    if (group === 'kpi')   return pathname.startsWith('/kpi');
     if (group === 'admin') return pathname.startsWith('/admin');
     return false;
   }
