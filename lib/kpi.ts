@@ -162,13 +162,36 @@ function trackedField(sel: StageSelector, meta: FieldsMeta): { field: string; la
  */
 async function stateEntryTimes(roIds: number[], field: string, labels: string[]): Promise<Record<number, number>> {
   if (!roIds.length || !labels.length) return {};
+  return trackedTransitions([
+    ['model', '=', 'repair.order'],
+    ['res_id', 'in', roIds],
+    ['tracking_value_ids', '!=', false],
+  ], field, labels);
+}
+
+/**
+ * ROs that ENTERED one of `labels` at any point during [from, to) — regardless of
+ * what state they're in now. This is what makes past weeks meaningful: an RO
+ * repaired last week has since moved on, so filtering by current state finds
+ * nothing.
+ */
+async function roIdsEnteringStateInWindow(
+  field: string, labels: string[], from: string, to: string,
+): Promise<Record<number, number>> {
+  if (!labels.length) return {};
+  return trackedTransitions([
+    ['model', '=', 'repair.order'],
+    ['date', '>=', from], ['date', '<', to],
+    ['tracking_value_ids', '!=', false],
+  ], field, labels);
+}
+
+/** Shared chatter-log reader: message domain → { roId: epoch ms of transition }. */
+async function trackedTransitions(msgDomain: OdooDomain, field: string, labels: string[]): Promise<Record<number, number>> {
   try {
-    // Messages on these ROs that carry field-change tracking.
-    const msgs = (await call('mail.message', 'search_read', [[
-      ['model', '=', 'repair.order'],
-      ['res_id', 'in', roIds],
-      ['tracking_value_ids', '!=', false],
-    ]], { fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0 })) as Rec[];
+    const msgs = (await call('mail.message', 'search_read', [msgDomain], {
+      fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0,
+    })) as Rec[];
     if (!msgs.length) return {};
 
     const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
@@ -189,7 +212,7 @@ async function stateEntryTimes(roIds: number[], field: string, labels: string[])
     const ref = useFieldId ? 'field_id' : 'field';
     const tvs = (await call('mail.tracking.value', 'read', [tvIds], { fields: [ref, 'new_value_char'] })) as Rec[];
 
-    // Tracking rows that represent a transition INTO one of our target states.
+    // Tracking rows representing a transition INTO one of our target states.
     const hits = new Set<number>();
     for (const tv of tvs) {
       const val = tv.new_value_char;
@@ -281,9 +304,27 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
   if ((on(1) || on(3)) && has('sale_order_id')) {
-    const repaired = (await call('repair.order', 'search_read', [[
-      ...selectorDomain(config.stageMap.repaired), ...weekDomain,
-    ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id'], limit: 0 })) as Rec[];
+    const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
+    const tfRepaired = trackedField(config.stageMap.repaired, meta);
+
+    // Preferred: ROs that reached the repaired/delivered state during this week,
+    // whatever state they're in now. Falls back to current-state matching.
+    let deliveredAt = tfRepaired
+      ? await roIdsEnteringStateInWindow(tfRepaired.field, tfRepaired.labels, wStart, wEnd)
+      : {};
+    const enteredIds = Object.keys(deliveredAt).map(Number);
+
+    let repaired: Rec[];
+    if (enteredIds.length) {
+      repaired = (await call('repair.order', 'read', [enteredIds], { fields: roFields })) as Rec[];
+    } else {
+      repaired = (await call('repair.order', 'search_read', [[
+        ...selectorDomain(config.stageMap.repaired), ...weekDomain,
+      ]], { fields: roFields, limit: 0 })) as Rec[];
+      if (tfRepaired) {
+        deliveredAt = await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels);
+      }
+    }
 
     // Which of the linked sale orders actually have invoices?
     const soIds = [...new Set(repaired.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
@@ -298,10 +339,6 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Grace period: a vehicle that only just reached delivery hasn't had a fair
     // chance to be invoiced yet, so it's excluded from KPI 1 until the grace passes.
     const graceMs = (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000;
-    const tfRepaired = trackedField(config.stageMap.repaired, meta);
-    const deliveredAt = tfRepaired
-      ? await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels)
-      : {};
 
     for (const r of repaired) {
       const ref = (r.name as string) || '';
@@ -320,14 +357,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Uses the chatter log to get the moment the RO entered "under repair", so this
   // checks the real sequence (quote created first) rather than just "a quote exists".
   if (on(4) && has('sale_order_id')) {
-    const inRepair = (await call('repair.order', 'search_read', [[
-      ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
-    ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id'], limit: 0 })) as Rec[];
-
+    const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
     const tf = trackedField(config.stageMap.underRepair, meta);
-    const entered = tf
-      ? await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels)
-      : {};
+
+    // ROs that STARTED repair during this week, whatever state they're in now.
+    let entered = tf ? await roIdsEnteringStateInWindow(tf.field, tf.labels, wStart, wEnd) : {};
+    const startedIds = Object.keys(entered).map(Number);
+
+    let inRepair: Rec[];
+    if (startedIds.length) {
+      inRepair = (await call('repair.order', 'read', [startedIds], { fields: roFields })) as Rec[];
+    } else {
+      inRepair = (await call('repair.order', 'search_read', [[
+        ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
+      ]], { fields: roFields, limit: 0 })) as Rec[];
+      if (tf) entered = await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels);
+    }
 
     // Quotation creation times.
     const soIds = [...new Set(inRepair.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
