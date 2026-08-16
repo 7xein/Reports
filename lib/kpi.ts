@@ -151,6 +151,31 @@ type FieldsMeta = Record<string, { type?: string; relation?: string; selection?:
 const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 
 /**
+ * Locate the parts-lines relation on repair.order and the demand/done quantity
+ * fields on its comodel. Field names vary by Odoo version and customisation, so
+ * everything is discovered rather than assumed.
+ */
+async function resolvePartsFields(
+  meta: FieldsMeta,
+): Promise<{ lineField: string; model: string; demand: string; done: string } | null> {
+  const lineField = ['move_ids', 'operations', 'repair_line_ids', 'move_ids_without_package', 'part_ids']
+    .find((f) => meta[f]?.relation && (meta[f]?.type === 'one2many' || meta[f]?.type === 'many2many'));
+  const model = lineField ? meta[lineField]?.relation : undefined;
+  if (!lineField || !model) return null;
+  try {
+    const lm = (await call(model, 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const hasField = (f: string) => Object.prototype.hasOwnProperty.call(lm, f);
+    const demand = ['product_uom_qty', 'product_qty', 'demand_qty'].find(hasField);
+    // Odoo renamed quantity_done → quantity in v17; check the older name first.
+    const done = ['quantity_done', 'qty_done', 'quantity', 'done_qty'].find(hasField);
+    if (!demand || !done) return null;
+    return { lineField, model, demand, done };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Tag ids that mark a vehicle in/out. Uses the configured ids when set, otherwise
  * auto-detects tags named like CAR-IN / CAR-OUT so the KPI works out of the box.
  */
@@ -333,8 +358,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const on = (id: number) => enabled.includes(id);
 
   // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
-  if ((on(1) || on(3)) && has('sale_order_id')) {
+  if ((on(1) || on(3) || on(10)) && has('sale_order_id')) {
+    const parts = on(10) ? await resolvePartsFields(meta) : null;
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
+    if (parts) roFields.push(parts.lineField);
     const tfRepaired = trackedField(config.stageMap.repaired, meta);
 
     // Preferred: ROs that reached the repaired/delivered state during this week,
@@ -370,9 +397,42 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // chance to be invoiced yet, so it's excluded from KPI 1 until the grace passes.
     const graceMs = (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000;
 
+    // ── KPI 10 — every part fully issued (Done qty matches Demand) ──
+    // Judged at delivery, so parts still being issued mid-repair aren't flagged.
+    let shortParts: Set<number> | null = null;
+    if (parts) {
+      const lineIds = [...new Set(repaired.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];
+      if (lineIds.length) {
+        try {
+          const lines = (await call(parts.model, 'read', [lineIds], {
+            fields: [parts.demand, parts.done],
+          })) as Rec[];
+          const short = new Set<number>();
+          for (const l of lines) {
+            const dem = Number(l[parts.demand] ?? 0);
+            const dn = Number(l[parts.done] ?? 0);
+            if (dem > 0 && dn < dem) short.add(l.id as number);
+          }
+          shortParts = short;
+        } catch { /* lines unreadable — KPI 10 stays N/A */ }
+      } else {
+        shortParts = new Set();
+      }
+    }
+    if (on(10) && !parts) {
+      notes.push('KPI 10 is inactive — could not identify the parts lines (Demand/Done) on repair.order.');
+    }
+
     for (const r of repaired) {
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
+
+      if (on(10) && shortParts && parts) {
+        const ids = (r[parts.lineField] as number[] | undefined) ?? [];
+        // ROs with no parts at all aren't applicable to this rule.
+        if (ids.length) push(10, r, !ids.some((id) => shortParts!.has(id)), ref);
+      }
+
       if (on(3)) push(3, r, soId != null, ref);
       if (on(1)) {
         const at = deliveredAt[r.id as number];
