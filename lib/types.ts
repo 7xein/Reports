@@ -105,10 +105,10 @@ export interface RegionalData {
 
 // ── KPI section ───────────────────────────────────────────────────────────
 export const KPI_DEFINITIONS = [
-  { id: 1, name: 'Invoice on repair',        rule: 'Invoices must be raised as soon as a vehicle is repaired.' },
+  { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
   { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
   { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
-  { id: 4, name: 'Quote before repair',      rule: 'A quotation must exist before repair work starts.' },
+  { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
   { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An RO cannot await parts for more than 14 days.' },
   { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },

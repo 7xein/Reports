@@ -283,14 +283,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
 
-          {tree.notes.length > 0 && (
-            <div className="mt-4 bg-surface border border-border rounded-lg p-4">
-              <div className="text-xs font-bold uppercase tracking-wide text-ink-muted mb-2">Notes</div>
-              <ul className="text-xs text-ink-muted space-y-1 list-disc pl-4">
-                {tree.notes.map((n) => <li key={n}>{n}</li>)}
-              </ul>
-            </div>
-          )}
         </>
       )}
     </>
