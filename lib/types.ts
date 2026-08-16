@@ -112,10 +112,9 @@ export const KPI_DEFINITIONS = [
   { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
   { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
-  { id: 10, name: 'Parts availability',      rule: 'Every part on a delivered RO must be fully issued — Done quantity matching Demand.' },
   { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
   { id: 9, name: 'Open repair orders',       rule: 'A repair order should not stay open beyond the allowed number of days.' },
-  { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An RO cannot await parts for more than 14 days.' },
+  { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait more than 14 days.' },
   { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
@@ -191,7 +190,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9],
   ageBasis: 'auto',
 };
 

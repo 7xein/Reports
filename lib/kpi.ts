@@ -176,6 +176,32 @@ async function resolvePartsFields(
 }
 
 /**
+ * Read parts lines in chunks → { lineId: { short, since } } where `short` means
+ * the Done quantity hasn't caught up with Demand, and `since` is when the part
+ * was requested.
+ */
+async function readPartsLines(
+  parts: { model: string; demand: string; done: string },
+  lineIds: number[],
+): Promise<Record<number, { short: boolean; since: number | null }>> {
+  const out: Record<number, { short: boolean; since: number | null }> = {};
+  const CHUNK = 4000;
+  for (let i = 0; i < lineIds.length; i += CHUNK) {
+    try {
+      const lines = (await call(parts.model, 'read', [lineIds.slice(i, i + CHUNK)], {
+        fields: [parts.demand, parts.done, 'create_date'],
+      })) as Rec[];
+      for (const l of lines) {
+        const demand = Number(l[parts.demand] ?? 0);
+        const done = Number(l[parts.done] ?? 0);
+        out[l.id as number] = { short: demand > 0 && done < demand, since: odooTime(l.create_date) };
+      }
+    } catch { /* skip unreadable chunk */ }
+  }
+  return out;
+}
+
+/**
  * Tag ids that mark a vehicle in/out. Uses the configured ids when set, otherwise
  * auto-detects tags named like CAR-IN / CAR-OUT so the KPI works out of the box.
  */
@@ -358,10 +384,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const on = (id: number) => enabled.includes(id);
 
   // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
-  if ((on(1) || on(3) || on(10)) && has('sale_order_id')) {
-    const parts = on(10) ? await resolvePartsFields(meta) : null;
+  if ((on(1) || on(3)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
-    if (parts) roFields.push(parts.lineField);
     const tfRepaired = trackedField(config.stageMap.repaired, meta);
 
     // Preferred: ROs that reached the repaired/delivered state during this week,
@@ -397,42 +421,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // chance to be invoiced yet, so it's excluded from KPI 1 until the grace passes.
     const graceMs = (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000;
 
-    // ── KPI 10 — every part fully issued (Done qty matches Demand) ──
-    // Judged at delivery, so parts still being issued mid-repair aren't flagged.
-    let shortParts: Set<number> | null = null;
-    if (parts) {
-      const lineIds = [...new Set(repaired.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];
-      if (lineIds.length) {
-        try {
-          const lines = (await call(parts.model, 'read', [lineIds], {
-            fields: [parts.demand, parts.done],
-          })) as Rec[];
-          const short = new Set<number>();
-          for (const l of lines) {
-            const dem = Number(l[parts.demand] ?? 0);
-            const dn = Number(l[parts.done] ?? 0);
-            if (dem > 0 && dn < dem) short.add(l.id as number);
-          }
-          shortParts = short;
-        } catch { /* lines unreadable — KPI 10 stays N/A */ }
-      } else {
-        shortParts = new Set();
-      }
-    }
-    if (on(10) && !parts) {
-      notes.push('KPI 10 is inactive — could not identify the parts lines (Demand/Done) on repair.order.');
-    }
-
     for (const r of repaired) {
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
-
-      if (on(10) && shortParts && parts) {
-        const ids = (r[parts.lineField] as number[] | undefined) ?? [];
-        // ROs with no parts at all aren't applicable to this rule.
-        if (ids.length) push(10, r, !ids.some((id) => shortParts!.has(id)), ref);
-      }
-
       if (on(3)) push(3, r, soId != null, ref);
       if (on(1)) {
         const at = deliveredAt[r.id as number];
@@ -569,30 +560,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
 
-    for (const [kpiId, sel, days] of [
-      [6, config.stageMap.awaitingParts,  config.thresholds.awaitingPartsDays  ?? 14],
-      [7, config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2],
-    ] as const) {
-      if (!on(kpiId)) continue;
-      const recs = (await call('repair.order', 'search_read', [[
-        ...selectorDomain(sel),
-        ['company_id', 'in', trackedIds],
-      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
-
-      // Prefer the real "entered this state" timestamp from the chatter log.
-      const tf = trackedField(sel, meta);
-      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
-      if (Object.keys(entered).length) usedTrackingForAging = true;
-
-      const limitMs = days * 86400_000;
-      const overdue = new Map<number, Rec>();
-      for (const r of recs) {
-        const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
-        if (since == null) continue;
-        if (now - since > limitMs) overdue.set(r.id as number, r);
-      }
-
-      // Every RO in the window counts; the stuck ones are the violations.
+    /** Every RO in the window counts; the stuck ones are the violations. */
+    const scoreAgainstBaseline = (kpiId: number, overdue: Map<number, Rec>) => {
       const seen = new Set<number>();
       for (const r of baseROs) {
         const id = r.id as number;
@@ -603,6 +572,69 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       for (const [id, r] of overdue) {
         if (!seen.has(id)) push(kpiId, r, false, (r.name as string) || '');
       }
+    };
+
+    /** Currently-open ROs held past `days` in a mapped state (used for labour). */
+    const overdueByState = async (sel: StageSelector, days: number) => {
+      const recs = (await call('repair.order', 'search_read', [[
+        ...selectorDomain(sel),
+        ['company_id', 'in', trackedIds],
+      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
+      const tf = trackedField(sel, meta);
+      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
+      if (Object.keys(entered).length) usedTrackingForAging = true;
+      const limitMs = days * 86400_000;
+      const overdue = new Map<number, Rec>();
+      for (const r of recs) {
+        const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
+        if (since == null) continue;
+        if (now - since > limitMs) overdue.set(r.id as number, r);
+      }
+      return overdue;
+    };
+
+    // ── KPI 6 — open ROs held up waiting for parts ──
+    // "Awaiting parts" is derived from the parts lines themselves: an OPEN repair
+    // order with any line whose Done quantity is short of Demand is still waiting
+    // on parts. Ages from when that part was requested.
+    if (on(6)) {
+      const days = config.thresholds.awaitingPartsDays ?? 14;
+      const parts = await resolvePartsFields(meta);
+      let overdue: Map<number, Rec>;
+
+      if (parts) {
+        const openROs = (await call('repair.order', 'search_read', [[
+          ...selectorDomainNot(config.stageMap.closed),
+          ['company_id', 'in', trackedIds],
+        ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
+
+        const lineIds = [...new Set(openROs.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];
+        const lineInfo = await readPartsLines(parts, lineIds);
+
+        const limitMs = days * 86400_000;
+        overdue = new Map<number, Rec>();
+        for (const r of openROs) {
+          // Oldest outstanding part decides how long this RO has been held up.
+          let waitingSince: number | null = null;
+          for (const id of (r[parts.lineField] as number[] | undefined) ?? []) {
+            const li = lineInfo[id];
+            if (!li?.short) continue;
+            const t = li.since ?? odooTime(r.create_date);
+            if (t != null && (waitingSince == null || t < waitingSince)) waitingSince = t;
+          }
+          if (waitingSince == null) continue; // nothing outstanding — not waiting on parts
+          if (now - waitingSince > limitMs) overdue.set(r.id as number, r);
+        }
+      } else {
+        notes.push('Could not read the parts lines (Demand/Done), so "Awaiting parts" fell back to the mapped state.');
+        overdue = await overdueByState(config.stageMap.awaitingParts, days);
+      }
+      scoreAgainstBaseline(6, overdue);
+    }
+
+    // ── KPI 7 — awaiting labour (mapped state) ──
+    if (on(7)) {
+      scoreAgainstBaseline(7, await overdueByState(config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2));
     }
 
     // ── KPI 9 — repair orders shouldn't stay open too long ──
