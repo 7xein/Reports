@@ -295,7 +295,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       : (has(basis) ? basis : 'create_date');
   const AGE_LABEL: Record<string, string> = {
     date_last_stage_update: 'time since the last stage change',
-    create_date: 'age of the repair order (no stage-change stamp available)',
+    create_date: 'age of the repair order',
     write_date: 'time since last modification — any edit resets this clock',
   };
   const baselineDaysNote = config.thresholds.snapshotBaselineDays ?? 90;
