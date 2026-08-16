@@ -76,8 +76,15 @@ function KpiRow({ cell, expandable = false }: { cell: KpiCell; expandable?: bool
               title={cell.note || 'Point-in-time: reflects open ROs right now, not the selected week.'}>ⓘ</span>
           )}
         </span>
-        <div className="flex-1 min-w-[140px] h-2 bg-surface rounded-full overflow-hidden">
-          <div className={`h-full rounded-full transition-all ${b.bar}`} style={{ width: `${na ? 0 : Math.min(cell.pct as number, 100)}%` }} />
+        <div className="flex-1 min-w-[140px] h-2 bg-border rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${na ? '' : b.bar}`}
+            style={{
+              width: `${na ? 0 : Math.min(cell.pct as number, 100)}%`,
+              // keep a sliver visible for very small non-zero percentages
+              minWidth: !na && (cell.pct as number) > 0 ? 3 : 0,
+            }}
+          />
         </div>
         <span className={`text-sm font-bold tabular-nums w-16 text-right ${b.text}`}>{fmtPct(cell.pct)}</span>
         <span className="text-xs text-ink-muted tabular-nums w-20 text-right">
@@ -222,8 +229,12 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                         )}
                       </div>
                       <div className={`text-3xl font-black tabular-nums mt-1.5 ${bb.text}`}>{fmtPct(b.achievement)}</div>
-                      <div className="h-1.5 bg-surface rounded-full overflow-hidden mt-2">
-                        <div className={`h-full rounded-full ${bb.bar}`} style={{ width: `${b.achievement === null ? 0 : Math.min(b.achievement, 100)}%` }} />
+                      <div className="h-1.5 bg-border rounded-full overflow-hidden mt-2">
+                        <div className={`h-full rounded-full ${b.achievement === null ? '' : bb.bar}`}
+                          style={{
+                            width: `${b.achievement === null ? 0 : Math.min(b.achievement, 100)}%`,
+                            minWidth: b.achievement !== null && b.achievement > 0 ? 3 : 0,
+                          }} />
                       </div>
                       <div className="text-xs text-ink-muted mt-2">
                         {b.applicableTotal} checks · {b.serviceAdvisors.length} advisor{b.serviceAdvisors.length !== 1 ? 's' : ''}
