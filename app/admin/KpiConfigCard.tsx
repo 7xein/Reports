@@ -207,6 +207,23 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         ))}
       </div>
 
+      {/* 2a. How "Awaiting parts" is detected */}
+      <div className="text-sm font-bold text-ink mb-1">2a. &ldquo;Awaiting parts&rdquo; detected by</div>
+      <p className="text-xs text-ink-muted mb-2">Only open repair orders are considered either way.</p>
+      <div className="flex flex-col gap-1.5 mb-6">
+        {([
+          ['parts', 'Outstanding parts — a parts line whose Done quantity is below Demand (recommended: reads the real parts data)'],
+          ['state', 'Mapped state — whatever is selected as "Awaiting parts" above (currently Priority Matrix P)'],
+        ] as const).map(([v, label]) => (
+          <label key={v} className="text-xs text-ink-muted flex items-start gap-2 cursor-pointer">
+            <input type="radio" name="awaitingPartsSource" className="mt-0.5"
+              checked={(cfg.awaitingPartsSource ?? 'parts') === v}
+              onChange={() => setCfg((p) => ({ ...p, awaitingPartsSource: v }))} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+
       {/* 2b. Age basis for KPIs 6 & 7 */}
       <div className="text-sm font-bold text-ink mb-1">2b. Time-in-state measured from</div>
       <p className="text-xs text-ink-muted mb-2">

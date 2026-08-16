@@ -173,6 +173,12 @@ export interface KpiConfig {
    *  write_date  → last modified (WARNING: any edit resets the clock)
    */
   ageBasis?: 'auto' | 'date_last_stage_update' | 'create_date' | 'write_date';
+  /**
+   * How "Awaiting parts" decides a vehicle is held up:
+   *  parts → open RO with a parts line whose Done qty is below Demand
+   *  state → the mapped "Awaiting parts" state (e.g. priority matrix P)
+   */
+  awaitingPartsSource?: 'parts' | 'state';
   /** Set on save — part of the KPI cache key so config edits take effect immediately. */
   updatedAt?: string;
 }
@@ -192,6 +198,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
   saRoster: [],
   enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9],
   ageBasis: 'auto',
+  awaitingPartsSource: 'parts',
 };
 
 /** Merge a stored (possibly partial/legacy) config over the defaults. */

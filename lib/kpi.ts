@@ -99,7 +99,7 @@ interface Evaluation {
 // ── Aggregation ────────────────────────────────────────────────────
 const VIOLATION_CAP = 50;
 
-function aggregate(evals: Evaluation[], enabled: number[], snapshotNote?: string): KpiCell[] {
+function aggregate(evals: Evaluation[], enabled: number[], snapshotNotes?: Record<number, string>): KpiCell[] {
   return KPI_DEFINITIONS.filter((d) => enabled.includes(d.id)).map((d) => {
     const mine = evals.filter((e) => e.kpiId === d.id);
     const compliant = mine.filter((e) => e.compliant).length;
@@ -112,7 +112,7 @@ function aggregate(evals: Evaluation[], enabled: number[], snapshotNote?: string
       applicable,
       pct: applicable > 0 ? (compliant / applicable) * 100 : null,
       snapshot,
-      ...(snapshot && snapshotNote ? { note: snapshotNote } : {}),
+      ...(snapshot && snapshotNotes?.[d.id] ? { note: snapshotNotes[d.id] } : {}),
       violations: mine.filter((e) => !e.compliant).map((e) => e.ref).slice(0, VIOLATION_CAP),
     };
   });
@@ -158,16 +158,19 @@ const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 async function resolvePartsFields(
   meta: FieldsMeta,
 ): Promise<{ lineField: string; model: string; demand: string; done: string } | null> {
-  const lineField = ['move_ids', 'operations', 'repair_line_ids', 'move_ids_without_package', 'part_ids']
-    .find((f) => meta[f]?.relation && (meta[f]?.type === 'one2many' || meta[f]?.type === 'many2many'));
+  const candidates = ['move_ids', 'operations', 'repair_line_ids', 'move_ids_without_package', 'part_ids']
+    .filter((f) => meta[f]?.relation && (meta[f]?.type === 'one2many' || meta[f]?.type === 'many2many'));
+  // Prefer the stock.move relation — that's where Demand/Done live.
+  const lineField = candidates.find((f) => meta[f]?.relation === 'stock.move') ?? candidates[0];
   const model = lineField ? meta[lineField]?.relation : undefined;
   if (!lineField || !model) return null;
   try {
     const lm = (await call(model, 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
     const hasField = (f: string) => Object.prototype.hasOwnProperty.call(lm, f);
+    // Confirmed on this instance: stock.move.product_uom_qty = Demand,
+    // stock.move.quantity = Done. Older Odoo used quantity_done.
     const demand = ['product_uom_qty', 'product_qty', 'demand_qty'].find(hasField);
-    // Odoo renamed quantity_done → quantity in v17; check the older name first.
-    const done = ['quantity_done', 'qty_done', 'quantity', 'done_qty'].find(hasField);
+    const done = ['quantity', 'quantity_done', 'qty_done', 'done_qty'].find(hasField);
     if (!demand || !done) return null;
     return { lineField, model, demand, done };
   } catch {
@@ -352,6 +355,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const baselineDaysNote = config.thresholds.snapshotBaselineDays ?? 90;
   let snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   let usedTrackingForAging = false;
+  let awaitingPartsMethod = 'outstanding parts lines (Done qty below Demand)';
   if (ageField === 'write_date') {
     notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
@@ -599,7 +603,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // on parts. Ages from when that part was requested.
     if (on(6)) {
       const days = config.thresholds.awaitingPartsDays ?? 14;
-      const parts = await resolvePartsFields(meta);
+      const useParts = (config.awaitingPartsSource ?? 'parts') === 'parts';
+      const parts = useParts ? await resolvePartsFields(meta) : null;
       let overdue: Map<number, Rec>;
 
       if (parts) {
@@ -626,7 +631,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           if (now - waitingSince > limitMs) overdue.set(r.id as number, r);
         }
       } else {
-        notes.push('Could not read the parts lines (Demand/Done), so "Awaiting parts" fell back to the mapped state.');
+        if (useParts) {
+          notes.push('Could not read the parts lines (Demand/Done), so "Awaiting parts" fell back to the mapped state.');
+        }
+        awaitingPartsMethod = 'the mapped state';
         overdue = await overdueByState(config.stageMap.awaitingParts, days);
       }
       scoreAgainstBaseline(6, overdue);
@@ -668,6 +676,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   if (usedTrackingForAging) {
     snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
+  // KPI 6 states which method decided a vehicle is waiting on parts.
+  const snapshotNotes: Record<number, string> = {
+    6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
+    7: snapshotNote,
+    9: snapshotNote,
+  };
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');
   }
@@ -677,7 +691,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   const branches: BranchNode[] = BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
-    const kpis = aggregate(branchEvals, enabled, snapshotNote);
+    const kpis = aggregate(branchEvals, enabled, snapshotNotes);
 
     // Advisors are placed by the branch assigned to them in the roster — never by
     // the company on their ROs — so each one appears exactly once, under their own
@@ -686,7 +700,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       .filter((r) => r.branch === b)
       .map((r) => {
         const mine = evals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, enabled, snapshotNote);
+        const cells = aggregate(mine, enabled, snapshotNotes);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
@@ -710,7 +724,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
   }
 
-  const companyKpis = aggregate(evals, enabled, snapshotNote);
+  const companyKpis = aggregate(evals, enabled, snapshotNotes);
 
   return {
     week: { start, end },
