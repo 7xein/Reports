@@ -289,7 +289,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     create_date: 'age of the repair order (no stage-change stamp available)',
     write_date: 'time since last modification — any edit resets this clock',
   };
-  let snapshotNote = `Point-in-time: reflects open ROs right now, not the selected week. Measured by ${AGE_LABEL[ageField] ?? ageField}.`;
+  const baselineDaysNote = config.thresholds.snapshotBaselineDays ?? 90;
+  let snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   let usedTrackingForAging = false;
   if (ageField === 'write_date') {
     notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
@@ -488,31 +489,56 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   }
 
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
-  for (const [kpiId, sel, days] of [
-    [6, config.stageMap.awaitingParts,  config.thresholds.awaitingPartsDays  ?? 14],
-    [7, config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2],
-  ] as const) {
-    if (!on(kpiId)) continue;
-    const recs = (await call('repair.order', 'search_read', [[
-      ...selectorDomain(sel),
+  if (on(6) || on(7)) {
+    // Baseline population: every RO created in the last N days. Scoring stuck
+    // vehicles against the whole workload (rather than only against other stuck
+    // vehicles) is what makes these percentages meaningful.
+    const baselineDays = config.thresholds.snapshotBaselineDays ?? 90;
+    const sinceIso = new Date(now - baselineDays * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+    const baseROs = (await call('repair.order', 'search_read', [[
+      ['create_date', '>=', sinceIso],
       ['company_id', 'in', trackedIds],
-    ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
+    ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
 
-    // Prefer the real "entered this state" timestamp from the chatter log.
-    const tf = trackedField(sel, meta);
-    const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
-    if (Object.keys(entered).length) usedTrackingForAging = true;
+    for (const [kpiId, sel, days] of [
+      [6, config.stageMap.awaitingParts,  config.thresholds.awaitingPartsDays  ?? 14],
+      [7, config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2],
+    ] as const) {
+      if (!on(kpiId)) continue;
+      const recs = (await call('repair.order', 'search_read', [[
+        ...selectorDomain(sel),
+        ['company_id', 'in', trackedIds],
+      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
 
-    const limitMs = days * 86400_000;
-    for (const r of recs) {
-      const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
-      if (since == null) continue;
-      push(kpiId, r, now - since <= limitMs, (r.name as string) || '');
+      // Prefer the real "entered this state" timestamp from the chatter log.
+      const tf = trackedField(sel, meta);
+      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
+      if (Object.keys(entered).length) usedTrackingForAging = true;
+
+      const limitMs = days * 86400_000;
+      const overdue = new Map<number, Rec>();
+      for (const r of recs) {
+        const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
+        if (since == null) continue;
+        if (now - since > limitMs) overdue.set(r.id as number, r);
+      }
+
+      // Every RO in the window counts; the stuck ones are the violations.
+      const seen = new Set<number>();
+      for (const r of baseROs) {
+        const id = r.id as number;
+        seen.add(id);
+        push(kpiId, r, !overdue.has(id), (r.name as string) || '');
+      }
+      // Stuck vehicles older than the window still count against us.
+      for (const [id, r] of overdue) {
+        if (!seen.has(id)) push(kpiId, r, false, (r.name as string) || '');
+      }
     }
   }
 
   if (usedTrackingForAging) {
-    snapshotNote = 'Point-in-time: reflects open ROs right now, not the selected week. Measured from when each vehicle actually entered this state (Odoo chatter log).';
+    snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');

@@ -194,6 +194,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['invoiceGraceMinutes', 'Invoice grace after delivery (minutes)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
+          ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],
         ] as const).map(([k, label]) => (
           <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
             {label}
