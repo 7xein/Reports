@@ -186,6 +186,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         {([
           ['quoteApprovalDays', 'Quote approval (days)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
+          ['invoiceGraceMinutes', 'Invoice grace after delivery (minutes)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
         ] as const).map(([k, label]) => (

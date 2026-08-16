@@ -295,11 +295,24 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       } catch { notes.push('Could not read sale.order invoice_ids — KPI 1 may be understated.'); }
     }
 
+    // Grace period: a vehicle that only just reached delivery hasn't had a fair
+    // chance to be invoiced yet, so it's excluded from KPI 1 until the grace passes.
+    const graceMs = (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000;
+    const tfRepaired = trackedField(config.stageMap.repaired, meta);
+    const deliveredAt = tfRepaired
+      ? await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels)
+      : {};
+
     for (const r of repaired) {
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
       if (on(3)) push(3, r, soId != null, ref);
-      if (on(1)) push(1, r, soId != null && invoiced.has(soId), ref);
+      if (on(1)) {
+        const at = deliveredAt[r.id as number];
+        // If we can't tell when it was delivered, judge it rather than silently skip.
+        const withinGrace = at != null && now - at < graceMs;
+        if (!withinGrace) push(1, r, soId != null && invoiced.has(soId), ref);
+      }
     }
   }
 

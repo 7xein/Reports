@@ -142,6 +142,8 @@ export interface KpiConfig {
     tagMinutes: number;
     awaitingPartsDays: number;
     awaitingLabourDays: number;
+    /** Grace after a vehicle reaches delivery before "Invoice on delivery" judges it. */
+    invoiceGraceMinutes?: number;
   };
   stageMap: {
     repaired: StageSelector;
@@ -165,7 +167,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
