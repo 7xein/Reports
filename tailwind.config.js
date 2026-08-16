@@ -43,7 +43,9 @@ module.exports = {
         accent:  '#78C41A',
         sage:    '#5a9015',
         rust:    '#a0451f',
-        amber:   '#b8821f',
+        // NOTE: do not add a flat `amber` token here — a string value replaces
+        // Tailwind's whole amber palette, which silently breaks every
+        // amber-50/400/500/600/700 class used for warning states.
       },
     },
   },
