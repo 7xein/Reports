@@ -110,7 +110,7 @@ function aggregate(evals: Evaluation[], enabled: number[], snapshotNotes?: Recor
       name: d.name,
       compliant,
       applicable,
-      pct: applicable > 0 ? (compliant / applicable) * 100 : null,
+      pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
       snapshot,
       ...(snapshot && snapshotNotes?.[d.id] ? { note: snapshotNotes[d.id] } : {}),
       violations: mine.filter((e) => !e.compliant).map((e) => e.ref).slice(0, VIOLATION_CAP),
@@ -552,8 +552,95 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
+  // ── KPI 9 — weekly closure rate (closed ÷ received) ──
+  if (on(9)) {
+    const received = (await call('repair.order', 'search_read', [weekDomain], {
+      fields: ['name', 'create_uid', 'company_id'], limit: 0,
+    })) as Rec[];
+
+    const tfClosed = trackedField(config.stageMap.closed, meta);
+    const closedThisWeek = tfClosed
+      ? await roIdsEnteringStateInWindow(tfClosed.field, tfClosed.labels, wStart, wEnd)
+      : {};
+    let closedSet = new Set(Object.keys(closedThisWeek).map(Number));
+
+    if (!closedSet.size) {
+      // No chatter history — fall back to "created this week and closed now".
+      const nowClosed = (await call('repair.order', 'search_read', [[
+        ...selectorDomain(config.stageMap.closed), ...weekDomain,
+      ]], { fields: ['id'], limit: 0 })) as Rec[];
+      closedSet = new Set(nowClosed.map((r) => r.id as number));
+    }
+
+    for (const r of received) push(9, r, closedSet.has(r.id as number), (r.name as string) || '');
+  }
+
+  // ── KPI 11 — repaired vehicles must be delivered, not left on the lot ──
+  if (on(11)) {
+    const limitMs = (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000;
+    const tfRep = trackedField(config.stageMap.repaired, meta);
+    const repairedAt = tfRep
+      ? await roIdsEnteringStateInWindow(tfRep.field, tfRep.labels, wStart, wEnd)
+      : {};
+    const ids = Object.keys(repairedAt).map(Number);
+
+    if (ids.length) {
+      const recs = (await call('repair.order', 'read', [ids], {
+        fields: ['name', 'create_uid', 'company_id'],
+      })) as Rec[];
+      const tfClosed = trackedField(config.stageMap.closed, meta);
+      const deliveredAt = tfClosed ? await stateEntryTimes(ids, tfClosed.field, tfClosed.labels) : {};
+
+      for (const r of recs) {
+        const rep = repairedAt[r.id as number];
+        if (rep == null) continue;
+        const del = deliveredAt[r.id as number];
+        const ref = (r.name as string) || '';
+        // Delivered → was it quick enough. Still on the lot → only a violation
+        // once it has actually overrun.
+        push(11, r, del != null ? del - rep <= limitMs : now - rep <= limitMs, ref);
+      }
+    } else if (!tfRep) {
+      notes.push('KPI 11 needs the repaired state to be mapped to a tracked field (state or priority matrix).');
+    }
+  }
+
+  // ── KPI 12 — quotation raised within N days of the RO ──
+  if (on(12) && has('sale_order_id')) {
+    const limitMs = (config.thresholds.quoteWithinDays ?? 1) * 86400_000;
+    const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
+      fields: ['name', 'create_uid', 'company_id', 'create_date', 'sale_order_id'], limit: 0,
+    })) as Rec[];
+
+    const soIds = [...new Set(weekROs.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
+    const soCreated: Record<number, number> = {};
+    if (soIds.length) {
+      try {
+        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
+        for (const so of sos) {
+          const t = odooTime(so.create_date);
+          if (t != null) soCreated[so.id as number] = t;
+        }
+      } catch { /* fall through — unverifiable quotes count as compliant */ }
+    }
+
+    for (const r of weekROs) {
+      const roAt = odooTime(r.create_date);
+      if (roAt == null) continue;
+      const ref = (r.name as string) || '';
+      const soId = m2o(r.sale_order_id)?.[0] ?? null;
+      if (soId == null) {
+        // Never quoted — only judge once the window has actually elapsed.
+        if (now - roAt > limitMs) push(12, r, false, ref);
+        continue;
+      }
+      const quotedAt = soCreated[soId];
+      push(12, r, quotedAt == null ? true : quotedAt - roAt <= limitMs, ref);
+    }
+  }
+
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
-  if (on(6) || on(7) || on(9)) {
+  if (on(6) || on(7)) {
     // Baseline population: every RO created in the last N days. Scoring stuck
     // vehicles against the whole workload (rather than only against other stuck
     // vehicles) is what makes these percentages meaningful.
@@ -645,32 +732,6 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       scoreAgainstBaseline(7, await overdueByState(config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2));
     }
 
-    // ── KPI 9 — repair orders shouldn't stay open too long ──
-    if (on(9)) {
-      const maxDays = config.thresholds.openRoDays ?? 14;
-      const openROs = (await call('repair.order', 'search_read', [[
-        ...selectorDomainNot(config.stageMap.closed),
-        ['company_id', 'in', trackedIds],
-      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
-
-      const limitMs = maxDays * 86400_000;
-      const stillOpen = new Map<number, Rec>();
-      for (const r of openROs) {
-        const created = odooTime(r.create_date);
-        if (created == null) continue;
-        if (now - created > limitMs) stillOpen.set(r.id as number, r);
-      }
-
-      const seen = new Set<number>();
-      for (const r of baseROs) {
-        const id = r.id as number;
-        seen.add(id);
-        push(9, r, !stillOpen.has(id), (r.name as string) || '');
-      }
-      for (const [id, r] of stillOpen) {
-        if (!seen.has(id)) push(9, r, false, (r.name as string) || '');
-      }
-    }
   }
 
   if (usedTrackingForAging) {

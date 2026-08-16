@@ -108,19 +108,21 @@ export interface RegionalData {
 // `id` values are stable (they're stored in config) — only the order changes.
 export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
+  { id: 11, name: 'Repaired → delivered',    rule: 'Once repaired, a vehicle must be delivered within the allowed number of days — not left sitting on the lot.' },
   { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
+  { id: 12, name: 'Quote within 1 day',      rule: 'A quotation must be raised within 1 day of the repair order being created.' },
   { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
   { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
   { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
-  { id: 9, name: 'Open repair orders',       rule: 'A repair order should not stay open beyond the allowed number of days.' },
+  { id: 9, name: 'Weekly closure rate',      rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait more than 14 days.' },
   { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
 /** Point-in-time KPIs (current state), so they ignore the week window. */
-export const SNAPSHOT_KPI_IDS: number[] = [6, 7, 9];
+export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
 
 /**
  * How a workflow state is identified on repair.order. This Odoo instance keeps
@@ -150,8 +152,10 @@ export interface KpiConfig {
     invoiceGraceMinutes?: number;
     /** Window KPIs 6, 7 & 9 measure against — all ROs created in the last N days. */
     snapshotBaselineDays?: number;
-    /** Max days an RO may stay open (KPI 9). Set 0 to flag any still-open RO. */
-    openRoDays?: number;
+    /** Max days between a vehicle being repaired and delivered (KPI 11). */
+    repairedToDeliveredDays?: number;
+    /** Max days between RO creation and the quotation being raised (KPI 12). */
+    quoteWithinDays?: number;
   };
   stageMap: {
     repaired: StageSelector;
@@ -186,7 +190,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, openRoDays: 14 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -196,10 +200,22 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };
+
+/**
+ * KPI ids only ever increase, so any id above the highest stored one is a KPI
+ * that didn't exist when the config was saved — enable it rather than leaving a
+ * new KPI silently switched off. Deliberate opt-outs of existing KPIs survive.
+ */
+function mergeEnabledKpis(stored?: number[]): number[] {
+  if (!stored?.length) return DEFAULT_KPI_CONFIG.enabledKpis;
+  const highest = Math.max(...stored);
+  const added = KPI_DEFINITIONS.map((d) => d.id as number).filter((id) => id > highest);
+  return [...new Set([...stored, ...added])];
+}
 
 /** Merge a stored (possibly partial/legacy) config over the defaults. */
 export function withKpiDefaults(cfg?: Partial<KpiConfig> | null): KpiConfig {
@@ -210,7 +226,7 @@ export function withKpiDefaults(cfg?: Partial<KpiConfig> | null): KpiConfig {
     thresholds: { ...DEFAULT_KPI_CONFIG.thresholds, ...(cfg.thresholds ?? {}) },
     stageMap:   { ...DEFAULT_KPI_CONFIG.stageMap,   ...(cfg.stageMap ?? {}) },
     saRoster:   cfg.saRoster ?? DEFAULT_KPI_CONFIG.saRoster,
-    enabledKpis: cfg.enabledKpis ?? DEFAULT_KPI_CONFIG.enabledKpis,
+    enabledKpis: mergeEnabledKpis(cfg.enabledKpis),
   };
 }
 
