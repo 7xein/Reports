@@ -106,20 +106,43 @@ export interface RegionalData {
 // ── KPI section ───────────────────────────────────────────────────────────
 // Display order: per-job compliance first, then the "sitting too long" rules.
 // `id` values are stable (they're stored in config) — only the order changes.
+// Names here are threshold-free fallbacks — kpiDisplayName() builds the label
+// shown in the UI from the configured thresholds, so they can never drift.
 export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
-  { id: 11, name: 'Repaired → delivered',    rule: 'Once repaired, a vehicle must be delivered within the allowed number of days — not left sitting on the lot.' },
+  { id: 11, name: 'Delivered after repair',  rule: 'Once repaired, a vehicle must be delivered within the configured time — not left sitting on the lot.' },
   { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
-  { id: 12, name: 'Quote within 1 day',      rule: 'A quotation must be raised within 1 day of the repair order being created.' },
+  { id: 12, name: 'Quote after RO',          rule: 'A quotation must be raised within the configured time of the repair order being created.' },
   { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
-  { id: 5, name: 'Tag within 1 hour',        rule: 'A tag must be added to every RO within 1 hour of creation.' },
+  { id: 5, name: 'Tag on creation',          rule: 'A tag must be added to every RO within the configured time of creation.' },
   { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
-  { id: 2, name: 'Quote approval ≤ 7 days',  rule: 'Quotations must not sit awaiting approval for more than 7 days.' },
+  { id: 2, name: 'Quote approval',           rule: 'Quotations must not sit awaiting approval beyond the configured time.' },
   { id: 9, name: 'Weekly closure rate',      rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
-  { id: 6, name: 'Awaiting parts ≤ 14 days', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait more than 14 days.' },
-  { id: 7, name: 'Awaiting labour ≤ 2 days', rule: 'A vehicle cannot await labour for more than 2 days.' },
+  { id: 6, name: 'Awaiting parts',           rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
+  { id: 7, name: 'Awaiting labour',          rule: 'A vehicle cannot await labour beyond the configured time.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
+
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+
+/** "60" → "1 hour", "90" → "90 minutes". */
+function minutesLabel(mins: number): string {
+  return mins > 0 && mins % 60 === 0 ? plural(mins / 60, 'hour') : plural(mins, 'minute');
+}
+
+/** KPI label with its configured threshold baked in, e.g. "Delivered in 2 days after repair". */
+export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thresholds']): string {
+  const days = (n: number) => plural(n, 'day');
+  switch (id) {
+    case 2:  return `Quote approval ≤ ${days(t.quoteApprovalDays ?? 7)}`;
+    case 5:  return `Tag within ${minutesLabel(t.tagMinutes ?? 60)}`;
+    case 6:  return `Awaiting parts ≤ ${days(t.awaitingPartsDays ?? 14)}`;
+    case 7:  return `Awaiting labour ≤ ${days(t.awaitingLabourDays ?? 2)}`;
+    case 11: return `Delivered in ${days(t.repairedToDeliveredDays ?? 2)} after repair`;
+    case 12: return `Quote within ${days(t.quoteWithinDays ?? 1)} of RO`;
+    default: return fallback;
+  }
+}
 
 /** Point-in-time KPIs (current state), so they ignore the week window. */
 export const SNAPSHOT_KPI_IDS: number[] = [6, 7];

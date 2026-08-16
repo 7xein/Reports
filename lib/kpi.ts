@@ -10,7 +10,7 @@
  */
 
 import {
-  BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS,
+  BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, kpiDisplayName,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
 
@@ -99,7 +99,12 @@ interface Evaluation {
 // ── Aggregation ────────────────────────────────────────────────────
 const VIOLATION_CAP = 50;
 
-function aggregate(evals: Evaluation[], enabled: number[], snapshotNotes?: Record<number, string>): KpiCell[] {
+function aggregate(
+  evals: Evaluation[],
+  enabled: number[],
+  snapshotNotes?: Record<number, string>,
+  names?: Record<number, string>,
+): KpiCell[] {
   return KPI_DEFINITIONS.filter((d) => enabled.includes(d.id)).map((d) => {
     const mine = evals.filter((e) => e.kpiId === d.id);
     const compliant = mine.filter((e) => e.compliant).length;
@@ -107,7 +112,7 @@ function aggregate(evals: Evaluation[], enabled: number[], snapshotNotes?: Recor
     const snapshot = SNAPSHOT_KPI_IDS.includes(d.id);
     return {
       id: d.id,
-      name: d.name,
+      name: names?.[d.id] ?? d.name,
       compliant,
       applicable,
       pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
@@ -737,6 +742,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   if (usedTrackingForAging) {
     snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
+  // Labels carry the configured thresholds, e.g. "Delivered in 2 days after repair".
+  const displayNames: Record<number, string> = Object.fromEntries(
+    KPI_DEFINITIONS.map((d) => [d.id, kpiDisplayName(d.id, d.name, config.thresholds)]),
+  );
+
   // KPI 6 states which method decided a vehicle is waiting on parts.
   const snapshotNotes: Record<number, string> = {
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
@@ -752,7 +762,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   const branches: BranchNode[] = BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
-    const kpis = aggregate(branchEvals, enabled, snapshotNotes);
+    const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames);
 
     // Advisors are placed by the branch assigned to them in the roster — never by
     // the company on their ROs — so each one appears exactly once, under their own
@@ -761,7 +771,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       .filter((r) => r.branch === b)
       .map((r) => {
         const mine = evals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, enabled, snapshotNotes);
+        const cells = aggregate(mine, enabled, snapshotNotes, displayNames);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
@@ -785,7 +795,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
   }
 
-  const companyKpis = aggregate(evals, enabled, snapshotNotes);
+  const companyKpis = aggregate(evals, enabled, snapshotNotes, displayNames);
 
   return {
     week: { start, end },

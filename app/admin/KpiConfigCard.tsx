@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults,
+  BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
 } from '@/lib/types';
 
 interface OdooOptions {
@@ -117,7 +117,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     <div className="bg-white rounded-lg shadow-sm p-6 mt-5">
       <h2 className="text-base font-bold uppercase tracking-wide text-ink">KPI Configuration</h2>
       <p className="text-sm text-ink-muted mt-1 mb-5">
-        Maps the 7 KPI rules onto this Odoo instance. Options are read live from Odoo.
+        Maps the KPI rules onto this Odoo instance. Options are read live from Odoo, and
+        the thresholds below also set the KPI names shown on the dashboard.
       </p>
 
       {loadingOpts && <div className="text-sm text-ink-muted mb-4">Loading options from Odoo…</div>}
@@ -296,7 +297,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             <button key={k.id} onClick={() => toggleKpi(k.id)} title={k.rule}
               className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors cursor-pointer ${
                 on ? 'bg-evs-green text-white border-evs-green' : 'bg-white text-ink-muted border-border hover:border-gray-400'}`}>
-              {k.id}. {k.name}
+              {kpiDisplayName(k.id, k.name, cfg.thresholds)}
             </button>
           );
         })}
