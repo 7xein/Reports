@@ -72,7 +72,8 @@ function KpiRow({ cell, expandable = false }: { cell: KpiCell; expandable?: bool
         <span className="font-semibold text-ink text-sm min-w-[190px]">
           {cell.name}
           {cell.snapshot && (
-            <span className="ml-1.5 text-ink-muted cursor-help" title="Point-in-time: reflects open ROs right now, not the selected week.">ⓘ</span>
+            <span className="ml-1.5 text-ink-muted cursor-help"
+              title={cell.note || 'Point-in-time: reflects open ROs right now, not the selected week.'}>ⓘ</span>
           )}
         </span>
         <div className="flex-1 min-w-[140px] h-2 bg-surface rounded-full overflow-hidden">

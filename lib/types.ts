@@ -151,6 +151,13 @@ export interface KpiConfig {
   };
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
+  /**
+   * Which date KPIs 6 & 7 measure "time in state" from.
+   *  auto        → date_last_stage_update if the field exists, else create_date
+   *  create_date → age of the RO itself (never hides a stale vehicle)
+   *  write_date  → last modified (WARNING: any edit resets the clock)
+   */
+  ageBasis?: 'auto' | 'date_last_stage_update' | 'create_date' | 'write_date';
   /** Set on save — part of the KPI cache key so config edits take effect immediately. */
   updatedAt?: string;
 }
@@ -167,6 +174,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
   },
   saRoster: [],
   enabledKpis: [1, 2, 3, 4, 5, 6, 7],
+  ageBasis: 'auto',
 };
 
 /** Merge a stored (possibly partial/legacy) config over the defaults. */

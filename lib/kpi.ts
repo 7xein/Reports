@@ -59,6 +59,7 @@ export interface KpiCell {
   applicable: number;
   pct: number | null;        // null = N/A (nothing applicable)
   snapshot: boolean;         // true = point-in-time KPI (ignores the week window)
+  note?: string;             // extra context shown in the ⓘ tooltip
   violations: string[];      // capped at 50
 }
 
@@ -98,18 +99,20 @@ interface Evaluation {
 // ── Aggregation ────────────────────────────────────────────────────
 const VIOLATION_CAP = 50;
 
-function aggregate(evals: Evaluation[], enabled: number[]): KpiCell[] {
+function aggregate(evals: Evaluation[], enabled: number[], snapshotNote?: string): KpiCell[] {
   return KPI_DEFINITIONS.filter((d) => enabled.includes(d.id)).map((d) => {
     const mine = evals.filter((e) => e.kpiId === d.id);
     const compliant = mine.filter((e) => e.compliant).length;
     const applicable = mine.length;
+    const snapshot = SNAPSHOT_KPI_IDS.includes(d.id);
     return {
       id: d.id,
       name: d.name,
       compliant,
       applicable,
       pct: applicable > 0 ? (compliant / applicable) * 100 : null,
-      snapshot: SNAPSHOT_KPI_IDS.includes(d.id),
+      snapshot,
+      ...(snapshot && snapshotNote ? { note: snapshotNote } : {}),
       violations: mine.filter((e) => !e.compliant).map((e) => e.ref).slice(0, VIOLATION_CAP),
     };
   });
@@ -153,9 +156,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Which optional fields exist on this instance?
   const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
-  const ageField = has('date_last_stage_update') ? 'date_last_stage_update' : 'write_date';
+  // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
+  // otherwise falls back to create_date — deliberately NOT write_date, which any
+  // edit resets and which therefore hides genuinely stale vehicles.
+  const basis = config.ageBasis ?? 'auto';
+  const ageField =
+    basis === 'auto'
+      ? (has('date_last_stage_update') ? 'date_last_stage_update' : 'create_date')
+      : (has(basis) ? basis : 'create_date');
+  const AGE_LABEL: Record<string, string> = {
+    date_last_stage_update: 'time since the last stage change',
+    create_date: 'age of the repair order (no stage-change stamp available)',
+    write_date: 'time since last modification — any edit resets this clock',
+  };
+  const snapshotNote = `Point-in-time: reflects open ROs right now, not the selected week. Measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   if (ageField === 'write_date') {
-    notes.push('date_last_stage_update is unavailable — KPIs 6 & 7 use write_date as a proxy for time-in-state.');
+    notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
   if (!has('sale_order_id')) {
     notes.push('repair.order has no sale_order_id — KPIs 1, 3 and 4 cannot be evaluated.');
@@ -292,7 +308,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   const branches: BranchNode[] = BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
-    const kpis = aggregate(branchEvals, enabled);
+    const kpis = aggregate(branchEvals, enabled, snapshotNote);
 
     // Advisors are placed by the branch assigned to them in the roster — never by
     // the company on their ROs — so each one appears exactly once, under their own
@@ -301,7 +317,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       .filter((r) => r.branch === b)
       .map((r) => {
         const mine = evals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, enabled);
+        const cells = aggregate(mine, enabled, snapshotNote);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
@@ -325,7 +341,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
   }
 
-  const companyKpis = aggregate(evals, enabled);
+  const companyKpis = aggregate(evals, enabled, snapshotNote);
 
   return {
     week: { start, end },

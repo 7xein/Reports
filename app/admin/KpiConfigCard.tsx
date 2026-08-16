@@ -197,6 +197,26 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         ))}
       </div>
 
+      {/* 2b. Age basis for KPIs 6 & 7 */}
+      <div className="text-sm font-bold text-ink mb-1">2b. Time-in-state measured from</div>
+      <p className="text-xs text-ink-muted mb-2">
+        Used by &ldquo;Awaiting parts&rdquo; and &ldquo;Awaiting labour&rdquo; to decide how long a vehicle has been waiting.
+      </p>
+      <div className="flex flex-col gap-1.5 mb-6">
+        {([
+          ['auto', 'Automatic — stage-change stamp if available, otherwise RO creation date (recommended)'],
+          ['date_last_stage_update', 'Last stage change — most accurate, only if Odoo has the field'],
+          ['create_date', 'Repair order creation date — may over-report, but never hides a stuck vehicle'],
+          ['write_date', 'Last modified — ⚠ any edit resets the clock and hides overdue vehicles'],
+        ] as const).map(([v, label]) => (
+          <label key={v} className="text-xs text-ink-muted flex items-start gap-2 cursor-pointer">
+            <input type="radio" name="ageBasis" className="mt-0.5" checked={(cfg.ageBasis ?? 'auto') === v}
+              onChange={() => setCfg((p) => ({ ...p, ageBasis: v }))} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+
       {/* 3. SA roster */}
       <div className="text-sm font-bold text-ink mb-1">3. Service advisor roster</div>
       <p className="text-xs text-ink-muted mb-3">
