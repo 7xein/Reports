@@ -202,9 +202,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 <Ring pct={tree.company.achievement} />
                 <div>
                   <div className="text-xs uppercase tracking-widest text-white/50 mb-1">Company KPI Achievement</div>
-                  <div className="font-display text-4xl font-light text-white leading-none">
-                    {fmtPct(tree.company.achievement)}
-                  </div>
                   <div className="text-white/45 text-sm mt-2">{fmtWeek(tree.week.start, tree.week.end)} · all branches</div>
                 </div>
               </div>
