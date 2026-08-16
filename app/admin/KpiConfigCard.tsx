@@ -7,6 +7,7 @@ import {
 
 interface OdooOptions {
   priorityOptions: { value: string; label: string }[];
+  stateOptions: { value: string; label: string }[];
   stages: { id: number; name: string }[];
   tags: { id: number; name: string }[];
   users: { id: number; name: string; roCount: number }[];
@@ -55,6 +56,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   function optionsFor(kind: StageSelectorKind): { value: string | number; label: string }[] {
     if (!opts) return [];
     if (kind === 'priority') return opts.priorityOptions.map((o) => ({ value: o.value, label: `${o.label} (${o.value})` }));
+    if (kind === 'state') return (opts.stateOptions ?? []).map((o) => ({ value: o.value, label: `${o.label} (${o.value})` }));
     if (kind === 'stage') return opts.stages.map((s) => ({ value: s.id, label: s.name }));
     return opts.tags.map((t) => ({ value: t.id, label: t.name }));
   }
@@ -148,11 +150,11 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             <div key={key} className="border border-border rounded-md p-3">
               <div className="flex items-center gap-3 flex-wrap mb-2">
                 <span className="text-sm font-semibold text-ink min-w-[120px]">{MAP_LABELS[key]}</span>
-                {(['priority', 'stage', 'tag'] as StageSelectorKind[]).map((k) => (
+                {(['priority', 'state', 'stage', 'tag'] as StageSelectorKind[]).map((k) => (
                   <label key={k} className="text-xs text-ink-muted flex items-center gap-1 cursor-pointer">
                     <input type="radio" name={`kind-${key}`} checked={sel.kind === k}
                       onChange={() => setSelector(key, { kind: k, values: [] })} />
-                    {k === 'priority' ? 'Priority matrix' : k === 'stage' ? 'Stage' : 'Tag'}
+                    {k === 'priority' ? 'Priority matrix' : k === 'state' ? 'State' : k === 'stage' ? 'Stage' : 'Tag'}
                   </label>
                 ))}
                 <span className="text-xs text-ink-muted">{sel.values.length} selected</span>

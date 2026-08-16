@@ -125,6 +125,7 @@ function overall(cells: KpiCell[]): number | null {
 // ── Odoo domain from a configured selector ─────────────────────────
 function selectorDomain(sel: StageSelector): OdooDomain {
   if (!sel || !sel.values?.length) return [['id', '=', 0]]; // unmapped → matches nothing
+  if (sel.kind === 'state') return [['state', 'in', sel.values]];
   if (sel.kind === 'stage') return [['stage_id', 'in', sel.values]];
   if (sel.kind === 'tag')   return [['tag_ids', 'in', sel.values]];
   return [['priority_matrix_status', 'in', sel.values]];

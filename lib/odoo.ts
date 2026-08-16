@@ -712,6 +712,8 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
 export interface KpiOdooOptions {
   /** priority_matrix_status selection values (this instance's real workflow). */
   priorityOptions: { value: string; label: string }[];
+  /** repair.order `state` selection values (e.g. under_repair). */
+  stateOptions: { value: string; label: string }[];
   /** repair.order stage records, if the model actually has stage_id. */
   stages: { id: number; name: string }[];
   /** repair.order tag records. */
@@ -746,6 +748,8 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   if (!priorityOptions.length) {
     priorityOptions = Object.entries(PRIORITY_MATRIX_LABELS).map(([value, label]) => ({ value, label }));
   }
+
+  const stateOptions = (meta.state?.selection ?? []).map(([value, label]) => ({ value, label }));
 
   // Stages (only if stage_id genuinely exists on this model).
   let stages: { id: number; name: string }[] = [];
@@ -791,6 +795,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   return {
     priorityOptions,
+    stateOptions,
     stages,
     tags,
     users,

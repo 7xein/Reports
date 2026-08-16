@@ -123,7 +123,7 @@ export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
  * its workflow in `priority_matrix_status` (stage_id is unused), but stage/tag
  * are supported so the mapping stays configurable.
  */
-export type StageSelectorKind = 'priority' | 'stage' | 'tag';
+export type StageSelectorKind = 'priority' | 'state' | 'stage' | 'tag';
 export interface StageSelector {
   kind: StageSelectorKind;
   values: (string | number)[];
@@ -158,10 +158,10 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
   thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2 },
   stageMap: {
-    repaired:       { kind: 'priority', values: ['C', 'G', 'D'] }, // Labour Complete / QC Complete / Vehicle Ready
-    underRepair:    { kind: 'priority', values: ['W'] },           // Work In Progress
-    awaitingParts:  { kind: 'priority', values: ['P'] },           // Awaiting Parts
-    awaitingLabour: { kind: 'priority', values: ['I'] },           // Awaiting Labour
+    repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
+    underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
+    awaitingParts:  { kind: 'priority', values: ['P'] },            // Awaiting Parts
+    awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
   },
   saRoster: [],
   enabledKpis: [1, 2, 3, 4, 5, 6, 7],
