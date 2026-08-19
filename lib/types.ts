@@ -109,18 +109,18 @@ export interface RegionalData {
 // Names here are threshold-free fallbacks — kpiDisplayName() builds the label
 // shown in the UI from the configured thresholds, so they can never drift.
 export const KPI_DEFINITIONS = [
-  { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
-  { id: 11, name: 'Delivered after repair',  rule: 'Once repaired, a vehicle must be delivered within the configured time — not left sitting on the lot.' },
-  { id: 13, name: 'Customer follow-up',     rule: 'A customer follow-up must be recorded (follow-up screenshot uploaded) after the vehicle is delivered.' },
-  { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
-  { id: 12, name: 'Quote after RO',          rule: 'A quotation must be raised within the configured time of the repair order being created.' },
-  { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
-  { id: 5, name: 'Tag on creation',          rule: 'A tag must be added to every RO within the configured time of creation.' },
-  { id: 8, name: 'Car in / out tag',         rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
-  { id: 2, name: 'Quote approval',           rule: 'Quotations must not sit awaiting approval beyond the configured time.' },
-  { id: 9, name: 'Weekly closure rate',      rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
-  { id: 6, name: 'Awaiting parts',           rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
-  { id: 7, name: 'Awaiting labour',          rule: 'A vehicle cannot await labour beyond the configured time.' },
+  { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', rule: 'An invoice must be raised by the time the vehicle is handed over.' },
+  { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', rule: 'Once repaired, a vehicle must be delivered within the configured time — not left sitting on the lot.' },
+  { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', rule: 'A customer follow-up must be recorded (follow-up screenshot uploaded) after the vehicle is delivered.' },
+  { id: 3, name: 'SO before repaired',       group: 'Quotations', rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
+  { id: 12, name: 'Quote after RO',          group: 'Quotations', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
+  { id: 4, name: 'Quote before starting repair', group: 'Quotations', rule: 'A quotation must exist before repair work starts.' },
+  { id: 5, name: 'Tag on creation',          group: 'Tagging', rule: 'A tag must be added to every RO within the configured time of creation.' },
+  { id: 8, name: 'Car in / out tag',         group: 'Tagging', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
+  { id: 2, name: 'Quote approval',           group: 'Quotations', rule: 'Quotations must not sit awaiting approval beyond the configured time.' },
+  { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
+  { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
+  { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', rule: 'A vehicle cannot await labour beyond the configured time.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 

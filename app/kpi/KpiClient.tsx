@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
+import { KPI_DEFINITIONS } from '@/lib/types';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai: '#78C41A', Ajman: '#3B82F6', Sharjah: '#F59E0B',
@@ -15,6 +16,10 @@ function band(pct: number | null): { text: string; bar: string; hex: string } {
   if (pct >= 75) return { text: 'text-amber-600', bar: 'bg-amber-500', hex: '#f59e0b' };
   return { text: 'text-danger', bar: 'bg-danger', hex: '#e53e3e' };
 }
+
+// KPI grouping comes from the shared definitions, so the page can't drift from them.
+const GROUP_OF: Record<number, string> = Object.fromEntries(KPI_DEFINITIONS.map((d) => [d.id, d.group]));
+const GROUP_ORDER: string[] = [...new Set(KPI_DEFINITIONS.map((d) => d.group as string))];
 
 const fmtPct = (p: number | null) => (p === null ? 'N/A' : `${p.toFixed(1)}%`);
 
@@ -67,25 +72,23 @@ function KpiRow({ cell, expandable = false }: { cell: KpiCell; expandable?: bool
   const b = band(cell.pct);
   const na = cell.pct === null;
   return (
-    <div className="py-3 border-b border-border last:border-b-0">
-      {/* Header line — the bar lives on its own line below so it can never be
-          squeezed out when this row wraps on narrow screens. */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <span className="font-semibold text-ink text-sm">
+    <div className="min-w-0">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[13px] font-semibold text-ink truncate" title={cell.name}>
           {cell.name}
           {cell.snapshot && (
-            <span className="ml-1.5 text-ink-muted cursor-help"
+            <span className="ml-1 text-ink-muted cursor-help"
               title={cell.note || 'Point-in-time: reflects open ROs right now, not the selected week.'}>ⓘ</span>
           )}
         </span>
         <span className="flex-1" />
-        <span className={`text-sm font-bold tabular-nums ${b.text}`}>{fmtPct(cell.pct)}</span>
-        <span className="text-xs text-ink-muted tabular-nums w-20 text-right">
+        <span className={`text-[13px] font-bold tabular-nums shrink-0 ${b.text}`}>{fmtPct(cell.pct)}</span>
+        <span className="text-[11px] text-ink-muted tabular-nums shrink-0 w-14 text-right">
           {na ? '—' : `${cell.compliant}/${cell.applicable}`}
         </span>
       </div>
 
-      <div className="h-2 bg-border rounded-full overflow-hidden mt-2">
+      <div className="h-1.5 bg-border rounded-full overflow-hidden mt-1.5">
         <div
           className={`h-full rounded-full transition-all ${na ? '' : b.bar}`}
           style={{
@@ -95,23 +98,45 @@ function KpiRow({ cell, expandable = false }: { cell: KpiCell; expandable?: bool
           }}
         />
       </div>
-      {na && <div className="text-xs text-ink-muted mt-1">N/A — no applicable records this week.</div>}
+
+      {na && <div className="text-[11px] text-ink-muted mt-1">No applicable records</div>}
       {expandable && cell.violations.length > 0 && (
-        <div className="mt-2">
-          <button onClick={() => setOpen((v) => !v)} className="text-xs font-semibold text-evs-green-dark hover:underline cursor-pointer">
-            {open ? 'Hide' : 'View'} {cell.violations.length} violation{cell.violations.length !== 1 ? 's' : ''}
-            {cell.violations.length === 50 ? '+' : ''}
+        <div className="mt-1">
+          <button onClick={() => setOpen((v) => !v)} className="text-[11px] font-semibold text-evs-green-dark hover:underline cursor-pointer">
+            {open ? 'Hide' : 'View'} {cell.violations.length}{cell.violations.length === 50 ? '+' : ''} violation{cell.violations.length !== 1 ? 's' : ''}
           </button>
           {open && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="mt-1.5 flex flex-wrap gap-1">
               {cell.violations.map((v) => (
-                <code key={v} className="text-xs bg-surface border border-border rounded px-2 py-1 text-ink-soft select-all">{v}</code>
+                <code key={v} className="text-[11px] bg-surface border border-border rounded px-1.5 py-0.5 text-ink-soft select-all">{v}</code>
               ))}
             </div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/** KPIs grouped into labelled sections, two per row on wider screens. */
+function KpiSections({ cells, expandable = false }: { cells: KpiCell[]; expandable?: boolean }) {
+  return (
+    <>
+      {GROUP_ORDER.map((group) => {
+        const items = cells.filter((c) => GROUP_OF[c.id] === group);
+        if (!items.length) return null;
+        return (
+          <div key={group} className="mb-5 last:mb-0">
+            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-muted mb-2.5 pb-1.5 border-b border-border">
+              {group}
+            </div>
+            <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
+              {items.map((c) => <KpiRow key={c.id} cell={c} expandable={expandable} />)}
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -208,7 +233,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
 
               <div className="bg-white rounded-lg p-5 shadow-sm mb-4">
                 <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-2">Company KPI Breakdown</div>
-                {tree.company.kpis.map((c) => <KpiRow key={c.id} cell={c} />)}
+                <KpiSections cells={tree.company.kpis} />
               </div>
 
               <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Branches — click to drill down</div>
@@ -255,7 +280,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">{branchNode.name} — KPI Breakdown</span>
                   <span className={`text-2xl font-black tabular-nums ${band(branchNode.achievement).text}`}>{fmtPct(branchNode.achievement)}</span>
                 </div>
-                {branchNode.kpis.map((c) => <KpiRow key={c.id} cell={c} />)}
+                <KpiSections cells={branchNode.kpis} />
               </div>
 
               <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Service Advisors</div>
@@ -292,7 +317,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <span className={`text-3xl font-black tabular-nums ${band(saNode.achievement).text}`}>{fmtPct(saNode.achievement)}</span>
               </div>
-              {saNode.kpis.map((c) => <KpiRow key={c.id} cell={c} expandable />)}
+              <KpiSections cells={saNode.kpis} expandable />
             </div>
           )}
 
