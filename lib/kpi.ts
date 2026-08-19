@@ -118,7 +118,7 @@ function aggregate(
       applicable,
       pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
       snapshot,
-      ...(snapshot && snapshotNotes?.[d.id] ? { note: snapshotNotes[d.id] } : {}),
+      ...(snapshotNotes?.[d.id] ? { note: snapshotNotes[d.id] } : {}),
       violations: mine.filter((e) => !e.compliant).map((e) => e.ref).slice(0, VIOLATION_CAP),
     };
   });
@@ -147,6 +147,81 @@ function selectorDomainNot(sel: StageSelector): OdooDomain {
   if (sel.kind === 'stage') return [['stage_id', 'not in', sel.values]];
   if (sel.kind === 'tag')   return [['tag_ids', 'not in', sel.values]];
   return [['priority_matrix_status', 'not in', sel.values]];
+}
+
+
+/**
+ * When each invoice was actually posted. Preferred source is the account.move
+ * chatter (exact timestamp); falls back to invoice_date for moves whose posting
+ * wasn't tracked. Unposted moves are omitted.
+ */
+async function invoicePostedTimes(moveIds: number[]): Promise<Record<number, number>> {
+  if (!moveIds.length) return {};
+  const out: Record<number, number> = {};
+  try {
+    const mm = (await call('account.move', 'fields_get', [], { attributes: ['selection'] })) as FieldsMeta;
+    const postedLabel = (mm.state?.selection ?? []).find(([v]) => v === 'posted')?.[1];
+    if (postedLabel) {
+      Object.assign(out, await trackedTransitions('account.move', [
+        ['model', '=', 'account.move'],
+        ['res_id', 'in', moveIds],
+        ['tracking_value_ids', '!=', false],
+      ], 'state', [postedLabel]));
+    }
+  } catch { /* chatter unavailable — fall back below */ }
+
+  const missing = moveIds.filter((id) => out[id] == null);
+  if (missing.length) {
+    try {
+      const moves = (await call('account.move', 'read', [missing], {
+        fields: ['invoice_date', 'create_date', 'state'],
+      })) as Rec[];
+      for (const m of moves) {
+        if (m.state !== 'posted') continue;
+        const d = typeof m.invoice_date === 'string' ? Date.parse(`${m.invoice_date}T00:00:00Z`) : NaN;
+        const t = Number.isNaN(d) ? odooTime(m.create_date) : d;
+        if (t != null) out[m.id as number] = t;
+      }
+    } catch { /* ignore */ }
+  }
+  return out;
+}
+
+/**
+ * RO id → when its earliest linked invoice was posted.
+ *
+ * Two link shapes exist depending on the Odoo version: a direct invoice_id on the
+ * repair order, and the sale order's invoice_ids. Both are followed.
+ */
+async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
+  const roMoves: Record<number, number[]> = {};
+  for (const r of ros) {
+    const direct = m2o(r.invoice_id)?.[0];
+    if (direct != null) roMoves[r.id as number] = [direct];
+  }
+
+  const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
+  const soToMoves: Record<number, number[]> = {};
+  if (soIds.length) {
+    try {
+      const sos = (await call('sale.order', 'read', [soIds], { fields: ['invoice_ids'] })) as { id: number; invoice_ids?: number[] }[];
+      for (const so of sos) soToMoves[so.id] = so.invoice_ids ?? [];
+    } catch { /* direct links may still carry us */ }
+  }
+  for (const r of ros) {
+    const soId = m2o(r.sale_order_id)?.[0];
+    if (soId == null) continue;
+    const ids = new Set([...(roMoves[r.id as number] ?? []), ...(soToMoves[soId] ?? [])]);
+    if (ids.size) roMoves[r.id as number] = [...ids];
+  }
+
+  const posted = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
+  const out: Record<number, number> = {};
+  for (const [roId, moves] of Object.entries(roMoves)) {
+    const times = moves.map((id) => posted[id]).filter((t): t is number => t != null);
+    if (times.length) out[Number(roId)] = Math.min(...times);
+  }
+  return out;
 }
 
 // ── Engine ─────────────────────────────────────────────────────────
@@ -251,7 +326,7 @@ function trackedField(sel: StageSelector, meta: FieldsMeta): { field: string; la
  */
 async function stateEntryTimes(roIds: number[], field: string, labels: string[]): Promise<Record<number, number>> {
   if (!roIds.length || !labels.length) return {};
-  return trackedTransitions([
+  return trackedTransitions('repair.order', [
     ['model', '=', 'repair.order'],
     ['res_id', 'in', roIds],
     ['tracking_value_ids', '!=', false],
@@ -268,7 +343,7 @@ async function roIdsEnteringStateInWindow(
   field: string, labels: string[], from: string, to: string,
 ): Promise<Record<number, number>> {
   if (!labels.length) return {};
-  return trackedTransitions([
+  return trackedTransitions('repair.order', [
     ['model', '=', 'repair.order'],
     ['date', '>=', from], ['date', '<', to],
     ['tracking_value_ids', '!=', false],
@@ -276,7 +351,7 @@ async function roIdsEnteringStateInWindow(
 }
 
 /** Shared chatter-log reader: message domain → { roId: epoch ms of transition }. */
-async function trackedTransitions(msgDomain: OdooDomain, field: string, labels: string[]): Promise<Record<number, number>> {
+async function trackedTransitions(model: string, msgDomain: OdooDomain, field: string, labels: string[]): Promise<Record<number, number>> {
   try {
     const msgs = (await call('mail.message', 'search_read', [msgDomain], {
       fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0,
@@ -293,7 +368,7 @@ async function trackedTransitions(msgDomain: OdooDomain, field: string, labels: 
     let fieldId: number | null = null;
     if (useFieldId) {
       const fr = (await call('ir.model.fields', 'search_read', [[
-        ['model', '=', 'repair.order'], ['name', '=', field],
+        ['model', '=', model], ['name', '=', field],
       ]], { fields: ['id'], limit: 1 })) as { id: number }[];
       fieldId = fr[0]?.id ?? null;
     }
@@ -393,9 +468,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const enabled = config.enabledKpis ?? [];
   const on = (id: number) => enabled.includes(id);
 
-  // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
-  if ((on(1) || on(3) || on(13)) && has('sale_order_id')) {
+  // ── KPIs 1 & 11 — time from "Repaired" to the invoice being posted ──
+  // Same measurement, two thresholds: KPI 1 is the prompt-invoicing rule, KPI 11
+  // stands in for delivery (a car isn't handed over before it's invoiced).
+  if ((on(1) || on(11) || on(13)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
+    if (has('invoice_id')) roFields.push('invoice_id');   // some versions link the invoice directly
     // Follow-up is a binary field — bin_size returns its size instead of the
     // whole attachment, so we can tell "uploaded or not" without the payload.
     const followUpField = on(13)
@@ -427,44 +505,42 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     }
 
-    // Which of the linked sale orders actually have invoices?
-    const soIds = [...new Set(repaired.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
-    const invoiced = new Set<number>();
-    if (on(1) && soIds.length) {
-      try {
-        const sos = (await call('sale.order', 'read', [soIds], { fields: ['invoice_ids'] })) as { id: number; invoice_ids?: number[] }[];
-        for (const so of sos) if ((so.invoice_ids ?? []).length) invoiced.add(so.id);
-      } catch { notes.push('Could not read sale.order invoice_ids — KPI 1 may be understated.'); }
+    const invoicedAt = (on(1) || on(11)) ? await invoiceTimesForRos(repaired) : {};
+
+    /** Judge repaired → invoice-posted against a time limit. */
+    const judgeInvoiceTiming = (kpiId: number, limitMs: number) => {
+      for (const r of repaired) {
+        const rep = deliveredAt[r.id as number];
+        if (rep == null) continue;                 // no repaired timestamp → not measurable
+        const inv = invoicedAt[r.id as number];
+        const ref = (r.name as string) || '';
+        if (inv != null) push(kpiId, r, inv - rep <= limitMs, ref);
+        else if (now - rep > limitMs) push(kpiId, r, false, ref);  // overdue, still uninvoiced
+        // still inside the window and uninvoiced → not judged yet
+      }
+    };
+
+    if (on(1)) judgeInvoiceTiming(1, (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000);
+    if (on(11)) judgeInvoiceTiming(11, (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000);
+
+    if (on(13) && followUpField) {
+      const graceMs = (config.thresholds.followUpGraceDays ?? 1) * 86400_000;
+      for (const r of repaired) {
+        const at = deliveredAt[r.id as number];
+        if (at != null && now - at < graceMs) continue;   // still inside the grace window
+        push(13, r, !!r[followUpField], (r.name as string) || '');
+      }
     }
 
-    // Grace period: a vehicle that only just reached delivery hasn't had a fair
-    // chance to be invoiced yet, so it's excluded from KPI 1 until the grace passes.
-    const graceMs = (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000;
-
-    for (const r of repaired) {
-      const ref = (r.name as string) || '';
-      const soId = m2o(r.sale_order_id)?.[0] ?? null;
-      if (on(3)) push(3, r, soId != null, ref);
-
-      if (on(13) && followUpField) {
-        // Give the advisor the grace window after delivery before judging.
-        const at = deliveredAt[r.id as number];
-        const graceMs = (config.thresholds.followUpGraceDays ?? 1) * 86400_000;
-        if (!(at != null && now - at < graceMs)) push(13, r, !!r[followUpField], ref);
-      }
-      if (on(1)) {
-        const at = deliveredAt[r.id as number];
-        // If we can't tell when it was delivered, judge it rather than silently skip.
-        const withinGrace = at != null && now - at < graceMs;
-        if (!withinGrace) push(1, r, soId != null && invoiced.has(soId), ref);
-      }
+    if ((on(1) || on(11)) && !Object.keys(deliveredAt).length) {
+      notes.push('No "Repaired" transitions were found in the chatter this week — check the Repaired state mapping in Admin → KPI Configuration.');
     }
   }
 
-  // ── KPI 4 — a quotation must exist BEFORE repair starts ──
-  // Uses the chatter log to get the moment the RO entered "under repair", so this
-  // checks the real sequence (quote created first) rather than just "a quote exists".
-  if (on(4) && has('sale_order_id')) {
+  // ── KPIs 3 & 4 — the quotation must come BEFORE repair starts ──
+  // Uses the chatter log for the moment the RO entered "under repair", so both check
+  // a real sequence: KPI 4 wants the quote *created* first, KPI 3 wants it *approved*.
+  if ((on(3) || on(4)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
     const tf = trackedField(config.stageMap.underRepair, meta);
 
@@ -482,15 +558,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (tf) entered = await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels);
     }
 
-    // Quotation creation times.
+    // Quotation creation and approval times. date_order is when Odoo confirms a
+    // quotation into a sale order — i.e. the moment the customer approved it.
     const soIds = [...new Set(inRepair.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
     const soCreated: Record<number, number> = {};
+    const soApproved: Record<number, number> = {};
     if (soIds.length) {
       try {
-        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
+        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date', 'date_order', 'state'] })) as Rec[];
         for (const so of sos) {
-          const t = odooTime(so.create_date);
-          if (t != null) soCreated[so.id as number] = t;
+          const c = odooTime(so.create_date);
+          if (c != null) soCreated[so.id as number] = c;
+          if (so.state === 'sale' || so.state === 'done') {
+            const a = odooTime(so.date_order);
+            if (a != null) soApproved[so.id as number] = a;
+          }
         }
       } catch { /* fall back to existence-only below */ }
     }
@@ -499,18 +581,35 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     for (const r of inRepair) {
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
-      if (soId == null) { push(4, r, false, ref); continue; } // no quote at all
       const startedAt = entered[r.id as number];
-      const quotedAt = soCreated[soId];
-      if (startedAt != null && quotedAt != null) {
-        sequenceChecked++;
-        push(4, r, quotedAt <= startedAt, ref); // quote must pre-date repair start
-      } else {
-        push(4, r, true, ref); // quote exists but the sequence can't be verified
+
+      if (on(4)) {
+        if (soId == null) push(4, r, false, ref);              // no quote at all
+        else {
+          const quotedAt = soCreated[soId];
+          if (startedAt != null && quotedAt != null) {
+            sequenceChecked++;
+            push(4, r, quotedAt <= startedAt, ref);            // quote must pre-date repair start
+          } else {
+            push(4, r, true, ref);                             // exists, sequence unverifiable
+          }
+        }
+      }
+
+      if (on(3)) {
+        // The quotation must have been APPROVED (confirmed into a sale order)
+        // before the RO moved into Under Repair.
+        if (soId == null) push(3, r, false, ref);
+        else {
+          const approvedAt = soApproved[soId];
+          if (approvedAt == null) push(3, r, false, ref);       // never approved
+          else if (startedAt != null) push(3, r, approvedAt <= startedAt, ref);
+          else push(3, r, true, ref);                           // approved, sequence unverifiable
+        }
       }
     }
-    if (inRepair.length && sequenceChecked === 0) {
-      notes.push('KPI 4 could not read repair-start times from the chatter log, so it only checks that a quotation exists.');
+    if (on(4) && inRepair.length && sequenceChecked === 0) {
+      notes.push('Could not read repair-start times from the chatter log, so "Quote before starting repair" only checks that a quotation exists.');
     }
   }
 
@@ -596,36 +695,6 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
 
     for (const r of received) push(9, r, closedSet.has(r.id as number), (r.name as string) || '');
-  }
-
-  // ── KPI 11 — repaired vehicles must be delivered, not left on the lot ──
-  if (on(11)) {
-    const limitMs = (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000;
-    const tfRep = trackedField(config.stageMap.repaired, meta);
-    const repairedAt = tfRep
-      ? await roIdsEnteringStateInWindow(tfRep.field, tfRep.labels, wStart, wEnd)
-      : {};
-    const ids = Object.keys(repairedAt).map(Number);
-
-    if (ids.length) {
-      const recs = (await call('repair.order', 'read', [ids], {
-        fields: ['name', 'create_uid', 'company_id'],
-      })) as Rec[];
-      const tfClosed = trackedField(config.stageMap.closed, meta);
-      const deliveredAt = tfClosed ? await stateEntryTimes(ids, tfClosed.field, tfClosed.labels) : {};
-
-      for (const r of recs) {
-        const rep = repairedAt[r.id as number];
-        if (rep == null) continue;
-        const del = deliveredAt[r.id as number];
-        const ref = (r.name as string) || '';
-        // Delivered → was it quick enough. Still on the lot → only a violation
-        // once it has actually overrun.
-        push(11, r, del != null ? del - rep <= limitMs : now - rep <= limitMs, ref);
-      }
-    } else if (!tfRep) {
-      notes.push('KPI 11 needs the repaired state to be mapped to a tracked field (state or priority matrix).');
-    }
   }
 
   // ── KPI 12 — quotation raised within N days of the RO ──
@@ -767,9 +836,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // KPI 6 states which method decided a vehicle is waiting on parts.
   const snapshotNotes: Record<number, string> = {
+    1: 'Measured from the moment the RO became Repaired to the moment its linked invoice was posted.',
+    3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
+    11: 'Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
     7: snapshotNote,
-    9: snapshotNote,
   };
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');

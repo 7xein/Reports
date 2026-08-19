@@ -109,10 +109,10 @@ export interface RegionalData {
 // Names here are threshold-free fallbacks — kpiDisplayName() builds the label
 // shown in the UI from the configured thresholds, so they can never drift.
 export const KPI_DEFINITIONS = [
-  { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', rule: 'An invoice must be raised by the time the vehicle is handed over.' },
-  { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', rule: 'Once repaired, a vehicle must be delivered within the configured time — not left sitting on the lot.' },
+  { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', rule: 'The invoice linked to the RO must be posted within the configured time of the repair being marked Repaired.' },
+  { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
   { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', rule: 'A customer follow-up must be recorded (follow-up screenshot uploaded) after the vehicle is delivered.' },
-  { id: 3, name: 'SO before repaired',       group: 'Quotations', rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
+  { id: 3, name: 'SO before repaired',       group: 'Quotations', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
   { id: 12, name: 'Quote after RO',          group: 'Quotations', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
   { id: 4, name: 'Quote before starting repair', group: 'Quotations', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag on creation',          group: 'Tagging', rule: 'A tag must be added to every RO within the configured time of creation.' },
@@ -135,6 +135,7 @@ function minutesLabel(mins: number): string {
 export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thresholds']): string {
   const days = (n: number) => plural(n, 'day');
   switch (id) {
+    case 1:  return `Invoice within ${minutesLabel(t.invoiceGraceMinutes ?? 10)} of repair`;
     case 2:  return `Quote approval ≤ ${days(t.quoteApprovalDays ?? 7)}`;
     case 5:  return `Tag within ${minutesLabel(t.tagMinutes ?? 60)}`;
     case 6:  return `Awaiting parts ≤ ${days(t.awaitingPartsDays ?? 14)}`;
