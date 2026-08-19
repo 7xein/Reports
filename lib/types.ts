@@ -182,6 +182,8 @@ export interface KpiConfig {
     quoteWithinDays?: number;
     /** Grace after delivery before the follow-up KPI judges an RO. */
     followUpGraceDays?: number;
+    /** Below this many applicable records a KPI is flagged as low-volume (n=X). */
+    lowVolumeMin?: number;
   };
   stageMap: {
     repaired: StageSelector;
@@ -216,7 +218,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -256,6 +258,18 @@ export function withKpiDefaults(cfg?: Partial<KpiConfig> | null): KpiConfig {
   };
 }
 
+/**
+ * Compact per-week snapshot of computed KPI results, persisted so the dashboard
+ * can show week-over-week deltas and sparklines. Only percentages are kept —
+ * storing whole trees would bloat the store for no benefit.
+ */
+export interface KpiWeekSummary {
+  weekStart: string;
+  generatedAt: string;
+  company: { achievement: number | null; kpis: Record<string, number | null> };
+  branches: Record<string, { achievement: number | null; kpis: Record<string, number | null> }>;
+}
+
 export interface ReportData {
   weekly: {
     targets: BranchValues<WeeklyMetricKey>;
@@ -273,4 +287,5 @@ export interface ReportData {
   wipHistory: WipDailyEntry[];         // cumulative daily snapshots (trend chart)
   wipWeeklyHistory: WipWeeklyEntry[];  // week-only counts entered every Thursday
   kpiConfig?: KpiConfig;               // optional — falls back to DEFAULT_KPI_CONFIG
+  kpiHistory?: Record<string, KpiWeekSummary>; // keyed by weekStart
 }

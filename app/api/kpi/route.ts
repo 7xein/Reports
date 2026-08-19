@@ -10,10 +10,10 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { computeKpiTree, weekStartFor, KpiTree } from '@/lib/kpi';
-import { readData } from '@/lib/data-store';
+import { computeKpiTree, weekStartFor, summariseTree, KpiTree } from '@/lib/kpi';
+import { readData, writeData } from '@/lib/data-store';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
-import { withKpiDefaults } from '@/lib/types';
+import { withKpiDefaults, KpiWeekSummary } from '@/lib/types';
 
 export const maxDuration = 60;
 
@@ -26,6 +26,18 @@ async function redis() {
     url: process.env.UPSTASH_REDIS_REST_URL!,
     token: process.env.UPSTASH_REDIS_REST_TOKEN!,
   });
+}
+
+
+const HISTORY_WEEKS = 8;
+
+/** The last N stored week summaries up to `weekStart`, oldest first. */
+function recentHistory(all: Record<string, KpiWeekSummary> | undefined, weekStart: string): KpiWeekSummary[] {
+  if (!all) return [];
+  return Object.values(all)
+    .filter((h) => h.weekStart <= weekStart)
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+    .slice(-HISTORY_WEEKS);
 }
 
 export async function GET(req: NextRequest) {
@@ -60,7 +72,9 @@ export async function GET(req: NextRequest) {
     if (useRedis && !refresh) {
       try {
         const cached = await (await redis()).get<KpiTree>(key);
-        if (cached) return NextResponse.json({ ...cached, cached: true });
+        if (cached) {
+          return NextResponse.json({ ...cached, cached: true, history: recentHistory(data.kpiHistory, weekStart) });
+        }
       } catch { /* cache miss/unavailable — fall through to a live compute */ }
     }
 
@@ -70,7 +84,20 @@ export async function GET(req: NextRequest) {
       try { await (await redis()).set(key, tree, { ex: TTL_SECONDS }); } catch { /* non-fatal */ }
     }
 
-    return NextResponse.json({ ...tree, cached: false });
+    // Persist this week's summary so future loads can show deltas + sparklines.
+    // Re-read first so we don't clobber writes made while the tree was computing.
+    let history: KpiWeekSummary[] = [];
+    try {
+      const fresh = await readData();
+      fresh.kpiHistory = { ...(fresh.kpiHistory ?? {}), [weekStart]: summariseTree(tree) };
+      await writeData(fresh);
+      history = recentHistory(fresh.kpiHistory, weekStart);
+    } catch (e) {
+      console.error('[api/kpi] could not persist week summary:', e);
+      history = recentHistory(data.kpiHistory, weekStart);
+    }
+
+    return NextResponse.json({ ...tree, cached: false, history });
   } catch (error) {
     console.error('❌ [api/kpi] failed:', error);
     return NextResponse.json(

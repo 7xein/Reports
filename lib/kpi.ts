@@ -11,6 +11,7 @@
 
 import {
   BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, kpiDisplayName,
+  KpiWeekSummary,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
 
@@ -820,5 +821,19 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     company: { achievement: overall(companyKpis), kpis: companyKpis },
     branches,
     notes,
+  };
+}
+
+/** Compact snapshot of a computed tree, persisted for deltas and sparklines. */
+export function summariseTree(tree: KpiTree): KpiWeekSummary {
+  const pcts = (cells: KpiCell[]) =>
+    Object.fromEntries(cells.map((c) => [String(c.id), c.pct])) as Record<string, number | null>;
+  return {
+    weekStart: tree.week.start,
+    generatedAt: tree.generatedAt,
+    company: { achievement: tree.company.achievement, kpis: pcts(tree.company.kpis) },
+    branches: Object.fromEntries(
+      tree.branches.map((b) => [b.name, { achievement: b.achievement, kpis: pcts(b.kpis) }]),
+    ),
   };
 }
