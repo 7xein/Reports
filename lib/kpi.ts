@@ -393,8 +393,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const on = (id: number) => enabled.includes(id);
 
   // ── KPIs 1 & 3 — repaired ROs: invoice raised, sale order present ──
-  if ((on(1) || on(3)) && has('sale_order_id')) {
+  if ((on(1) || on(3) || on(13)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
+    // Follow-up is a binary field — bin_size returns its size instead of the
+    // whole attachment, so we can tell "uploaded or not" without the payload.
+    const followUpField = on(13)
+      ? ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has)
+      : undefined;
+    if (followUpField) roFields.push(followUpField);
+    if (on(13) && !followUpField) {
+      notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
+    }
+    const roCtx = { bin_size: true };
     const tfRepaired = trackedField(config.stageMap.repaired, meta);
 
     // Preferred: ROs that reached the repaired/delivered state during this week,
@@ -406,11 +416,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
     let repaired: Rec[];
     if (enteredIds.length) {
-      repaired = (await call('repair.order', 'read', [enteredIds], { fields: roFields })) as Rec[];
+      repaired = (await call('repair.order', 'read', [enteredIds], { fields: roFields, context: roCtx })) as Rec[];
     } else {
       repaired = (await call('repair.order', 'search_read', [[
         ...selectorDomain(config.stageMap.repaired), ...weekDomain,
-      ]], { fields: roFields, limit: 0 })) as Rec[];
+      ]], { fields: roFields, limit: 0, context: roCtx })) as Rec[];
       if (tfRepaired) {
         deliveredAt = await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels);
       }
@@ -434,6 +444,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
       if (on(3)) push(3, r, soId != null, ref);
+
+      if (on(13) && followUpField) {
+        // Give the advisor the grace window after delivery before judging.
+        const at = deliveredAt[r.id as number];
+        const graceMs = (config.thresholds.followUpGraceDays ?? 1) * 86400_000;
+        if (!(at != null && now - at < graceMs)) push(13, r, !!r[followUpField], ref);
+      }
       if (on(1)) {
         const at = deliveredAt[r.id as number];
         // If we can't tell when it was delivered, judge it rather than silently skip.

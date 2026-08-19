@@ -111,6 +111,7 @@ export interface RegionalData {
 export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      rule: 'An invoice must be raised by the time the vehicle is handed over.' },
   { id: 11, name: 'Delivered after repair',  rule: 'Once repaired, a vehicle must be delivered within the configured time — not left sitting on the lot.' },
+  { id: 13, name: 'Customer follow-up',     rule: 'A customer follow-up must be recorded (follow-up screenshot uploaded) after the vehicle is delivered.' },
   { id: 3, name: 'SO before repaired',       rule: 'A sale order must exist by the time a vehicle reaches the repaired stage.' },
   { id: 12, name: 'Quote after RO',          rule: 'A quotation must be raised within the configured time of the repair order being created.' },
   { id: 4, name: 'Quote before starting repair', rule: 'A quotation must exist before repair work starts.' },
@@ -179,6 +180,8 @@ export interface KpiConfig {
     repairedToDeliveredDays?: number;
     /** Max days between RO creation and the quotation being raised (KPI 12). */
     quoteWithinDays?: number;
+    /** Grace after delivery before the follow-up KPI judges an RO. */
+    followUpGraceDays?: number;
   };
   stageMap: {
     repaired: StageSelector;
@@ -213,7 +216,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -223,7 +226,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };
