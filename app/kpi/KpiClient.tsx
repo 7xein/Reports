@@ -126,11 +126,15 @@ function KpiSections({ cells, expandable = false }: { cells: KpiCell[]; expandab
         const items = cells.filter((c) => GROUP_OF[c.id] === group);
         if (!items.length) return null;
         return (
-          <div key={group} className="mb-5 last:mb-0">
-            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-ink-muted mb-2.5 pb-1.5 border-b border-border">
-              {group}
+          <div key={group} className="mb-4 last:mb-0 border border-border rounded-lg overflow-hidden">
+            <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
+              <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
+              <span className="text-[11px] text-ink-muted ml-auto">
+                {items.length} KPI{items.length !== 1 ? 's' : ''}
+              </span>
             </div>
-            <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
+            <div className="p-4 grid sm:grid-cols-2 gap-x-8 gap-y-4">
               {items.map((c) => <KpiRow key={c.id} cell={c} expandable={expandable} />)}
             </div>
           </div>
