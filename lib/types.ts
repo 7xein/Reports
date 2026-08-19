@@ -135,7 +135,7 @@ function minutesLabel(mins: number): string {
 export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thresholds']): string {
   const days = (n: number) => plural(n, 'day');
   switch (id) {
-    case 1:  return `Invoice within ${minutesLabel(t.invoiceGraceMinutes ?? 10)} of repair`;
+    case 1:  return `Invoice within ${minutesLabel(t.invoiceGraceMinutes ?? 60)} of repair`;
     case 2:  return `Quote approval ≤ ${days(t.quoteApprovalDays ?? 7)}`;
     case 5:  return `Tag within ${minutesLabel(t.tagMinutes ?? 60)}`;
     case 6:  return `Awaiting parts ≤ ${days(t.awaitingPartsDays ?? 14)}`;
@@ -219,7 +219,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 10, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
+  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state

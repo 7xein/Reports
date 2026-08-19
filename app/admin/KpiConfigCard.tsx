@@ -194,10 +194,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         {([
           ['quoteApprovalDays', 'Quote approval (days)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
-          ['invoiceGraceMinutes', 'Invoice grace after delivery (minutes)'],
+          ['invoiceGraceMinutes', 'Invoice posted within (minutes of Repaired)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
-          ['repairedToDeliveredDays', 'Repaired → delivered (days)'],
+          ['repairedToDeliveredDays', 'Repaired → delivered/invoiced (days)'],
           ['quoteWithinDays', 'Quotation raised within (days of RO)'],
           ['followUpGraceDays', 'Customer follow-up grace after delivery (days)'],
           ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],

@@ -520,7 +520,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     };
 
-    if (on(1)) judgeInvoiceTiming(1, (config.thresholds.invoiceGraceMinutes ?? 10) * 60_000);
+    if (on(1)) judgeInvoiceTiming(1, (config.thresholds.invoiceGraceMinutes ?? 60) * 60_000);
     if (on(11)) judgeInvoiceTiming(11, (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000);
 
     if (on(13) && followUpField) {
