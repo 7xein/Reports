@@ -12,12 +12,16 @@ const BRANCH_COLORS: Record<string, string> = {
 const CRITICAL_PCT = 30;   // below this is always shown as critical
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
 
-/** Achievement bands. Bars stay muted so saturated red is reserved for critical rows. */
-function band(pct: number | null): { text: string; bar: string; hex: string } {
-  if (pct === null) return { text: 'text-ink-muted', bar: 'bg-ink-muted/25', hex: '#888888' };
-  if (pct >= 90) return { text: 'text-evs-green-dark', bar: 'bg-evs-green/60', hex: '#78C41A' };
-  if (pct >= 75) return { text: 'text-amber-600', bar: 'bg-amber-500/60', hex: '#f59e0b' };
-  return { text: 'text-danger', bar: 'bg-danger/45', hex: '#e53e3e' };
+/**
+ * Achievement bands. Bars are painted at full strength via inline styles rather
+ * than utility classes, so a stray token in the Tailwind config can never wash
+ * one of them out again.
+ */
+function band(pct: number | null): { text: string; hex: string } {
+  if (pct === null) return { text: 'text-ink-muted', hex: '#c2c7bf' };
+  if (pct >= 90) return { text: 'text-evs-green-dark', hex: '#78C41A' };
+  if (pct >= 75) return { text: 'text-amber-600', hex: '#f5a300' };
+  return { text: 'text-danger', hex: '#e53e3e' };
 }
 
 // Grouping comes from the shared definitions, so the page can't drift from them.
@@ -138,8 +142,9 @@ function KpiRow({ cell, spark, delta, critical, expandable = false }: {
 
       <div className="h-1.5 bg-border rounded-full overflow-hidden mt-2">
         <div
-          className={`h-full rounded-full transition-all ${critical ? 'bg-danger' : b.bar}`}
+          className="h-full rounded-full transition-all"
           style={{
+            background: critical ? '#e53e3e' : b.hex,
             width: `${Math.min(cell.pct ?? 0, 100)}%`,
             minWidth: (cell.pct ?? 0) > 0 ? 3 : 0,
           }}
@@ -414,8 +419,8 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: BRANCH_COLORS[b.name] ?? '#999' }} />
                           <span className="text-[13px] font-semibold text-ink w-24 shrink-0 truncate">{b.name}</span>
                           <span className="hidden sm:block flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-                            <span className={`block h-full rounded-full ${bb.bar}`}
-                              style={{ width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
+                            <span className="block h-full rounded-full"
+                              style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
                           </span>
                           <span className="flex-1 sm:hidden" />
                           <Sparkline values={branchSpark(b.name)} stroke={bb.hex} w={54} h={18} />
