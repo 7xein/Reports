@@ -128,11 +128,11 @@ function KpiRow({ cell, spark, delta, critical, expandable = false }: {
           )}
         </span>
 
-        <span className="flex-1 min-w-[40px]" />
+        <span className="flex-1 min-w-[8px]" />
 
-        <Sparkline values={spark} stroke={critical ? '#e53e3e' : b.hex} />
-        <Delta value={delta} className="w-14 text-right" />
-        <span className="text-[11px] text-ink-muted tabular-nums w-16 text-right">
+        <Sparkline values={spark} stroke={critical ? '#e53e3e' : b.hex} w={54} />
+        <Delta value={delta} className="w-12 text-right" />
+        <span className="text-[11px] text-ink-muted tabular-nums w-14 text-right">
           {cell.compliant}/{cell.applicable}
         </span>
         <span className={`text-sm font-bold tabular-nums w-16 text-right ${critical ? 'text-danger' : b.text}`}>
@@ -188,7 +188,7 @@ function KpiSections({ cells, sparkFor, deltaFor, criticalIds, expandable = fals
   expandable?: boolean;
 }) {
   return (
-    <>
+    <div className="grid lg:grid-cols-2 gap-4 mb-4">
       {GROUP_ORDER.map((group) => {
         const all = cells.filter((c) => GROUP_OF[c.id] === group);
         if (!all.length) return null;
@@ -196,7 +196,7 @@ function KpiSections({ cells, sparkFor, deltaFor, criticalIds, expandable = fals
         const scored = all.filter((c) => c.pct !== null).sort((a, b) => (a.pct as number) - (b.pct as number));
         const na = all.filter((c) => c.pct === null);
         return (
-          <div key={group} className="mb-4 last:mb-0 border border-border rounded-lg overflow-hidden bg-white">
+          <div key={group} className="border border-border rounded-lg overflow-hidden bg-white">
             <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
               <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
               <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
@@ -210,7 +210,7 @@ function KpiSections({ cells, sparkFor, deltaFor, criticalIds, expandable = fals
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
 
