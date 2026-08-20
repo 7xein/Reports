@@ -9,7 +9,6 @@ const BRANCH_COLORS: Record<string, string> = {
   'Abu Dhabi': '#8B5CF6', 'Al Ain': '#EF4444', Qatar: '#06B6D4',
 };
 
-const CRITICAL_PCT = 30;   // below this is always shown as critical
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
 
 /**
@@ -99,11 +98,10 @@ function AlertIcon({ className = '' }: { className?: string }) {
 }
 
 // ── KPI row ────────────────────────────────────────────────────────
-function KpiRow({ cell, spark, delta, critical, expandable = false }: {
+function KpiRow({ cell, spark, delta, expandable = false }: {
   cell: KpiCell;
   spark: (number | null)[];
   delta: number | null;
-  critical: boolean;
   expandable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -111,11 +109,10 @@ function KpiRow({ cell, spark, delta, critical, expandable = false }: {
   const lowVolume = cell.applicable > 0 && cell.applicable < LOW_VOLUME;
 
   return (
-    <div id={`kpi-${cell.id}`} className={`px-4 py-2.5 border-b border-border last:border-b-0 ${critical ? 'bg-danger/[0.04]' : ''}`}>
+    <div id={`kpi-${cell.id}`} className="px-4 py-2.5 border-b border-border last:border-b-0">
       <div className="flex items-center gap-3 flex-wrap">
         <span className="flex items-center gap-1.5 min-w-0">
-          {critical && <AlertIcon />}
-          <span className={`text-[13px] font-semibold truncate ${critical ? 'text-danger' : 'text-ink'}`} title={cell.name}>
+          <span className="text-[13px] font-semibold truncate text-ink" title={cell.name}>
             {cell.name}
           </span>
           {cell.snapshot && (
@@ -130,12 +127,12 @@ function KpiRow({ cell, spark, delta, critical, expandable = false }: {
 
         <span className="flex-1 min-w-[8px]" />
 
-        <Sparkline values={spark} stroke={critical ? '#e53e3e' : b.hex} w={54} />
+        <Sparkline values={spark} stroke={b.hex} w={54} />
         <Delta value={delta} className="w-12 text-right" />
         <span className="text-[11px] text-ink-muted tabular-nums w-14 text-right">
           {cell.compliant}/{cell.applicable}
         </span>
-        <span className={`text-sm font-bold tabular-nums w-16 text-right ${critical ? 'text-danger' : b.text}`}>
+        <span className={`text-sm font-bold tabular-nums w-16 text-right ${b.text}`}>
           {fmtPct(cell.pct)}
         </span>
       </div>
@@ -144,7 +141,7 @@ function KpiRow({ cell, spark, delta, critical, expandable = false }: {
         <div
           className="h-full rounded-full transition-all"
           style={{
-            background: critical ? '#e53e3e' : b.hex,
+            background: b.hex,
             width: `${Math.min(cell.pct ?? 0, 100)}%`,
             minWidth: (cell.pct ?? 0) > 0 ? 3 : 0,
           }}
@@ -180,11 +177,10 @@ function NaLine({ cells }: { cells: KpiCell[] }) {
 }
 
 // ── Grouped sections ───────────────────────────────────────────────
-function KpiSections({ cells, sparkFor, deltaFor, criticalIds, expandable = false }: {
+function KpiSections({ cells, sparkFor, deltaFor, expandable = false }: {
   cells: KpiCell[];
   sparkFor: (id: number) => (number | null)[];
   deltaFor: (id: number) => number | null;
-  criticalIds: Set<number>;
   expandable?: boolean;
 }) {
   return (
@@ -204,7 +200,7 @@ function KpiSections({ cells, sparkFor, deltaFor, criticalIds, expandable = fals
             </div>
             {scored.map((c) => (
               <KpiRow key={c.id} cell={c} spark={sparkFor(c.id)} delta={deltaFor(c.id)}
-                critical={criticalIds.has(c.id)} expandable={expandable} />
+                expandable={expandable} />
             ))}
             <NaLine cells={na} />
           </div>
@@ -272,14 +268,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
     const cur = currentCells().find((c) => c.id === id)?.pct;
     const before = branch ? prev?.branches?.[branch]?.kpis?.[String(id)] : prev?.company.kpis?.[String(id)];
     return cur != null && before != null ? cur - before : null;
-  };
-
-  /** Critical = below the hard floor, or among the three weakest scored KPIs. */
-  const criticalSet = (cells: KpiCell[]) => {
-    const scored = cells.filter((c) => c.pct !== null).sort((a, b) => (a.pct as number) - (b.pct as number));
-    const ids = new Set<number>(scored.slice(0, 3).map((c) => c.id));
-    scored.forEach((c) => { if ((c.pct as number) < CRITICAL_PCT) ids.add(c.id); });
-    return ids;
   };
 
   const scrollToKpi = (id: number) =>
@@ -432,8 +420,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   })}
               </div>
 
-              <KpiSections cells={tree.company.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta}
-                criticalIds={criticalSet(tree.company.kpis)} />
+              <KpiSections cells={tree.company.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta} />
             </>
           )}
 
@@ -455,8 +442,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </span>
               </div>
 
-              <KpiSections cells={branchNode.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta}
-                criticalIds={criticalSet(branchNode.kpis)} />
+              <KpiSections cells={branchNode.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta} />
 
               <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3 mt-5">Service Advisors</div>
               {branchNode.serviceAdvisors.length === 0 ? (
@@ -492,8 +478,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <span className={`text-3xl font-black tabular-nums ${band(saNode.achievement).text}`}>{fmtPct(saNode.achievement)}</span>
               </div>
-              <KpiSections cells={saNode.kpis} sparkFor={() => []} deltaFor={() => null}
-                criticalIds={criticalSet(saNode.kpis)} expandable />
+              <KpiSections cells={saNode.kpis} sparkFor={() => []} deltaFor={() => null} expandable />
             </>
           )}
         </>
