@@ -338,6 +338,7 @@ export interface RepairOrderExportRow {
   tags: string;            // tag_ids + x_studio_stages_tags names, combined
   createdBy: string;
   createdOn: string;       // DD/MM/YYYY (Gulf time)
+  ageDays: number;         // Gulf calendar days the job card has been open, as of the export date
   customerName: string;
   customerMobile: string;
   vehicle: string;         // fleet_id
@@ -363,6 +364,26 @@ function fmtGulfDate(raw: unknown): string {
   return new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Dubai', day: '2-digit', month: '2-digit', year: 'numeric',
   }).format(d);
+}
+
+/** The Gulf (UTC+4) calendar date of an Odoo UTC datetime, as YYYY-MM-DD. */
+function gulfDateOf(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const d = new Date(raw.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + 4 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Whole Gulf calendar days a job card has been open, measured to the export's
+ * as-of date rather than to now — so re-running the same export later gives the
+ * same numbers. Created on the as-of date reads as 0.
+ */
+function ageInDays(createDate: unknown, asOf: string): number {
+  const created = gulfDateOf(createDate);
+  if (!created) return 0;
+  const ms = Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${created}T00:00:00Z`);
+  return Math.max(0, Math.round(ms / 86400_000));
 }
 
 const m2oName = (v: unknown): string => (Array.isArray(v) ? String(v[1] ?? '') : '');
@@ -490,6 +511,7 @@ export async function fetchRepairOrdersForExport(
       tags: tagParts.join(', '),
       createdBy: m2oName(r.create_uid),
       createdOn: fmtGulfDate(r.create_date),
+      ageDays: ageInDays(r.create_date, dateStr),
       customerName: m2oName(r.partner_id),
       customerMobile: String(phone || ''),
       vehicle: vehicleField ? m2oName(r[vehicleField]) : '',

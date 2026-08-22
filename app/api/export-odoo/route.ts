@@ -19,10 +19,20 @@ export const maxDuration = 60;
 const VALID_METRICS = new Set(WIP_METRICS.map((m) => m.key));
 
 // ── Excel (repair-order) export helpers ────────────────────────────
-const XLSX_COLS = ['RO Number', 'Tags', 'Created By', 'Created On', 'Customer Name', 'Customer Mobile', 'Vehicle', 'Repair Status', 'Priority Matrix Status'];
+// Ageing only earns a column on the since-April export; the day exports cover a
+// single day of creations, so every row there would read 0.
+const cols = (withAge: boolean) => [
+  'RO Number', 'Tags', 'Created By', 'Created On',
+  ...(withAge ? ['Ageing (days)'] : []),
+  'Customer Name', 'Customer Mobile', 'Vehicle', 'Repair Status', 'Priority Matrix Status',
+];
 
-function rowToArr(r: RepairOrderExportRow): string[] {
-  return [r.roNumber, r.tags, r.createdBy, r.createdOn, r.customerName, r.customerMobile, r.vehicle, r.repairStatus, r.priorityMatrixStatus];
+function rowToArr(r: RepairOrderExportRow, withAge: boolean): (string | number)[] {
+  return [
+    r.roNumber, r.tags, r.createdBy, r.createdOn,
+    ...(withAge ? [r.ageDays] : []),
+    r.customerName, r.customerMobile, r.vehicle, r.repairStatus, r.priorityMatrixStatus,
+  ];
 }
 
 function autoWidth(aoa: (string | number)[][]): { wch: number }[] {
@@ -49,10 +59,18 @@ function boldHeaderRow(ws: XLSX.WorkSheet) {
   }
 }
 
-function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: number) {
-  const aoa: (string | number)[][] = [XLSX_COLS, ...rows.map(rowToArr), []];
+function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: number, withAge = false) {
+  const aoa: (string | number)[][] = [cols(withAge), ...rows.map((r) => rowToArr(r, withAge)), []];
   if (type === 'wip') {
     aoa.push([`Total: ${rows.length} repair orders`]);
+    if (withAge && rows.length) {
+      const ages = rows.map((r) => r.ageDays);
+      aoa.push(
+        [`Average age: ${(ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1)} days`],
+        [`Oldest: ${Math.max(...ages)} days`],
+        [`Open over 30 days: ${ages.filter((a) => a > 30).length}`],
+      );
+    }
   } else {
     const closed = rows.filter((r) => r.closed).length;
     aoa.push(
@@ -68,7 +86,7 @@ function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received', inv
   return ws;
 }
 
-function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: Record<string, number>): ArrayBuffer {
+function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: Record<string, number>, withAge = false): ArrayBuffer {
   const wb = XLSX.utils.book_new();
 
   if (type === 'received') {
@@ -95,7 +113,7 @@ function buildWorkbook(rows: RepairOrderExportRow[], type: 'wip' | 'received', i
   }
 
   for (const b of EXPORT_BRANCHES) {
-    XLSX.utils.book_append_sheet(wb, branchSheet(rows.filter((r) => r.branch === b), type, invoiceSales?.[b]), b);
+    XLSX.utils.book_append_sheet(wb, branchSheet(rows.filter((r) => r.branch === b), type, invoiceSales?.[b], withAge), b);
   }
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 }
@@ -180,7 +198,7 @@ export async function POST(req: NextRequest) {
         startDate: body.type === 'wip-todate' ? aprilFirstFor(dateStr) : undefined,
       });
       const invoiceSales = received ? await fetchInvoiceSalesForExport(dateStr) : undefined;
-      const buffer = buildWorkbook(rows, received ? 'received' : 'wip', invoiceSales);
+      const buffer = buildWorkbook(rows, received ? 'received' : 'wip', invoiceSales, body.type === 'wip-todate');
       const filename =
         body.type === 'received'    ? `Received_JCs_${dateStr}.xlsx` :
         body.type === 'wip-todate'  ? `WIP_SinceApr01_${dateStr}.xlsx` :
