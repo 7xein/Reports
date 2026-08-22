@@ -51,32 +51,6 @@ function recentWeekStarts(count = 12): string[] {
   return out;
 }
 
-/** Compact 8-week trend line. Shows a dash until there are two points to join. */
-function Sparkline({ values, stroke = '#78C41A', w = 68, h = 20 }: {
-  values: (number | null)[]; stroke?: string; w?: number; h?: number;
-}) {
-  const pts = values.filter((v): v is number => v !== null);
-  if (pts.length < 2) {
-    return <span className="inline-block text-[10px] text-ink-muted/70 text-center" style={{ width: w }}>—</span>;
-  }
-  const min = Math.min(...pts), max = Math.max(...pts);
-  const span = max - min || 1;
-  const step = values.length > 1 ? w / (values.length - 1) : w;
-  const yFor = (v: number) => h - 2 - ((v - min) / span) * (h - 4);
-  const coords: string[] = [];
-  values.forEach((v, i) => { if (v !== null) coords.push(`${(i * step).toFixed(1)},${yFor(v).toFixed(1)}`); });
-  const last = values[values.length - 1];
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0" aria-hidden>
-      <polyline points={coords.join(' ')} fill="none" stroke={stroke} strokeWidth={1.5}
-        strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
-      {last !== null && last !== undefined && (
-        <circle cx={w} cy={yFor(last)} r={2} fill={stroke} />
-      )}
-    </svg>
-  );
-}
-
 function Delta({ value, className = '' }: { value: number | null; className?: string }) {
   if (value === null || Math.abs(value) < 0.05) {
     return <span className={`text-[11px] text-ink-muted tabular-nums ${className}`}>—</span>;
@@ -98,9 +72,8 @@ function AlertIcon({ className = '' }: { className?: string }) {
 }
 
 // ── KPI row ────────────────────────────────────────────────────────
-function KpiRow({ cell, spark, delta, expandable = false }: {
+function KpiRow({ cell, delta, expandable = false }: {
   cell: KpiCell;
-  spark: (number | null)[];
   delta: number | null;
   expandable?: boolean;
 }) {
@@ -127,7 +100,6 @@ function KpiRow({ cell, spark, delta, expandable = false }: {
 
         <span className="flex-1 min-w-[8px]" />
 
-        <Sparkline values={spark} stroke={b.hex} w={54} />
         <Delta value={delta} className="w-12 text-right" />
         <span className="text-[11px] text-ink-muted tabular-nums w-14 text-right">
           {cell.compliant}/{cell.applicable}
@@ -177,9 +149,8 @@ function NaLine({ cells }: { cells: KpiCell[] }) {
 }
 
 // ── Grouped sections ───────────────────────────────────────────────
-function KpiSections({ cells, sparkFor, deltaFor, expandable = false }: {
+function KpiSections({ cells, deltaFor, expandable = false }: {
   cells: KpiCell[];
-  sparkFor: (id: number) => (number | null)[];
   deltaFor: (id: number) => number | null;
   expandable?: boolean;
 }) {
@@ -199,8 +170,7 @@ function KpiSections({ cells, sparkFor, deltaFor, expandable = false }: {
               <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
             </div>
             {scored.map((c) => (
-              <KpiRow key={c.id} cell={c} spark={sparkFor(c.id)} delta={deltaFor(c.id)}
-                expandable={expandable} />
+              <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
             ))}
             <NaLine cells={na} />
           </div>
@@ -239,19 +209,14 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
   const branchNode: BranchNode | undefined = tree?.branches.find((b) => b.name === branch);
   const saNode: SaNode | undefined = branchNode?.serviceAdvisors.find((s) => s.odooUserId === sa);
 
-  // ── History-derived deltas + sparklines ──────────────────────────
+  // ── History-derived deltas ───────────────────────────────────────
   const history = tree?.history ?? [];
   const past = history.filter((h) => h.weekStart !== tree?.week.start);
   const prev = past.length ? past[past.length - 1] : null;
 
-  const companySpark = [...past.map((h) => h.company.achievement), tree?.company.achievement ?? null];
   const companyDelta = prev && tree?.company.achievement != null && prev.company.achievement != null
     ? tree.company.achievement - prev.company.achievement : null;
 
-  const branchSpark = (name: string) => [
-    ...past.map((h) => h.branches?.[name]?.achievement ?? null),
-    tree?.branches.find((b) => b.name === name)?.achievement ?? null,
-  ];
   const branchDelta = (name: string) => {
     const now = tree?.branches.find((b) => b.name === name)?.achievement;
     const before = prev?.branches?.[name]?.achievement;
@@ -260,10 +225,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
 
   // KPI history is company-wide at level 1, branch-scoped once drilled in.
   const currentCells = () => (branch ? branchNode?.kpis : tree?.company.kpis) ?? [];
-  const kpiSpark = (id: number) => [
-    ...past.map((h) => (branch ? h.branches?.[branch]?.kpis?.[String(id)] : h.company.kpis?.[String(id)]) ?? null),
-    currentCells().find((c) => c.id === id)?.pct ?? null,
-  ];
   const kpiDelta = (id: number) => {
     const cur = currentCells().find((c) => c.id === id)?.pct;
     const before = branch ? prev?.branches?.[branch]?.kpis?.[String(id)] : prev?.company.kpis?.[String(id)];
@@ -337,7 +298,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                         {companyDelta >= 0 ? '▲' : '▼'} {Math.abs(companyDelta).toFixed(1)} vs last week
                       </span>
                     )}
-                    <span className="ml-auto pb-1"><Sparkline values={companySpark} stroke="#ffffff" w={110} h={30} /></span>
                   </div>
                   <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · all branches</div>
                 </div>
@@ -411,7 +371,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                               style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
                           </span>
                           <span className="flex-1 sm:hidden" />
-                          <Sparkline values={branchSpark(b.name)} stroke={bb.hex} w={54} h={18} />
                           <Delta value={branchDelta(b.name)} className="w-14 text-right" />
                           <span className={`text-sm font-bold tabular-nums w-16 text-right ${bb.text}`}>{fmtPct(b.achievement)}</span>
                         </div>
@@ -420,7 +379,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   })}
               </div>
 
-              <KpiSections cells={tree.company.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta} />
+              <KpiSections cells={tree.company.kpis} deltaFor={kpiDelta} />
             </>
           )}
 
@@ -437,12 +396,9 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                     <Delta value={branchDelta(branchNode.name)} />
                   </div>
                 </div>
-                <span className="ml-auto">
-                  <Sparkline values={branchSpark(branchNode.name)} stroke={band(branchNode.achievement).hex} w={110} h={30} />
-                </span>
               </div>
 
-              <KpiSections cells={branchNode.kpis} sparkFor={kpiSpark} deltaFor={kpiDelta} />
+              <KpiSections cells={branchNode.kpis} deltaFor={kpiDelta} />
 
               <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3 mt-5">Service Advisors</div>
               {branchNode.serviceAdvisors.length === 0 ? (
@@ -478,7 +434,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <span className={`text-3xl font-black tabular-nums ${band(saNode.achievement).text}`}>{fmtPct(saNode.achievement)}</span>
               </div>
-              <KpiSections cells={saNode.kpis} sparkFor={() => []} deltaFor={() => null} expandable />
+              <KpiSections cells={saNode.kpis} deltaFor={() => null} expandable />
             </>
           )}
         </>
