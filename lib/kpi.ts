@@ -308,7 +308,25 @@ const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [
  * configured selector. Only selection fields (state / priority matrix) are
  * resolvable this way; stage/tag mappings fall back to date proxies.
  */
-function trackedField(sel: StageSelector, meta: FieldsMeta): { field: string; labels: string[] } | null {
+/**
+ * Turn a stage selector into the (field, labels) pair the chatter lookup needs.
+ *
+ * The chatter stores the human LABEL of whatever changed, so selection fields
+ * map through their selection list and stage_id maps through stage names --
+ * which is why stageNames has to be resolved before this is called.
+ */
+function trackedField(
+  sel: StageSelector,
+  meta: FieldsMeta,
+  stageNames?: Record<number, string>,
+): { field: string; labels: string[] } | null {
+  if (sel.kind === 'stage') {
+    if (!meta.stage_id || !stageNames) return null;
+    const labels = sel.values
+      .map((v) => stageNames[Number(v)])
+      .filter((x): x is string => !!x);
+    return labels.length ? { field: 'stage_id', labels } : null;
+  }
   const field = sel.kind === 'state' ? 'state' : sel.kind === 'priority' ? 'priority_matrix_status' : null;
   if (!field) return null;
   const options = meta[field]?.selection ?? [];
@@ -316,6 +334,28 @@ function trackedField(sel: StageSelector, meta: FieldsMeta): { field: string; la
     .map((v) => options.find(([code]) => code === String(v))?.[1])
     .filter((x): x is string => !!x);
   return labels.length ? { field, labels } : null;
+}
+
+/** Stage id → display name, read once per run and only when a selector needs it. */
+async function resolveStageNames(config: KpiConfig, meta: FieldsMeta): Promise<Record<number, string>> {
+  const usesStages = Object.values(config.stageMap).some((sel) => sel?.kind === 'stage' && sel.values.length);
+  const relation = meta.stage_id?.relation;
+  if (!usesStages || !relation) return {};
+  const ids = [...new Set(
+    Object.values(config.stageMap)
+      .filter((sel) => sel?.kind === 'stage')
+      .flatMap((sel) => sel.values.map(Number))
+      .filter((n) => Number.isFinite(n)),
+  )];
+  if (!ids.length) return {};
+  try {
+    const recs = (await call(relation, 'read', [ids], { fields: ['display_name'] })) as { id: number; display_name?: string }[];
+    const out: Record<number, string> = {};
+    for (const r of recs) if (r.display_name) out[r.id] = r.display_name;
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -478,6 +518,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // Which optional fields exist on this instance?
   const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
+  const stageNames = await resolveStageNames(config, meta);
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
   // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
   // otherwise falls back to create_date — deliberately NOT write_date, which any
@@ -543,7 +584,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
     }
     const roCtx = { bin_size: true };
-    const tfRepaired = trackedField(config.stageMap.repaired, meta);
+    const tfRepaired = trackedField(config.stageMap.repaired, meta, stageNames);
 
     // Preferred: ROs that reached the repaired/delivered state during this week,
     // whatever state they're in now. Falls back to current-state matching.
@@ -601,7 +642,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // a real sequence: KPI 4 wants the quote *created* first, KPI 3 wants it *approved*.
   if ((on(3) || on(4)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
-    const tf = trackedField(config.stageMap.underRepair, meta);
+    const tf = trackedField(config.stageMap.underRepair, meta, stageNames);
 
     // ROs that STARTED repair during this week, whatever state they're in now.
     let entered = tf ? await roIdsEnteringStateInWindow(tf.field, tf.labels, wStart, wEnd) : {};
@@ -739,7 +780,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       fields: ['name', 'create_uid', 'company_id'], limit: 0,
     })) as Rec[];
 
-    const tfClosed = trackedField(config.stageMap.closed, meta);
+    const tfClosed = trackedField(config.stageMap.closed, meta, stageNames);
     const closedThisWeek = tfClosed
       ? await roIdsEnteringStateInWindow(tfClosed.field, tfClosed.labels, wStart, wEnd)
       : {};
@@ -764,8 +805,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Each is tri-state, which is what keeps them honest: judged once the next
   // milestone lands, failed once the window elapses without it, and left
   // unjudged while the clock is still legitimately running.
-  const tfInspection = trackedField(config.stageMap.inspection, meta);
-  const tfQa = trackedField(config.stageMap.qa, meta);
+  const tfInspection = trackedField(config.stageMap.inspection, meta, stageNames);
+  const tfQa = trackedField(config.stageMap.qa, meta, stageNames);
 
   if ((on(12) || on(14) || on(15)) && !tfInspection) {
     notes.push('Check-in, inspection and quote-after-inspection need the Inspection state mapped in Admin → KPI Configuration.');
@@ -894,7 +935,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         ...selectorDomain(sel),
         ['company_id', 'in', trackedIds],
       ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
-      const tf = trackedField(sel, meta);
+      const tf = trackedField(sel, meta, stageNames);
       const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
       if (Object.keys(entered).length) usedTrackingForAging = true;
       const limitMs = days * 86400_000;

@@ -27,8 +27,8 @@ const MAP_LABELS: Record<MapKey, string> = {
   closed: 'Closed / completed',
 };
 const MAP_HINTS: Partial<Record<MapKey, string>> = {
-  inspection: 'Reaching this state means check-in is done. Drives check-in, inspection duration and quote-after-inspection.',
-  qa: 'The quality-check state. QA duration measures how long an RO sits here.',
+  inspection: 'Reaching this point means check-in is done. Drives check-in, inspection duration and quote-after-inspection. If Inspection is not in the State list, switch to Stage — this workflow bar may run on stages.',
+  qa: 'The quality-check step. QA duration measures how long an RO sits here. Try Stage if QA is not in the State list.',
   presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
   closed: 'Anything NOT in these states counts as an open repair order.',
 };

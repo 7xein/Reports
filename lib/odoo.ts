@@ -810,6 +810,11 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     users.sort((a, b) => b.roCount - a.roCount);
   } catch { notes.push('Could not group ROs by creator for the SA roster.'); }
 
+  // Spell out what each list actually contains — the workflow bar in Odoo can be
+  // driven by state OR stage_id, and knowing which saves a lot of guessing.
+  notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
+  notes.push(`Stage options: ${stages.map((s) => s.name).join(', ') || '(none)'}`);
+
   const hasDateLastStageUpdate = has('date_last_stage_update');
   if (!hasDateLastStageUpdate) {
     notes.push('date_last_stage_update is not available — KPIs 6 & 7 use write_date as a proxy for time-in-state.');
