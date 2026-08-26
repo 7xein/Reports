@@ -339,6 +339,65 @@ async function stateEntryTimes(roIds: number[], field: string, labels: string[])
  * repaired last week has since moved on, so filtering by current state finds
  * nothing.
  */
+/**
+ * Every tracked change of `field` per RO, ascending: [{ t, label }].
+ *
+ * trackedTransitions only answers "when did it arrive"; this answers "and when
+ * did it leave", which is what a dwell-time KPI needs.
+ */
+async function stateTimeline(roIds: number[], field: string): Promise<Record<number, { t: number; label: string }[]>> {
+  if (!roIds.length) return {};
+  try {
+    const msgs = (await call('mail.message', 'search_read', [[
+      ['model', '=', 'repair.order'],
+      ['res_id', 'in', roIds],
+      ['tracking_value_ids', '!=', false],
+    ]], { fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0 })) as Rec[];
+    if (!msgs.length) return {};
+
+    const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
+    if (!tvIds.length) return {};
+
+    // Same v17 / legacy split as trackedTransitions.
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+    let fieldId: number | null = null;
+    if (useFieldId) {
+      const fr = (await call('ir.model.fields', 'search_read', [[
+        ['model', '=', 'repair.order'], ['name', '=', field],
+      ]], { fields: ['id'], limit: 1 })) as { id: number }[];
+      fieldId = fr[0]?.id ?? null;
+    }
+    const ref = useFieldId ? 'field_id' : 'field';
+    const tvs = (await call('mail.tracking.value', 'read', [tvIds], { fields: [ref, 'new_value_char'] })) as Rec[];
+
+    const labelOf = new Map<number, string>();
+    for (const tv of tvs) {
+      const val = tv.new_value_char;
+      if (typeof val !== 'string') continue;
+      if (useFieldId) { if (fieldId == null || m2o(tv[ref])?.[0] !== fieldId) continue; }
+      else if (tv[ref] !== field) continue;
+      labelOf.set(tv.id as number, val);
+    }
+    if (!labelOf.size) return {};
+
+    const out: Record<number, { t: number; label: string }[]> = {};
+    for (const m of msgs) {
+      const t = odooTime(m.date);
+      if (t == null) continue;
+      for (const id of (m.tracking_value_ids as number[] | undefined) ?? []) {
+        const label = labelOf.get(id);
+        if (!label) continue;
+        (out[m.res_id as number] ??= []).push({ t, label });
+      }
+    }
+    for (const list of Object.values(out)) list.sort((a, b) => a.t - b.t);
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 async function roIdsEnteringStateInWindow(
   field: string, labels: string[], from: string, to: string,
 ): Promise<Record<number, number>> {
@@ -697,37 +756,109 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     for (const r of received) push(9, r, closedSet.has(r.id as number), (r.name as string) || '');
   }
 
-  // ── KPI 12 — quotation raised within N days of the RO ──
-  if (on(12) && has('sale_order_id')) {
-    const limitMs = (config.thresholds.quoteWithinDays ?? 1) * 86400_000;
-    const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
-      fields: ['name', 'create_uid', 'company_id', 'create_date', 'sale_order_id'], limit: 0,
-    })) as Rec[];
+  // ── KPIs 12, 14, 15 & 16 — the workshop stage clock ──
+  //
+  // All four hang off chatter transitions into Inspection / QA, so an RO that has
+  // long since moved on is still measured for the week it passed through.
+  //
+  // Each is tri-state, which is what keeps them honest: judged once the next
+  // milestone lands, failed once the window elapses without it, and left
+  // unjudged while the clock is still legitimately running.
+  const tfInspection = trackedField(config.stageMap.inspection, meta);
+  const tfQa = trackedField(config.stageMap.qa, meta);
 
-    const soIds = [...new Set(weekROs.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
-    const soCreated: Record<number, number> = {};
-    if (soIds.length) {
-      try {
-        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
-        for (const so of sos) {
-          const t = odooTime(so.create_date);
-          if (t != null) soCreated[so.id as number] = t;
-        }
-      } catch { /* fall through — unverifiable quotes count as compliant */ }
-    }
+  if ((on(12) || on(14) || on(15)) && !tfInspection) {
+    notes.push('Check-in, inspection and quote-after-inspection need the Inspection state mapped in Admin → KPI Configuration.');
+  }
+  if (on(16) && !tfQa) {
+    notes.push('QA duration needs the QA state mapped in Admin → KPI Configuration.');
+  }
+
+  // KPI 14 — check-in is complete when the RO reaches Inspection.
+  if (on(14) && tfInspection) {
+    const limitMs = (config.thresholds.checkInDays ?? 1) * 86400_000;
+    const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
+      fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0,
+    })) as Rec[];
+    const reached = await stateEntryTimes(
+      weekROs.map((r) => r.id as number), tfInspection.field, tfInspection.labels);
 
     for (const r of weekROs) {
       const roAt = odooTime(r.create_date);
       if (roAt == null) continue;
       const ref = (r.name as string) || '';
-      const soId = m2o(r.sale_order_id)?.[0] ?? null;
-      if (soId == null) {
-        // Never quoted — only judge once the window has actually elapsed.
-        if (now - roAt > limitMs) push(12, r, false, ref);
-        continue;
+      const at = reached[r.id as number];
+      if (at != null) push(14, r, at - roAt <= limitMs, ref);
+      else if (now - roAt > limitMs) push(14, r, false, ref);  // never checked in, window gone
+    }
+  }
+
+  // KPIs 15 & 12 — inspection start → quotation created. Same measurement, two
+  // windows: 15 is how long inspection itself may run, 12 allows the quote a
+  // little longer still.
+  if ((on(12) || on(15)) && tfInspection && has('sale_order_id')) {
+    const entered = await roIdsEnteringStateInWindow(tfInspection.field, tfInspection.labels, wStart, wEnd);
+    const ids = Object.keys(entered).map(Number);
+
+    if (ids.length) {
+      const ros = (await call('repair.order', 'read', [ids], {
+        fields: ['name', 'create_uid', 'company_id', 'sale_order_id'],
+      })) as Rec[];
+
+      const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
+      const soCreated: Record<number, number> = {};
+      if (soIds.length) {
+        try {
+          const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
+          for (const so of sos) {
+            const t = odooTime(so.create_date);
+            if (t != null) soCreated[so.id as number] = t;
+          }
+        } catch { /* unreadable — the tri-state below still catches overruns */ }
       }
-      const quotedAt = soCreated[soId];
-      push(12, r, quotedAt == null ? true : quotedAt - roAt <= limitMs, ref);
+
+      const judgeQuoteTiming = (kpiId: number, limitMs: number) => {
+        for (const r of ros) {
+          const from = entered[r.id as number];
+          if (from == null) continue;
+          const ref = (r.name as string) || '';
+          const soId = m2o(r.sale_order_id)?.[0] ?? null;
+          const quotedAt = soId != null ? soCreated[soId] : undefined;
+          if (quotedAt != null) push(kpiId, r, quotedAt - from <= limitMs, ref);
+          else if (now - from > limitMs) push(kpiId, r, false, ref);  // still unquoted, window gone
+        }
+      };
+
+      if (on(15)) judgeQuoteTiming(15, (config.thresholds.inspectionDays ?? 3) * 86400_000);
+      if (on(12)) judgeQuoteTiming(12, (config.thresholds.quoteAfterInspectionDays ?? 5) * 86400_000);
+    }
+  }
+
+  // KPI 16 — how long the RO actually sat in QA.
+  if (on(16) && tfQa) {
+    const limitMs = (config.thresholds.qaDays ?? 1) * 86400_000;
+    const entered = await roIdsEnteringStateInWindow(tfQa.field, tfQa.labels, wStart, wEnd);
+    const ids = Object.keys(entered).map(Number);
+
+    if (ids.length) {
+      const ros = (await call('repair.order', 'read', [ids], {
+        fields: ['name', 'create_uid', 'company_id'],
+      })) as Rec[];
+      const timeline = await stateTimeline(ids, tfQa.field);
+
+      for (const r of ros) {
+        const ref = (r.name as string) || '';
+        const events = timeline[r.id as number] ?? [];
+        // The last arrival in QA, and whatever state change followed it.
+        let enterIdx = -1;
+        for (let i = 0; i < events.length; i++) if (tfQa.labels.includes(events[i].label)) enterIdx = i;
+        const from = enterIdx >= 0 ? events[enterIdx].t : entered[r.id as number];
+        if (from == null) continue;
+        const left = enterIdx >= 0 && enterIdx + 1 < events.length ? events[enterIdx + 1].t : null;
+
+        if (left != null) push(16, r, left - from <= limitMs, ref);
+        else if (now - from > limitMs) push(16, r, false, ref);  // still in QA, over the limit
+      }
     }
   }
 
@@ -838,6 +969,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const snapshotNotes: Record<number, string> = {
     1: 'Measured from the moment the RO became Repaired to the moment its linked invoice was posted.',
     3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
+    12: 'Measured from the RO entering Inspection, so the headline figure is what is left after the allowed inspection time.',
+    14: 'Check-in counts as complete the moment the RO reaches Inspection.',
+    15: 'Measured from the RO entering Inspection to its quotation being created.',
+    16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',
     11: 'Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
     7: snapshotNote,

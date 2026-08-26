@@ -18,14 +18,17 @@ interface OdooOptions {
   };
 }
 
-type MapKey = 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'closed';
+type MapKey = 'inspection' | 'qa' | 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'closed';
 const MAP_LABELS: Record<MapKey, string> = {
+  inspection: 'Inspection', qa: 'QA',
   repaired: 'Repaired', underRepair: 'Under repair',
   awaitingParts: 'Awaiting parts', awaitingLabour: 'Awaiting labour',
   presenceTags: 'Car in / out tags',
   closed: 'Closed / completed',
 };
 const MAP_HINTS: Partial<Record<MapKey, string>> = {
+  inspection: 'Reaching this state means check-in is done. Drives check-in, inspection duration and quote-after-inspection.',
+  qa: 'The quality-check state. QA duration measures how long an RO sits here.',
   presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
   closed: 'Anything NOT in these states counts as an open repair order.',
 };
@@ -192,13 +195,16 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       <div className="text-sm font-bold text-ink mb-3">2. Thresholds</div>
       <div className="flex flex-wrap gap-5 mb-6">
         {([
+          ['checkInDays', 'Check-in within (days of RO)'],
+          ['inspectionDays', 'Inspection duration (days)'],
+          ['quoteAfterInspectionDays', 'Quote within (days of inspection starting)'],
+          ['qaDays', 'QA duration (days)'],
           ['quoteApprovalDays', 'Quote approval (days)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
           ['invoiceGraceMinutes', 'Invoice posted within (minutes of Repaired)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
           ['repairedToDeliveredDays', 'Repaired → delivered/invoiced (days)'],
-          ['quoteWithinDays', 'Quotation raised within (days of RO)'],
           ['followUpGraceDays', 'Customer follow-up grace after delivery (days)'],
           ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],
         ] as const).map(([k, label]) => (

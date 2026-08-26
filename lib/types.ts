@@ -121,6 +121,9 @@ export const KPI_DEFINITIONS = [
   { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', rule: 'A vehicle cannot await labour beyond the configured time.' },
+  { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
+  { id: 15, name: 'Inspection duration',     group: 'Workshop stages', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
+  { id: 16, name: 'QA duration',             group: 'Workshop stages', rule: 'A repair order must not sit in QA longer than the configured time.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
@@ -141,7 +144,15 @@ export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thres
     case 6:  return `Awaiting parts ≤ ${days(t.awaitingPartsDays ?? 14)}`;
     case 7:  return `Awaiting labour ≤ ${days(t.awaitingLabourDays ?? 2)}`;
     case 11: return `Delivered in ${days(t.repairedToDeliveredDays ?? 2)} after repair`;
-    case 12: return `Quote within ${days(t.quoteWithinDays ?? 1)} of RO`;
+    case 12: {
+      // The measured window runs from the START of inspection, so the headline
+      // figure is what's left once the allowed inspection time is spent.
+      const after = Math.max(0, (t.quoteAfterInspectionDays ?? 5) - (t.inspectionDays ?? 3));
+      return `Quote within ${days(after)} after inspection`;
+    }
+    case 14: return `Check-in within ${days(t.checkInDays ?? 1)} of RO`;
+    case 15: return `Inspection ≤ ${days(t.inspectionDays ?? 3)}`;
+    case 16: return `QA ≤ ${days(t.qaDays ?? 1)}`;
     default: return fallback;
   }
 }
@@ -179,8 +190,18 @@ export interface KpiConfig {
     snapshotBaselineDays?: number;
     /** Max days between a vehicle being repaired and delivered (KPI 11). */
     repairedToDeliveredDays?: number;
-    /** Max days between RO creation and the quotation being raised (KPI 12). */
-    quoteWithinDays?: number;
+    /**
+     * Max days from the RO ENTERING inspection to its quotation being created
+     * (KPI 12). Displayed net of inspectionDays, so 5 with a 3-day inspection
+     * reads as "Quote within 2 days after inspection".
+     */
+    quoteAfterInspectionDays?: number;
+    /** Max days from RO creation to check-in completing, i.e. reaching Inspection (KPI 14). */
+    checkInDays?: number;
+    /** Max days inspection may run before a quotation exists (KPI 15). */
+    inspectionDays?: number;
+    /** Max days a repair order may sit in QA (KPI 16). */
+    qaDays?: number;
     /** Grace after delivery before the follow-up KPI judges an RO. */
     followUpGraceDays?: number;
     /** Below this many applicable records a KPI is flagged as low-volume (n=X). */
@@ -196,6 +217,10 @@ export interface KpiConfig {
     presenceTags: StageSelector;
     /** States that count as CLOSED. Anything else is an open RO (KPI 9). */
     closed: StageSelector;
+    /** Reaching this state means check-in is done and inspection has begun (KPIs 12, 14, 15). */
+    inspection: StageSelector;
+    /** The quality-check state whose dwell time KPI 16 measures. */
+    qa: StageSelector;
   };
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
@@ -219,7 +244,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 7, tagMinutes: 60, awaitingPartsDays: 14, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteWithinDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
+  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -227,9 +252,11 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
     presenceTags:   { kind: 'tag',      values: [] },               // empty → auto-detect CAR-IN / CAR-OUT
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
+    inspection:     { kind: 'state',    values: [] },               // map to the Inspection state in Admin
+    qa:             { kind: 'state',    values: [] },               // map to the QA state in Admin
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };

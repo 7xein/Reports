@@ -156,14 +156,17 @@ function KpiSections({ cells, deltaFor, expandable = false }: {
 }) {
   return (
     <div className="grid lg:grid-cols-2 gap-4 mb-4">
-      {GROUP_ORDER.map((group) => {
+      {GROUP_ORDER.map((group, i) => {
         const all = cells.filter((c) => GROUP_OF[c.id] === group);
         if (!all.length) return null;
+        // An odd number of groups leaves the last one alone on its row — let it
+        // run full width rather than sit next to a gap.
+        const wide = GROUP_ORDER.length % 2 === 1 && i === GROUP_ORDER.length - 1;
         // Worst-first within the group; N/A pulled out to its own line.
         const scored = all.filter((c) => c.pct !== null).sort((a, b) => (a.pct as number) - (b.pct as number));
         const na = all.filter((c) => c.pct === null);
         return (
-          <div key={group} className="border border-border rounded-lg overflow-hidden bg-white">
+          <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
             <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
               <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
               <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
