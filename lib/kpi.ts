@@ -837,6 +837,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (at != null) push(14, r, at - roAt <= limitMs, ref);
       else if (now - roAt > limitMs) push(14, r, false, ref);  // never checked in, window gone
     }
+    if (weekROs.length && !Object.keys(reached).length) {
+      notes.push(`No "${tfInspection.labels.join('/')}" transitions found in the chatter for this week's ROs — check that the mapped field is tracked in Odoo.`);
+    }
   }
 
   // KPIs 15 & 12 — inspection start → quotation created. Same measurement, two
@@ -845,6 +848,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   if ((on(12) || on(15)) && tfInspection && has('sale_order_id')) {
     const entered = await roIdsEnteringStateInWindow(tfInspection.field, tfInspection.labels, wStart, wEnd);
     const ids = Object.keys(entered).map(Number);
+    if (!ids.length) {
+      notes.push(`No repair order entered "${tfInspection.labels.join('/')}" during this week according to the chatter — inspection and quote-after-inspection have nothing to measure.`);
+    }
 
     if (ids.length) {
       const ros = (await call('repair.order', 'read', [ids], {
@@ -885,6 +891,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const limitMs = (config.thresholds.qaDays ?? 1) * 86400_000;
     const entered = await roIdsEnteringStateInWindow(tfQa.field, tfQa.labels, wStart, wEnd);
     const ids = Object.keys(entered).map(Number);
+    if (!ids.length) {
+      notes.push(`No repair order entered "${tfQa.labels.join('/')}" during this week according to the chatter — QA duration has nothing to measure.`);
+    }
 
     if (ids.length) {
       const ros = (await call('repair.order', 'read', [ids], {

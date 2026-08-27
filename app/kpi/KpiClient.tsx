@@ -105,7 +105,7 @@ function KpiRow({ cell, delta, expandable = false }: {
           {cell.compliant}/{cell.applicable}
         </span>
         <span className={`text-sm font-bold tabular-nums w-16 text-right ${b.text}`}>
-          {fmtPct(cell.pct)}
+          {cell.pct === null ? '—' : fmtPct(cell.pct)}
         </span>
       </div>
 
@@ -114,7 +114,9 @@ function KpiRow({ cell, delta, expandable = false }: {
           className="h-full rounded-full transition-all"
           style={{
             background: b.hex,
-            width: `${Math.min(cell.pct ?? 0, 100)}%`,
+            // Nothing applicable runs the full width in grey — the row still reads
+            // as complete without claiming a score it never earned.
+            width: cell.pct === null ? '100%' : `${Math.min(cell.pct, 100)}%`,
             minWidth: (cell.pct ?? 0) > 0 ? 3 : 0,
           }}
         />
@@ -138,16 +140,6 @@ function KpiRow({ cell, delta, expandable = false }: {
   );
 }
 
-/** N/A KPIs collapse into one grey line rather than a row each. */
-function NaLine({ cells }: { cells: KpiCell[] }) {
-  if (!cells.length) return null;
-  return (
-    <div className="px-4 py-2 border-b border-border last:border-b-0 text-[11px] text-ink-muted">
-      <span className="font-semibold">N/A this week:</span> {cells.map((c) => c.name).join(' · ')}
-    </div>
-  );
-}
-
 // ── Grouped sections ───────────────────────────────────────────────
 function KpiSections({ cells, deltaFor, expandable = false }: {
   cells: KpiCell[];
@@ -162,9 +154,8 @@ function KpiSections({ cells, deltaFor, expandable = false }: {
         // An odd number of groups leaves the last one alone on its row — let it
         // run full width rather than sit next to a gap.
         const wide = GROUP_ORDER.length % 2 === 1 && i === GROUP_ORDER.length - 1;
-        // Worst-first within the group; N/A pulled out to its own line.
-        const scored = all.filter((c) => c.pct !== null).sort((a, b) => (a.pct as number) - (b.pct as number));
-        const na = all.filter((c) => c.pct === null);
+        // Worst-first within the group; unmeasured KPIs sink to the bottom.
+        const ordered = [...all].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
         return (
           <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
             <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
@@ -172,10 +163,9 @@ function KpiSections({ cells, deltaFor, expandable = false }: {
               <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
               <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
             </div>
-            {scored.map((c) => (
+            {ordered.map((c) => (
               <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
             ))}
-            <NaLine cells={na} />
           </div>
         );
       })}
