@@ -869,7 +869,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   const hasDateLastStageUpdate = has('date_last_stage_update');
   if (!hasDateLastStageUpdate) {
-    notes.push('date_last_stage_update is not available — KPIs 6 & 7 use write_date as a proxy for time-in-state.');
+    notes.push('date_last_stage_update is not available — awaiting parts/labour fall back to create_date, i.e. the age of the RO itself.');
   }
 
   return {
@@ -885,7 +885,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
       hasPriorityMatrixStatus: has('priority_matrix_status'),
       hasDateLastStageUpdate,
       hasSaleOrderId: has('sale_order_id'),
-      stageAgeField: hasDateLastStageUpdate ? 'date_last_stage_update' : 'write_date',
+      stageAgeField: hasDateLastStageUpdate ? 'date_last_stage_update' : 'create_date',
       notes,
     },
   };
