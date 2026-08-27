@@ -632,13 +632,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const graceMs = (config.thresholds.followUpGraceDays ?? 1) * 86400_000;
       for (const r of repaired) {
         const at = deliveredAt[r.id as number];
-        if (at != null && now - at < graceMs) continue;   // still inside the grace window
+        if (at == null) continue;                         // no repaired time → grace unknowable
+        if (now - at < graceMs) continue;                 // still inside the grace window
         push(13, r, !!r[followUpField], (r.name as string) || '');
       }
     }
 
-    if ((on(1) || on(11)) && !Object.keys(deliveredAt).length) {
-      notes.push('No "Repaired" transitions were found in the chatter this week — check the Repaired state mapping in Admin → KPI Configuration.');
+    if (!Object.keys(deliveredAt).length) {
+      notes.push(tfRepaired
+        ? `No "${tfRepaired.labels.join('/')}" transitions found on ${tfRepaired.field} in the chatter this week. If that field is not tracked in Odoo, map Repaired to one that is — delivery, invoicing and follow-up all need the moment it happened.`
+        : 'Repaired is not mapped to a state or status, so nothing can be timed from it.');
     }
   }
 
@@ -713,8 +716,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       }
     }
-    if (on(4) && inRepair.length && sequenceChecked === 0) {
-      notes.push('Could not read repair-start times from the chatter log, so "Quote before starting repair" only checks that a quotation exists.');
+    if (inRepair.length && sequenceChecked === 0) {
+      notes.push(tf
+        ? `No "${tf.labels.join('/')}" transitions found on ${tf.field} in the chatter, so the quotation KPIs only check that a quotation exists rather than that it came first.`
+        : 'Under repair is not mapped, so the quotation KPIs only check that a quotation exists.');
     }
   }
 

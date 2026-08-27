@@ -756,6 +756,41 @@ export interface KpiOdooOptions {
   };
 }
 
+/**
+ * How many tracked changes the chatter holds per candidate field, last 30 days.
+ *
+ * Every elapsed-time KPI reads its clock from the chatter, so a field with zero
+ * tracked changes cannot drive one no matter how it is mapped. This turns that
+ * from a guess into a number.
+ */
+async function chatterTrackingCounts(fields: string[]): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  if (!fields.length) return out;
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+  try {
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+
+    let idByName: Record<string, number> = {};
+    if (useFieldId) {
+      const frs = (await call('ir.model.fields', 'search_read', [[
+        ['model', '=', 'repair.order'], ['name', 'in', fields],
+      ]], { fields: ['id', 'name'] })) as { id: number; name: string }[];
+      idByName = Object.fromEntries(frs.map((f) => [f.name, f.id]));
+    }
+
+    for (const f of fields) {
+      const domain: OdooDomain = useFieldId
+        ? [['field_id', '=', idByName[f] ?? 0], ['create_date', '>=', since]]
+        : [['field', '=', f], ['create_date', '>=', since]];
+      try {
+        out[f] = (await call('mail.tracking.value', 'search_count', [domain])) as number;
+      } catch { out[f] = -1; }
+    }
+  } catch { /* probe unavailable — the caller just omits the line */ }
+  return out;
+}
+
 export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   cachedUid = null;
   companyIdCache = null;
@@ -817,6 +852,17 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   // Spell out what each list actually contains — the workflow bar in Odoo can be
   // driven by state OR stage_id, and knowing which saves a lot of guessing.
+  // Which of the candidate fields the chatter actually records — decisive for
+  // every KPI that measures elapsed time.
+  const trackCounts = await chatterTrackingCounts(
+    ['state', 'repair_state', 'priority_matrix_status', 'stage_id'].filter(has));
+  const trackLine = Object.entries(trackCounts)
+    .map(([f, n]) => `${f}=${n < 0 ? 'error' : n}`)
+    .join(', ');
+  if (trackLine) {
+    notes.push(`Chatter changes tracked in the last 30 days: ${trackLine}. A field showing 0 cannot drive any time-based KPI.`);
+  }
+
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`Stage options: ${stages.map((s) => s.name).join(', ') || '(none)'}`);
