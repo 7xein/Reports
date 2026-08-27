@@ -797,7 +797,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   const meta = (await call('repair.order', 'fields_get', [], {
     attributes: ['string', 'type', 'relation', 'selection'],
-  })) as Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
+  })) as Record<string, { string?: string; type?: string; relation?: string; selection?: [string, string][] }>;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
 
   const notes: string[] = [];
@@ -866,6 +866,14 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   const followUpField = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has);
   notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`
     + `; QA-eligibility flag: ${has('repair_is_qa') ? 'repair_is_qa' : 'not present (all repaired ROs will be counted)'}`);
+
+  // Explicit stage timestamps, if the workflow writes any. These beat the chatter
+  // outright — they survive without tracking and cannot be lost to a field remap.
+  const dateFields = Object.entries(meta)
+    .filter(([, m]) => m.type === 'date' || m.type === 'datetime')
+    .map(([name, m]) => `${name}${m.string ? ` (${m.string})` : ''}`)
+    .sort();
+  notes.push(`Date fields on repair.order: ${dateFields.join(', ') || '(none)'}`);
 
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
