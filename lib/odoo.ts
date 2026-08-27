@@ -873,6 +873,38 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     .filter(([, m]) => m.type === 'date' || m.type === 'datetime')
     .map(([name, m]) => `${name}${m.string ? ` (${m.string})` : ''}`)
     .sort();
+  // Does status_since follow repair_state or state? Decisive test: median age of
+  // status_since per repair_state. If it tracks the workflow bar, each stage shows
+  // a plausibly short dwell; if it tracks `state`, stages that share one state
+  // (QA / After QA both sit under Under Repair) show the same stale figure.
+  if (has('status_since') && has('repair_state')) {
+    try {
+      const since = new Date(Date.now() - 60 * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+      const sample = (await call('repair.order', 'search_read', [[
+        ['create_date', '>=', since],
+        ['company_id', 'in', trackedIds],
+      ]], { fields: ['repair_state', 'state', 'status_since'], limit: 4000, order: 'id desc' })) as Record<string, unknown>[];
+
+      const byStage: Record<string, number[]> = {};
+      for (const r of sample) {
+        const stage = (r.repair_state as string) || '(unset)';
+        const t = typeof r.status_since === 'string' ? Date.parse(r.status_since.replace(' ', 'T') + 'Z') : NaN;
+        if (Number.isNaN(t)) continue;
+        (byStage[stage] ??= []).push((Date.now() - t) / 3600_000);
+      }
+      const parts = Object.entries(byStage)
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([stage, hrs]) => {
+          const sorted = [...hrs].sort((a, b) => a - b);
+          const median = sorted[Math.floor(sorted.length / 2)];
+          return `${stage} n=${hrs.length} median ${median < 48 ? `${median.toFixed(1)}h` : `${(median / 24).toFixed(1)}d`}`;
+        });
+      if (parts.length) {
+        notes.push(`status_since age by Repair Status (last 60 days): ${parts.join(' | ')}`);
+      }
+    } catch { notes.push('status_since probe failed.'); }
+  }
+
   notes.push(`Date fields on repair.order: ${dateFields.join(', ') || '(none)'}`);
 
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
