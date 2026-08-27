@@ -736,6 +736,8 @@ export interface KpiOdooOptions {
   priorityOptions: { value: string; label: string }[];
   /** repair.order `state` selection values (e.g. under_repair). */
   stateOptions: { value: string; label: string }[];
+  /** repair.order `repair_state` selection values — this instance's workflow bar. */
+  repairStateOptions: { value: string; label: string }[];
   /** repair.order stage records, if the model actually has stage_id. */
   stages: { id: number; name: string }[];
   /** repair.order tag records. */
@@ -772,6 +774,9 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   }
 
   const stateOptions = (meta.state?.selection ?? []).map(([value, label]) => ({ value, label }));
+  // repair_state carries the full workflow bar (Inspection, QA, After QA …) that
+  // the stock `state` field does not.
+  const repairStateOptions = (meta.repair_state?.selection ?? []).map(([value, label]) => ({ value, label }));
 
   // Stages (only if stage_id genuinely exists on this model).
   let stages: { id: number; name: string }[] = [];
@@ -812,6 +817,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   // Spell out what each list actually contains — the workflow bar in Odoo can be
   // driven by state OR stage_id, and knowing which saves a lot of guessing.
+  notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`Stage options: ${stages.map((s) => s.name).join(', ') || '(none)'}`);
 
@@ -823,6 +829,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   return {
     priorityOptions,
     stateOptions,
+    repairStateOptions,
     stages,
     tags,
     users,

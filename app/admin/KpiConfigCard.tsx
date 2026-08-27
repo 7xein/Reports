@@ -8,6 +8,7 @@ import {
 interface OdooOptions {
   priorityOptions: { value: string; label: string }[];
   stateOptions: { value: string; label: string }[];
+  repairStateOptions: { value: string; label: string }[];
   stages: { id: number; name: string }[];
   tags: { id: number; name: string }[];
   users: { id: number; name: string; roCount: number }[];
@@ -27,8 +28,8 @@ const MAP_LABELS: Record<MapKey, string> = {
   closed: 'Closed / completed',
 };
 const MAP_HINTS: Partial<Record<MapKey, string>> = {
-  inspection: 'Reaching this point means check-in is done. Drives check-in, inspection duration and quote-after-inspection. If Inspection is not in the State list, switch to Stage — this workflow bar may run on stages.',
-  qa: 'The quality-check step. QA duration measures how long an RO sits here. Try Stage if QA is not in the State list.',
+  inspection: 'Reaching this point means check-in is done. Drives check-in, inspection duration and quote-after-inspection. Lives on Repair Status, not State.',
+  qa: 'The quality-check step. QA duration measures how long an RO sits here. Lives on Repair Status, not State.',
   presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
   closed: 'Anything NOT in these states counts as an open repair order.',
 };
@@ -66,6 +67,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     if (!opts) return [];
     if (kind === 'priority') return opts.priorityOptions.map((o) => ({ value: o.value, label: `${o.label} (${o.value})` }));
     if (kind === 'state') return (opts.stateOptions ?? []).map((o) => ({ value: o.value, label: `${o.label} (${o.value})` }));
+    if (kind === 'repairState') return (opts.repairStateOptions ?? []).map((o) => ({ value: o.value, label: `${o.label} (${o.value})` }));
     if (kind === 'stage') return opts.stages.map((s) => ({ value: s.id, label: s.name }));
     return opts.tags.map((t) => ({ value: t.id, label: t.name }));
   }
@@ -160,11 +162,11 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             <div key={key} className="border border-border rounded-md p-3">
               <div className="flex items-center gap-3 flex-wrap mb-2">
                 <span className="text-sm font-semibold text-ink min-w-[120px]">{MAP_LABELS[key]}</span>
-                {(['priority', 'state', 'stage', 'tag'] as StageSelectorKind[]).map((k) => (
+                {(['priority', 'repairState', 'state', 'stage', 'tag'] as StageSelectorKind[]).map((k) => (
                   <label key={k} className="text-xs text-ink-muted flex items-center gap-1 cursor-pointer">
                     <input type="radio" name={`kind-${key}`} checked={sel.kind === k}
                       onChange={() => setSelector(key, { kind: k, values: [] })} />
-                    {k === 'priority' ? 'Priority matrix' : k === 'state' ? 'State' : k === 'stage' ? 'Stage' : 'Tag'}
+                    {k === 'priority' ? 'Priority matrix' : k === 'repairState' ? 'Repair Status' : k === 'state' ? 'State' : k === 'stage' ? 'Stage' : 'Tag'}
                   </label>
                 ))}
                 <span className="text-xs text-ink-muted">{sel.values.length} selected</span>

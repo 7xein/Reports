@@ -135,6 +135,7 @@ function overall(cells: KpiCell[]): number | null {
 function selectorDomain(sel: StageSelector): OdooDomain {
   if (!sel || !sel.values?.length) return [['id', '=', 0]]; // unmapped → matches nothing
   if (sel.kind === 'state') return [['state', 'in', sel.values]];
+  if (sel.kind === 'repairState') return [['repair_state', 'in', sel.values]];
   if (sel.kind === 'stage') return [['stage_id', 'in', sel.values]];
   if (sel.kind === 'tag')   return [['tag_ids', 'in', sel.values]];
   return [['priority_matrix_status', 'in', sel.values]];
@@ -144,6 +145,7 @@ function selectorDomain(sel: StageSelector): OdooDomain {
 function selectorDomainNot(sel: StageSelector): OdooDomain {
   if (!sel || !sel.values?.length) return []; // nothing marked closed → everything is open
   if (sel.kind === 'state') return [['state', 'not in', sel.values]];
+  if (sel.kind === 'repairState') return [['repair_state', 'not in', sel.values]];
   if (sel.kind === 'stage') return [['stage_id', 'not in', sel.values]];
   if (sel.kind === 'tag')   return [['tag_ids', 'not in', sel.values]];
   return [['priority_matrix_status', 'not in', sel.values]];
@@ -327,7 +329,10 @@ function trackedField(
       .filter((x): x is string => !!x);
     return labels.length ? { field: 'stage_id', labels } : null;
   }
-  const field = sel.kind === 'state' ? 'state' : sel.kind === 'priority' ? 'priority_matrix_status' : null;
+  const field = sel.kind === 'state' ? 'state'
+    : sel.kind === 'repairState' ? 'repair_state'
+    : sel.kind === 'priority' ? 'priority_matrix_status'
+    : null;
   if (!field) return null;
   const options = meta[field]?.selection ?? [];
   const labels = sel.values

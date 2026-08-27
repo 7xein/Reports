@@ -165,7 +165,7 @@ export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
  * its workflow in `priority_matrix_status` (stage_id is unused), but stage/tag
  * are supported so the mapping stays configurable.
  */
-export type StageSelectorKind = 'priority' | 'state' | 'stage' | 'tag';
+export type StageSelectorKind = 'priority' | 'state' | 'repairState' | 'stage' | 'tag';
 export interface StageSelector {
   kind: StageSelectorKind;
   values: (string | number)[];
@@ -252,8 +252,10 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
     presenceTags:   { kind: 'tag',      values: [] },               // empty → auto-detect CAR-IN / CAR-OUT
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
-    inspection:     { kind: 'state',    values: [] },               // map to the Inspection state in Admin
-    qa:             { kind: 'state',    values: [] },               // map to the QA state in Admin
+    // repair_state ("Repair Status") is the field driving this instance's workflow
+    // bar: New → Inspection → Confirmed → Under Repair → QA → After QA → Repaired.
+    inspection:     { kind: 'repairState', values: ['inspection'] },
+    qa:             { kind: 'repairState', values: [] },             // pick the QA value in Admin
   },
   saRoster: [],
   enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16],
