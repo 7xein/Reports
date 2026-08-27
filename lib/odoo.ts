@@ -864,7 +864,8 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   }
 
   const followUpField = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has);
-  notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`);
+  notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`
+    + `; QA-eligibility flag: ${has('repair_is_qa') ? 'repair_is_qa' : 'not present (all repaired ROs will be counted)'}`);
 
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);

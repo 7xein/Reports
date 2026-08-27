@@ -585,6 +585,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ? ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has)
       : undefined;
     if (followUpField) roFields.push(followUpField);
+    // Odoo makes the screenshot read-only unless repair_is_qa is set, so the flag
+    // decides who the KPI can fairly apply to.
+    const qaFlagField = on(13) && has('repair_is_qa') ? 'repair_is_qa' : undefined;
+    if (qaFlagField) roFields.push(qaFlagField);
     if (on(13) && !followUpField) {
       notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
     }
@@ -628,11 +632,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     if (on(1)) judgeInvoiceTiming(1, (config.thresholds.invoiceGraceMinutes ?? 60) * 60_000);
     if (on(11)) judgeInvoiceTiming(11, (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000);
 
-    // Follow-up is the one KPI here that is not a stopwatch: every vehicle that
-    // reached Repaired this week either has the screenshot or it does not. No
-    // timestamp is involved, so it keeps working when the chatter lookup falls back.
+    // Follow-up is the one KPI here that is not a stopwatch: a vehicle either has
+    // the screenshot or it does not. No timestamp is involved, so it survives the
+    // chatter fallback.
+    //
+    // Scope matters more than timing here. Odoo makes follow_up_screenshot
+    // read-only unless repair_is_qa is set, so an RO that never went through QA
+    // CANNOT carry one. Judging those would mark advisors down for a box Odoo
+    // never let them fill.
     if (on(13) && followUpField) {
-      for (const r of repaired) push(13, r, !!r[followUpField], (r.name as string) || '');
+      const eligible = qaFlagField ? repaired.filter((r) => !!r[qaFlagField]) : repaired;
+      for (const r of eligible) push(13, r, !!r[followUpField], (r.name as string) || '');
+      if (qaFlagField && repaired.length && !eligible.length) {
+        notes.push(`None of this week's ${repaired.length} repaired ROs were flagged for QA, so the follow-up screenshot could not be uploaded on any of them.`);
+      }
     }
 
     if (!Object.keys(deliveredAt).length) {
@@ -1027,7 +1040,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     1: 'Measured from the moment the RO became Repaired to the moment its linked invoice was posted.',
     3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
     12: 'Measured from the RO entering Inspection, so the headline figure is what is left after the allowed inspection time.',
-    13: 'A straight yes/no over every vehicle that reached Repaired this week — was the follow-up screenshot uploaded.',
+    13: 'A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest.',
     14: 'Check-in counts as complete the moment the RO reaches Inspection.',
     15: 'Measured from the RO entering Inspection to its quotation being created.',
     16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',
