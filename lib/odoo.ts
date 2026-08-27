@@ -863,6 +863,9 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     notes.push(`Chatter changes tracked in the last 30 days: ${trackLine}. A field showing 0 cannot drive any time-based KPI.`);
   }
 
+  const followUpField = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has);
+  notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`);
+
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`Stage options: ${stages.map((s) => s.name).join(', ') || '(none)'}`);

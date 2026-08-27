@@ -628,14 +628,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     if (on(1)) judgeInvoiceTiming(1, (config.thresholds.invoiceGraceMinutes ?? 60) * 60_000);
     if (on(11)) judgeInvoiceTiming(11, (config.thresholds.repairedToDeliveredDays ?? 2) * 86400_000);
 
+    // Follow-up is the one KPI here that is not a stopwatch: every vehicle that
+    // reached Repaired this week either has the screenshot or it does not. No
+    // timestamp is involved, so it keeps working when the chatter lookup falls back.
     if (on(13) && followUpField) {
-      const graceMs = (config.thresholds.followUpGraceDays ?? 1) * 86400_000;
-      for (const r of repaired) {
-        const at = deliveredAt[r.id as number];
-        if (at == null) continue;                         // no repaired time → grace unknowable
-        if (now - at < graceMs) continue;                 // still inside the grace window
-        push(13, r, !!r[followUpField], (r.name as string) || '');
-      }
+      for (const r of repaired) push(13, r, !!r[followUpField], (r.name as string) || '');
     }
 
     if (!Object.keys(deliveredAt).length) {
@@ -1030,6 +1027,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     1: 'Measured from the moment the RO became Repaired to the moment its linked invoice was posted.',
     3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
     12: 'Measured from the RO entering Inspection, so the headline figure is what is left after the allowed inspection time.',
+    13: 'A straight yes/no over every vehicle that reached Repaired this week — was the follow-up screenshot uploaded.',
     14: 'Check-in counts as complete the moment the RO reaches Inspection.',
     15: 'Measured from the RO entering Inspection to its quotation being created.',
     16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',

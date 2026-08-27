@@ -111,7 +111,7 @@ export interface RegionalData {
 export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', rule: 'The invoice linked to the RO must be posted within the configured time of the repair being marked Repaired.' },
   { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
-  { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', rule: 'A customer follow-up must be recorded (follow-up screenshot uploaded) after the vehicle is delivered.' },
+  { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', rule: 'Every vehicle that reaches Repaired must have a customer follow-up screenshot uploaded.' },
   { id: 3, name: 'SO before repaired',       group: 'Quotations', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
   { id: 12, name: 'Quote after RO',          group: 'Quotations', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
   { id: 4, name: 'Quote before starting repair', group: 'Quotations', rule: 'A quotation must exist before repair work starts.' },
