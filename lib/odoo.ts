@@ -905,6 +905,73 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     } catch { notes.push('status_since probe failed.'); }
   }
 
+  // Decisive test. `state` changes ARE tracked, so compare status_since against the
+  // last tracked `state` change on the same records. Matching means status_since
+  // follows `state` and is blind to Inspection / QA; diverging means it follows the
+  // workflow bar and can drive the stage KPIs.
+  if (has('status_since') && has('repair_state')) {
+    try {
+      const since60 = new Date(Date.now() - 60 * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+      const sample = (await call('repair.order', 'search_read', [[
+        ['repair_state', 'in', ['qa', 'post_qa']],   // stages `state` cannot distinguish
+        ['create_date', '>=', since60],
+      ]], { fields: ['status_since'], limit: 120, order: 'id desc' })) as Record<string, unknown>[];
+
+      const ids = sample.map((r) => r.id as number);
+      if (ids.length) {
+        const msgs = (await call('mail.message', 'search_read', [[
+          ['model', '=', 'repair.order'], ['res_id', 'in', ids], ['tracking_value_ids', '!=', false],
+        ]], { fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0 })) as Record<string, unknown>[];
+
+        const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
+        const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+        const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+        let stateFieldId: number | null = null;
+        if (useFieldId) {
+          const fr = (await call('ir.model.fields', 'search_read', [[
+            ['model', '=', 'repair.order'], ['name', '=', 'state'],
+          ]], { fields: ['id'], limit: 1 })) as { id: number }[];
+          stateFieldId = fr[0]?.id ?? null;
+        }
+        const refField = useFieldId ? 'field_id' : 'field';
+        const tvs = tvIds.length
+          ? (await call('mail.tracking.value', 'read', [tvIds], { fields: [refField] })) as Record<string, unknown>[]
+          : [];
+        const stateTvs = new Set<number>();
+        for (const tv of tvs) {
+          const v = tv[refField];
+          const isState = useFieldId
+            ? (Array.isArray(v) ? v[0] === stateFieldId : false)
+            : v === 'state';
+          if (isState) stateTvs.add(tv.id as number);
+        }
+
+        // Latest tracked `state` change per RO.
+        const lastStateChange: Record<number, number> = {};
+        for (const m of msgs) {
+          const list = (m.tracking_value_ids as number[] | undefined) ?? [];
+          if (!list.some((id) => stateTvs.has(id))) continue;
+          const t = Date.parse(String(m.date).replace(' ', 'T') + 'Z');
+          const rid = m.res_id as number;
+          if (!Number.isNaN(t) && (lastStateChange[rid] == null || t > lastStateChange[rid])) lastStateChange[rid] = t;
+        }
+
+        let matched = 0, compared = 0, laterThanState = 0;
+        for (const r of sample) {
+          const ss = typeof r.status_since === 'string' ? Date.parse(r.status_since.replace(' ', 'T') + 'Z') : NaN;
+          const st = lastStateChange[r.id as number];
+          if (Number.isNaN(ss) || st == null) continue;
+          compared++;
+          if (Math.abs(ss - st) <= 300_000) matched++;        // within 5 minutes
+          else if (ss > st) laterThanState++;
+        }
+        notes.push(compared
+          ? `status_since vs last tracked \`state\` change on ${compared} QA/After-QA ROs: ${matched} match (±5 min), ${laterThanState} later than the state change. Mostly matching = status_since follows state and cannot time Inspection/QA.`
+          : 'status_since comparison: no QA/After-QA ROs had a tracked state change to compare against.');
+      }
+    } catch (e) { notes.push(`status_since comparison failed: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+
   notes.push(`Date fields on repair.order: ${dateFields.join(', ') || '(none)'}`);
 
   notes.push(`Repair Status options: ${repairStateOptions.map((o) => o.label).join(', ') || '(none)'}`);
