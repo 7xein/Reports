@@ -571,7 +571,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     write_date: 'time since last modification — any edit resets this clock',
   };
   const baselineDaysNote = config.thresholds.snapshotBaselineDays ?? 90;
-  let snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
+  let snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   let usedTrackingForAging = false;
   let awaitingPartsMethod = 'outstanding parts lines (Done qty below Demand)';
   if (ageField === 'write_date') {
@@ -985,17 +985,19 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
   if (on(6) || on(7)) {
-    // Baseline population: every RO created in the last N days. Scoring stuck
-    // vehicles against the whole workload (rather than only against other stuck
-    // vehicles) is what makes these percentages meaningful.
+    // Baseline population: OPEN ROs created in the last N days. Closed work is
+    // excluded deliberately — a car that has already left cannot be waiting on
+    // anything, and counting thousands of them buried the signal: a few hundred
+    // genuinely stuck vehicles read as a comfortable 98%.
     const baselineDays = config.thresholds.snapshotBaselineDays ?? 90;
     const sinceIso = new Date(now - baselineDays * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
     const baseROs = (await call('repair.order', 'search_read', [[
       ['create_date', '>=', sinceIso],
+      ...selectorDomainNot(config.stageMap.closed),
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
 
-    /** Every RO in the window counts; the stuck ones are the violations. */
+/** Every open RO in the window counts; the stuck ones are the violations. */
     const scoreAgainstBaseline = (kpiId: number, overdue: Map<number, Rec>) => {
       const seen = new Set<number>();
       for (const r of baseROs) {
@@ -1079,7 +1081,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   }
 
   if (usedTrackingForAging) {
-    snapshotNote = `Scored against every RO created in the last ${baselineDaysNote} days; a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
+    snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
   // Labels carry the configured thresholds, e.g. "Delivered in 2 days after repair".
   const displayNames: Record<number, string> = Object.fromEntries(
