@@ -443,6 +443,38 @@ async function stateTimeline(roIds: number[], field: string): Promise<Record<num
   }
 }
 
+/**
+ * The oldest change the chatter holds for a field — i.e. when tracking was
+ * switched on.
+ *
+ * This matters because "no transition recorded" is ambiguous: it means the RO
+ * never reached that stage, OR it reached it before anyone was writing the
+ * history down. Judging the second case as a failure punishes work that was
+ * done correctly, just unobserved.
+ */
+async function trackingStartedAt(model: string, field: string): Promise<number | null> {
+  try {
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+    let domain: OdooDomain;
+    if (useFieldId) {
+      const fr = (await call('ir.model.fields', 'search_read', [[
+        ['model', '=', model], ['name', '=', field],
+      ]], { fields: ['id'], limit: 1 })) as { id: number }[];
+      if (fr[0]?.id == null) return null;
+      domain = [['field_id', '=', fr[0].id]];
+    } else {
+      domain = [['field', '=', field]];
+    }
+    const first = (await call('mail.tracking.value', 'search_read', [domain], {
+      fields: ['create_date'], limit: 1, order: 'create_date asc',
+    })) as Rec[];
+    return odooTime(first[0]?.create_date);
+  } catch {
+    return null;
+  }
+}
+
 async function roIdsEnteringStateInWindow(
   field: string, labels: string[], from: string, to: string,
 ): Promise<Record<number, number>> {
@@ -835,6 +867,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('QA duration needs the QA state mapped in Admin → KPI Configuration.');
   }
 
+  // How much history the stage KPIs actually have to work with.
+  const stageField = tfInspection?.field ?? tfQa?.field;
+  const trackedFrom = stageField ? await trackingStartedAt('repair.order', stageField) : null;
+  if (trackedFrom != null && now - trackedFrom < 30 * 86400_000) {
+    const days = (now - trackedFrom) / 86400_000;
+    notes.push(`Stage tracking has only ${days < 1 ? `${Math.round(days * 24)} hours` : `${days.toFixed(1)} days`} of history (since ${new Date(trackedFrom).toISOString().slice(0, 10)}). A stage cannot yet show an overrun longer than that, so Inspection and QA will read high until the history outgrows their limits.`);
+  }
+
   // KPI 14 — check-in is complete when the RO reaches Inspection.
   if (on(14) && tfInspection) {
     const limitMs = (config.thresholds.checkInDays ?? 1) * 86400_000;
@@ -844,13 +884,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const reached = await stateEntryTimes(
       weekROs.map((r) => r.id as number), tfInspection.field, tfInspection.labels);
 
+    let preTracking = 0;
     for (const r of weekROs) {
       const roAt = odooTime(r.create_date);
       if (roAt == null) continue;
       const ref = (r.name as string) || '';
       const at = reached[r.id as number];
-      if (at != null) push(14, r, at - roAt <= limitMs, ref);
-      else if (now - roAt > limitMs) push(14, r, false, ref);  // never checked in, window gone
+      if (at != null) { push(14, r, at - roAt <= limitMs, ref); continue; }
+      // No recorded check-in. That is only a failure if we were watching at the
+      // time — otherwise the RO predates tracking and cannot be judged.
+      if (trackedFrom != null && roAt < trackedFrom) { preTracking++; continue; }
+      if (now - roAt > limitMs) push(14, r, false, ref);       // never checked in, window gone
+    }
+    if (preTracking) {
+      notes.push(`Check-in excluded ${preTracking} RO${preTracking === 1 ? '' : 's'} created before stage tracking began — their check-in happened but was never recorded.`);
     }
     if (weekROs.length && !Object.keys(reached).length) {
       notes.push(`No "${tfInspection.labels.join('/')}" transitions found in the chatter for this week's ROs — check that the mapped field is tracked in Odoo.`);
