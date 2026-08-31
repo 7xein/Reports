@@ -881,26 +881,30 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
       fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0,
     })) as Rec[];
-    const reached = await stateEntryTimes(
-      weekROs.map((r) => r.id as number), tfInspection.field, tfInspection.labels);
+    // Full stage history, not just the Inspection hits, so a silent RO can be told
+    // apart from one that genuinely skipped check-in.
+    const timeline = await stateTimeline(weekROs.map((r) => r.id as number), tfInspection.field);
 
-    let preTracking = 0;
+    let unobserved = 0, judged = 0;
     for (const r of weekROs) {
       const roAt = odooTime(r.create_date);
       if (roAt == null) continue;
       const ref = (r.name as string) || '';
-      const at = reached[r.id as number];
-      if (at != null) { push(14, r, at - roAt <= limitMs, ref); continue; }
-      // No recorded check-in. That is only a failure if we were watching at the
-      // time — otherwise the RO predates tracking and cannot be judged.
-      if (trackedFrom != null && roAt < trackedFrom) { preTracking++; continue; }
-      if (now - roAt > limitMs) push(14, r, false, ref);       // never checked in, window gone
+      const events = timeline[r.id as number] ?? [];
+      const hits = events.filter((e) => tfInspection.labels.includes(e.label));
+
+      if (hits.length) {
+        judged++;
+        push(14, r, hits[0].t - roAt <= limitMs, ref);   // FIRST arrival is the check-in
+        continue;
+      }
+      // No Inspection on record. Only a failure if we have some other stage change
+      // for this RO — that proves tracking was live and it really did skip check-in.
+      if (!events.length) { unobserved++; continue; }
+      if (now - roAt > limitMs) { judged++; push(14, r, false, ref); }
     }
-    if (preTracking) {
-      notes.push(`Check-in excluded ${preTracking} RO${preTracking === 1 ? '' : 's'} created before stage tracking began — their check-in happened but was never recorded.`);
-    }
-    if (weekROs.length && !Object.keys(reached).length) {
-      notes.push(`No "${tfInspection.labels.join('/')}" transitions found in the chatter for this week's ROs — check that the mapped field is tracked in Odoo.`);
+    if (unobserved) {
+      notes.push(`Check-in ignored ${unobserved} of ${weekROs.length} ROs with no stage history at all — they moved before tracking was switched on, so their check-in was never recorded. Judged ${judged}.`);
     }
   }
 

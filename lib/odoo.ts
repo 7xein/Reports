@@ -864,6 +864,15 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   }
 
   const followUpField = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has);
+  // Settle whether a 0% follow-up score means "nobody uploads it" or "we are
+  // reading the wrong field": count every RO that has one, ever.
+  if (followUpField) {
+    try {
+      const withShot = (await call('repair.order', 'search_count', [[[followUpField, '!=', false]]])) as number;
+      notes.push(`ROs with a follow-up screenshot attached (all time, all companies): ${withShot}`);
+    } catch { notes.push('Could not count ROs carrying a follow-up screenshot.'); }
+  }
+
   notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`
     + `; QA-eligibility flag: ${has('repair_is_qa') ? 'repair_is_qa' : 'not present (all repaired ROs will be counted)'}`);
 
