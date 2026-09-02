@@ -2,8 +2,8 @@
  * /api/sync-odoo
  *
  * Two modes:
- *   GET  — Vercel Cron hits this daily at 20:00 Gulf. Fetches the WIP snapshot
- *          AND the day's sales from Odoo, and auto-saves both.
+ *   GET  — Vercel Cron hits this daily at 08:00 Gulf and reports on YESTERDAY.
+ *          Fetches the WIP snapshot AND that day's sales, and auto-saves both.
  *   POST — Admin "Sync from Odoo" button. Fetches and returns data for
  *          preview in the form (does NOT auto-save; the user clicks Save).
  *          If body includes { autoSave: true }, it saves immediately.
@@ -22,9 +22,16 @@ import { BRANCHES, type WipDailyEntry, type RegionalSalesEntry } from '@/lib/typ
 export const maxDuration = 60;
 
 // ── Cron entry point (auto-saves) ──────────────────────────────────
-/** Today's date in Gulf time (UTC+4) as YYYY-MM-DD. */
-function gulfToday(): string {
-  return new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 10);
+/**
+ * Yesterday's date in Gulf time (UTC+4) as YYYY-MM-DD.
+ *
+ * The cron runs at 08:00 Gulf and reports on the day that just finished, so the
+ * sales figure covers a complete day rather than a few hours of one.
+ */
+function gulfYesterday(): string {
+  const d = new Date(Date.now() + 4 * 3600 * 1000);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 export async function GET(request: NextRequest) {
@@ -43,7 +50,12 @@ export async function GET(request: NextRequest) {
 
   // Both halves target the same Gulf day, and neither is allowed to sink the
   // other — a WIP failure should not cost us the day's sales.
-  const date = gulfToday();
+  //
+  // They are not the same kind of measurement. Sales are genuinely filtered to
+  // that date. WIP metrics are live counts with no date filter, so the date is
+  // only the label they are filed under — and at 08:00, before the day's work
+  // starts, that reading is yesterday's closing backlog.
+  const date = gulfYesterday();
   console.log(`🔄 [cron] Odoo sync for ${date}…`);
   const [wipRes, salesRes] = await Promise.allSettled([
     fetchWipSnapshot(date),
