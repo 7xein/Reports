@@ -2,7 +2,8 @@
  * /api/sync-odoo
  *
  * Two modes:
- *   GET  — Vercel Cron hits this daily. Fetches from Odoo and auto-saves.
+ *   GET  — Vercel Cron hits this daily at 20:00 Gulf. Fetches the WIP snapshot
+ *          AND the day's sales from Odoo, and auto-saves both.
  *   POST — Admin "Sync from Odoo" button. Fetches and returns data for
  *          preview in the form (does NOT auto-save; the user clicks Save).
  *          If body includes { autoSave: true }, it saves immediately.
@@ -16,46 +17,107 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
-import type { WipDailyEntry } from '@/lib/types';
+import { BRANCHES, type WipDailyEntry, type RegionalSalesEntry } from '@/lib/types';
 
 export const maxDuration = 60;
 
 // ── Cron entry point (auto-saves) ──────────────────────────────────
+/** Today's date in Gulf time (UTC+4) as YYYY-MM-DD. */
+function gulfToday(): string {
+  return new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get('authorization');
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  // Fail closed. This route writes to the data store and is exempt from the
+  // middleware's cookie check, so a missing secret must block it rather than
+  // leave it open.
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET is not configured' }, { status: 500 });
+  }
+  if (authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Both halves target the same Gulf day, and neither is allowed to sink the
+  // other — a WIP failure should not cost us the day's sales.
+  const date = gulfToday();
+  console.log(`🔄 [cron] Odoo sync for ${date}…`);
+  const [wipRes, salesRes] = await Promise.allSettled([
+    fetchWipSnapshot(date),
+    fetchDailySales(date),
+  ]);
+
+  const errors: string[] = [];
+  if (wipRes.status === 'rejected') errors.push(`WIP: ${String(wipRes.reason)}`);
+  if (salesRes.status === 'rejected') errors.push(`Sales: ${String(salesRes.reason)}`);
+  if (wipRes.status === 'rejected' && salesRes.status === 'rejected') {
+    console.error('❌ [cron] both halves failed:', errors);
+    return NextResponse.json({ error: 'Sync failed', detail: errors.join(' | ') }, { status: 500 });
+  }
+
+  // One read, both patches, one write.
   try {
-    console.log('🔄 [cron] Starting Odoo WIP sync…');
-    const snapshot = await fetchWipSnapshot();
-    console.log(`✅ [cron] Fetched snapshot for ${snapshot.date}`);
-
-    // Save directly to the data store (same logic as POST /api/data wip-daily)
     const data = await readData();
-    const entry: WipDailyEntry = { date: snapshot.date, values: snapshot.values, subValues: snapshot.subValues };
 
-    if (!data.wipHistory) data.wipHistory = [];
-    const idx = data.wipHistory.findIndex((e) => e.date === entry.date);
-    if (idx >= 0) {
-      data.wipHistory[idx] = entry;
-    } else {
-      data.wipHistory.push(entry);
+    if (wipRes.status === 'fulfilled') {
+      const snap = wipRes.value;
+      const entry: WipDailyEntry = { date: snap.date, values: snap.values, subValues: snap.subValues };
+      if (!data.wipHistory) data.wipHistory = [];
+      const idx = data.wipHistory.findIndex((e) => e.date === entry.date);
+      if (idx >= 0) data.wipHistory[idx] = entry;
+      else data.wipHistory.push(entry);
+      data.wipHistory.sort((a, b) => a.date.localeCompare(b.date));
     }
-    data.wipHistory.sort((a, b) => a.date.localeCompare(b.date));
+
+    let salesRows = 0;
+    if (salesRes.status === 'fulfilled') {
+      const sales = salesRes.value;
+      // Same shape the admin form writes, so a manual edit afterwards behaves
+      // identically to one made on top of a hand-entered row.
+      const rows: RegionalSalesEntry[] = BRANCHES
+        .map((b) => {
+          const total = sales.salesTotal[b] ?? 0;
+          const without = sales.salesWithout[b] ?? 0;
+          return {
+            date: sales.date,
+            branch: b,
+            actualSales: total,
+            salesWithoutWarranty: Math.min(without, total),
+            notes: 'Synced from Odoo',
+          };
+        })
+        .filter((r) => r.actualSales > 0);
+
+      if (!data.regional.salesLog) data.regional.salesLog = [];
+      // Replace only this date's rows for the branches we actually got figures
+      // for. A branch with no sales keeps whatever was entered by hand.
+      data.regional.salesLog = [
+        ...data.regional.salesLog.filter(
+          (e) => !(e.date === sales.date && rows.some((r) => r.branch === e.branch)),
+        ),
+        ...rows,
+      ];
+      salesRows = rows.length;
+    }
 
     await writeData(data);
-    console.log(`💾 [cron] Snapshot saved for ${snapshot.date}`);
+    console.log(`💾 [cron] Saved ${date} — WIP ${wipRes.status}, ${salesRows} sales rows`);
 
-    return NextResponse.json({ success: true, date: snapshot.date });
+    return NextResponse.json({
+      success: true,
+      date,
+      wip: wipRes.status === 'fulfilled' ? 'saved' : 'failed',
+      salesRows,
+      ...(errors.length ? { warnings: errors } : {}),
+    });
   } catch (error) {
-    console.error('❌ [cron] Odoo sync failed:', error);
+    console.error('❌ [cron] save failed:', error);
     return NextResponse.json(
       { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

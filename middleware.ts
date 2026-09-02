@@ -9,6 +9,10 @@ export function middleware(request: NextRequest) {
     pathname === '/login' ||
     pathname === '/admin/login' ||
     pathname.startsWith('/api/auth') ||
+    // The cron hits this with a bearer token and no cookie. Without this line the
+    // middleware redirects it to /login and the scheduled sync never runs; the
+    // handler's CRON_SECRET check is the real guard.
+    pathname === '/api/sync-odoo' ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon')
   ) {
