@@ -870,6 +870,47 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   // Spell out what each list actually contains — the workflow bar in Odoo can be
   // driven by state OR stage_id, and knowing which saves a lot of guessing.
+  // Invoice reachability per company. A branch reading 0 is ambiguous: no sales
+  // that day, or invoices that exist but never match the filter. Counting them
+  // over 30 days with and without the posted filter separates the two.
+  try {
+    const companyMap = await getCompanyIds();
+    const idToName: Record<number, string> = {};
+    for (const [n, id] of Object.entries(companyMap)) idToName[id] = n;
+    const trackedForProbe = await allTrackedCompanyIds();
+    const since30 = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+
+    const tally = async (extra: OdooDomain) => {
+      const groups = (await call('account.move', 'read_group', [[
+        ['move_type', '=', 'out_invoice'],
+        ['date', '>=', since30],
+        ['company_id', 'in', trackedForProbe],
+        ...extra,
+      ]], { fields: ['company_id', 'amount_untaxed'], groupby: ['company_id'], lazy: true })) as ReadGroupResult[];
+      const out: Record<string, { n: number; amt: number }> = {};
+      for (const g of groups) {
+        const name = g.company_id?.[0] != null ? idToName[g.company_id[0]] : undefined;
+        if (!name) continue;
+        out[name] = {
+          n: (g.company_id_count ?? g.__count ?? 0) as number,
+          amt: (g.amount_untaxed as number) || 0,
+        };
+      }
+      return out;
+    };
+
+    const [posted, any] = await Promise.all([tally([['state', '=', 'posted']]), tally([])]);
+    const line = Object.values(BRANCH_CLUSTERS).flat().map((name) => {
+      const p = posted[name], a = any[name];
+      if (!a) return `${name}: none`;
+      const amt = Math.round(p?.amt ?? 0).toLocaleString('en-US');
+      return `${name}: ${p?.n ?? 0} posted of ${a.n} (AED ${amt})`;
+    });
+    notes.push(`Customer invoices per company, last 30 days — ${line.join(' · ')}`);
+  } catch (e) {
+    notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // Company-name resolution. Branch filters match on exact NAME, so a company
   // renamed in Odoo silently contributes zero rather than erroring — the failure
   // mode that took out Abu Dhabi and Sharjah. Name both sides of any mismatch.
