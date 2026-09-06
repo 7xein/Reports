@@ -29,8 +29,9 @@ export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
   'Dubai':     ['EVS Dubai', 'Emarat - Mahrawan', 'Emarat - Albuhaira'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
   'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
-  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Al Masaood'],
+  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'AlMushrif'],
   'Al Ain':    ['EVS ELECTRIC VEHICLE SERVICE AL AIN'],
+  'EV Hub':    ['EV HUB'],
   'Qatar':     ['EVS ELECTRIC VEHICLE SERVICE QATAR'],
 };
 
@@ -51,7 +52,7 @@ const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
   },
   'Abu Dhabi': {
     'Main branch':        'EVS ELECTRIC VEHICLE SERVICE ABU DHABI',
-    'Al Masaood':         'Al Masaood',
+    'AlMushrif':          'AlMushrif',
   },
 };
 
@@ -390,7 +391,7 @@ const m2oName = (v: unknown): string => (Array.isArray(v) ? String(v[1] ?? '') :
 const m2oId = (v: unknown): number | null => (Array.isArray(v) ? (v[0] as number) : null);
 
 /** Branches included in the admin Excel exports (Qatar excluded per request). */
-export const EXPORT_BRANCHES = BRANCHES.filter((b) => b !== 'Qatar') as Branch[];
+export const EXPORT_BRANCHES = BRANCHES.filter((b) => b !== 'Qatar' && b !== 'EV Hub') as Branch[];
 
 /** priority_matrix_status letter codes → human labels. */
 export const PRIORITY_MATRIX_LABELS: Record<string, string> = {
@@ -421,7 +422,7 @@ export async function fetchRepairOrdersForExport(
   companyIdCache = null;
 
   // Only the MAIN company of each export branch — drop station companies
-  // (Emarat sites, Al Masaood) and Qatar.
+  // (Emarat sites, AlMushrif), EV Hub and Qatar.
   const companyMap = await getCompanyIds();
   const idToBranch: Record<number, Branch> = {};
   const exportCompanyIds: number[] = [];
@@ -489,7 +490,7 @@ export async function fetchRepairOrdersForExport(
   for (const r of records) {
     const cid = m2oId(r.company_id);
     const branch = cid != null ? idToBranch[cid] : undefined;
-    if (!branch) continue; // skip non-tracked companies (EV HUB, CarDIP, …)
+    if (!branch) continue; // skip non-tracked companies (CarDIP, …)
 
     const pid = m2oId(r.partner_id);
     const phone = phoneField

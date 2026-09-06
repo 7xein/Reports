@@ -587,7 +587,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string) => {
     const cid = m2o(rec.company_id)?.[0];
     const branch = cid != null ? idToBranch[cid] : undefined;
-    if (!branch) return; // untracked company (EV HUB, CarDIP, …)
+    if (!branch) return; // untracked company (CarDIP, …)
     const u = m2o(rec.create_uid);
     evals.push({
       kpiId, branch,

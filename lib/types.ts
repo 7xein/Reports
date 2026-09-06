@@ -1,4 +1,4 @@
-export const BRANCHES = ['Dubai', 'Ajman', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'Qatar'] as const;
+export const BRANCHES = ['Dubai', 'Ajman', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'EV Hub', 'Qatar'] as const;
 export type Branch = typeof BRANCHES[number];
 
 // ── Sub-branches ──────────────────────────────────────────────────────────
@@ -7,7 +7,7 @@ export type Branch = typeof BRANCHES[number];
 export const SUB_BRANCHES: Record<string, string[]> = {
   'Dubai':     ['Main branch', 'Emarat - Albuhaira', 'Emarat - Mahrawan'],
   'Sharjah':   ['Main branch', 'Emarat - Muwafja'],
-  'Abu Dhabi': ['Main branch', 'Al Masaood'],
+  'Abu Dhabi': ['Main branch', 'AlMushrif'],
 };
 export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];
 export const hasSubBranches = (b: string): boolean => (SUB_BRANCHES[b]?.length ?? 0) > 0;

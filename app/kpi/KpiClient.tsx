@@ -6,7 +6,7 @@ import { KPI_DEFINITIONS, KpiWeekSummary } from '@/lib/types';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai: '#78C41A', Ajman: '#3B82F6', Sharjah: '#F59E0B',
-  'Abu Dhabi': '#8B5CF6', 'Al Ain': '#EF4444', Qatar: '#06B6D4',
+  'Abu Dhabi': '#8B5CF6', 'Al Ain': '#EF4444', 'EV Hub': '#EC4899', Qatar: '#06B6D4',
 };
 
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
