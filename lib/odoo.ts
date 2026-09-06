@@ -852,6 +852,23 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
   // Spell out what each list actually contains — the workflow bar in Odoo can be
   // driven by state OR stage_id, and knowing which saves a lot of guessing.
+  // Company-name resolution. Branch filters match on exact NAME, so a company
+  // renamed in Odoo silently contributes zero rather than erroring — the failure
+  // mode that took out Abu Dhabi and Sharjah. Name both sides of any mismatch.
+  try {
+    const companyMap = await getCompanyIds();
+    const configured = Object.entries(BRANCH_CLUSTERS)
+      .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })));
+    const missing = configured.filter((c) => !companyMap[c.name]);
+    const known = new Set(configured.map((c) => c.name));
+    const unmatched = Object.keys(companyMap).filter((n) => !known.has(n));
+
+    notes.push(missing.length
+      ? `⚠ CONFIGURED BUT NOT FOUND IN ODOO: ${missing.map((c) => `"${c.name}" (${c.branch})`).join(' · ')} — these contribute 0 to their branch.`
+      : `All ${configured.length} configured companies resolved in Odoo.`);
+    notes.push(`Odoo companies not counted by any branch: ${unmatched.map((n) => `"${n}"`).join(' · ') || '(none)'}`);
+  } catch { notes.push('Company-name check failed.'); }
+
   // Which of the candidate fields the chatter actually records — decisive for
   // every KPI that measures elapsed time.
   const trackCounts = await chatterTrackingCounts(
