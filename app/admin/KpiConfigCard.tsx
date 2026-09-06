@@ -19,18 +19,20 @@ interface OdooOptions {
   };
 }
 
-type MapKey = 'inspection' | 'qa' | 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'closed';
+type MapKey = 'inspection' | 'qa' | 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'insuranceTags' | 'closed';
 const MAP_LABELS: Record<MapKey, string> = {
   inspection: 'Inspection', qa: 'QA',
   repaired: 'Repaired', underRepair: 'Under repair',
   awaitingParts: 'Awaiting parts', awaitingLabour: 'Awaiting labour',
   presenceTags: 'Car in / out tags',
+  insuranceTags: 'Insurance tags',
   closed: 'Closed / completed',
 };
 const MAP_HINTS: Partial<Record<MapKey, string>> = {
   inspection: 'Reaching this point means check-in is done. Drives check-in, inspection duration and quote-after-inspection. Lives on Repair Status, not State.',
   qa: 'The quality-check step. QA duration measures how long an RO sits here. Lives on Repair Status, not State.',
-  presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT.',
+  presenceTags: 'Leave empty to auto-detect tags named CAR-IN / CAR IN / CAR-OUT. Both the Tags and Stages Tags fields are searched.',
+  insuranceTags: 'Repair orders carrying one of these are excluded from Quote approval. Leave empty to auto-detect tags named Insurance.',
   closed: 'Anything NOT in these states counts as an open repair order.',
 };
 

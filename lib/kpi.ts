@@ -233,6 +233,15 @@ type FieldsMeta = Record<string, { type?: string; relation?: string; selection?:
 /** Matches tag names like "CAR-IN", "CAR IN", "CAR OUT", "car_out". */
 const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 
+/** Matches tag names like "Insurance", "INSURANCE JOB", "insured". */
+const INSURANCE_TAG_RE = /insur/i;
+
+/** Every many2many tag field on repair.order, in the order we search them. */
+const TAG_FIELDS = ['tag_ids', 'x_studio_stages_tags'] as const;
+
+/** One entry per tag field that exists, holding the ids matching in ITS comodel. */
+type TagMatch = { field: string; ids: Set<number> };
+
 /**
  * Locate the parts-lines relation on repair.order and the demand/done quantity
  * fields on its comodel. Field names vary by Odoo version and customisation, so
@@ -291,17 +300,58 @@ async function readPartsLines(
  * Tag ids that mark a vehicle in/out. Uses the configured ids when set, otherwise
  * auto-detects tags named like CAR-IN / CAR-OUT so the KPI works out of the box.
  */
-async function resolvePresenceTagIds(configured: (string | number)[], meta: FieldsMeta): Promise<number[]> {
+/**
+ * Find the tags matching `re` across every tag field on repair.order.
+ *
+ * The two fields can point at different comodels, so an id from one means
+ * nothing in the other — matches are resolved per comodel and kept per field.
+ * Explicit ids picked in Admin come from the tag_ids list, so they apply to that
+ * comodel and override name matching there; any other comodel still matches by
+ * name, since the admin has no way to pick from it.
+ */
+async function resolveTagMatches(
+  configured: (string | number)[],
+  meta: FieldsMeta,
+  re: RegExp,
+): Promise<TagMatch[]> {
+  const fields = TAG_FIELDS.filter((f) => meta[f]?.relation);
+  if (!fields.length) return [];
   const explicit = (configured ?? []).map(Number).filter((n) => Number.isFinite(n));
-  if (explicit.length) return explicit;
-  const relation = meta.tag_ids?.relation;
-  if (!relation) return [];
-  try {
-    const recs = (await call(relation, 'search_read', [[]], { fields: ['display_name'], limit: 500 })) as { id: number; display_name?: string }[];
-    return recs.filter((t) => PRESENCE_TAG_RE.test(t.display_name || '')).map((t) => t.id);
-  } catch {
-    return [];
+  const primaryRelation = meta.tag_ids?.relation;
+
+  const byRelation = new Map<string, Set<number>>();
+  for (const f of fields) {
+    const relation = meta[f]!.relation!;
+    if (byRelation.has(relation)) continue;
+
+    // Explicit picks replace name matching, but only in the comodel they came from.
+    if (explicit.length && relation === primaryRelation) {
+      byRelation.set(relation, new Set(explicit));
+      continue;
+    }
+    const ids = new Set<number>();
+    try {
+      const recs = (await call(relation, 'search_read', [[]], { fields: ['display_name'], limit: 500 })) as { id: number; display_name?: string }[];
+      for (const t of recs) if (re.test(t.display_name || '')) ids.add(t.id);
+    } catch { /* comodel unreadable — that field simply matches nothing */ }
+    byRelation.set(relation, ids);
   }
+
+  return fields.map((f) => ({ field: f, ids: byRelation.get(meta[f]!.relation!) ?? new Set<number>() }));
+}
+
+/** An Odoo domain matching a record that carries any of these tags, in any field. */
+function anyTagDomain(matches: TagMatch[]): OdooDomain {
+  const live = matches.filter((m) => m.ids.size);
+  if (!live.length) return [['id', '=', 0]];
+  const clauses: OdooDomain = live.map((m) => [m.field, 'in', [...m.ids]] as [string, string, unknown]);
+  // Odoo domains are prefix notation: n clauses need n-1 leading '|'.
+  return [...Array(live.length - 1).fill('|'), ...clauses];
+}
+
+/** Does this record carry one of the matched tags in any of its tag fields? */
+function hasAnyTag(rec: Rec, matches: TagMatch[]): boolean {
+  return matches.some((m) => ((rec[m.field] as number[] | undefined) ?? []).some((id) => m.ids.has(id)));
 }
 const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [number, string]) : null);
 
@@ -767,28 +817,32 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPIs 5 & 8 — tagging on ROs created this week ──
   if (on(5) || on(8)) {
+    // Both tag fields count. Stages Tags is where a lot of the tagging actually
+    // happens, so reading only tag_ids marked compliant work as untagged.
+    const tagFields = TAG_FIELDS.filter((f) => has(f));
     const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
-      fields: ['name', 'create_uid', 'company_id', 'create_date', 'tag_ids'], limit: 0,
+      fields: ['name', 'create_uid', 'company_id', 'create_date', ...tagFields], limit: 0,
     })) as Rec[];
     const graceMs = (config.thresholds.tagMinutes ?? 60) * 60_000;
 
-    // Tags that mark the vehicle in/out (KPI 8).
-    const presence = new Set(
-      on(8) ? await resolvePresenceTagIds(config.stageMap.presenceTags?.values ?? [], meta) : [],
-    );
+    // Tags that mark the vehicle in/out (KPI 8), resolved per field.
+    const presence = on(8)
+      ? await resolveTagMatches(config.stageMap.presenceTags?.values ?? [], meta, PRESENCE_TAG_RE)
+      : [];
+    const presenceLive = presence.some((m) => m.ids.size);
 
     for (const r of weekROs) {
       const created = odooTime(r.create_date);
       // Only judge ROs that have had their full grace period.
       if (created == null || now - created < graceMs) continue;
-      const tags = (r.tag_ids as number[] | undefined) ?? [];
+      const tagged = tagFields.some((f) => ((r[f] as number[] | undefined) ?? []).length > 0);
       const ref = (r.name as string) || '';
-      if (on(5)) push(5, r, tags.length > 0, ref);
-      if (on(8) && presence.size) push(8, r, tags.some((id) => presence.has(id)), ref);
+      if (on(5)) push(5, r, tagged, ref);
+      if (on(8) && presenceLive) push(8, r, hasAnyTag(r, presence), ref);
     }
 
-    if (on(8) && !presence.size) {
-      notes.push('KPI 8 is inactive — no CAR-IN / CAR-OUT tags were found. Pick them under "Car in / out tags" in Admin → KPI Configuration.');
+    if (on(8) && !presenceLive) {
+      notes.push('Car in / out tag is inactive — no CAR-IN / CAR-OUT tags were found in either tag field. Pick them under "Car in / out tags" in Admin → KPI Configuration.');
     }
 
     // RO volume per SA (used for the "N ROs this week" badge).
@@ -807,22 +861,49 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['state', 'in', ['draft', 'sent']],
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
-    for (const q of open) {
-      const created = odooTime(q.create_date);
-      if (created == null) continue;
-      push(2, q, now - created <= limitMs, (q.name as string) || '');
-    }
     // (b) Quotations confirmed during the week: was approval inside the window?
     const confirmed = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['sale', 'done']],
       ['date_order', '>=', wStart], ['date_order', '<', wEnd],
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'date_order'], limit: 0 })) as Rec[];
+
+    // Insurance jobs are exempt: approval is the insurer's to give, so holding an
+    // advisor to a two-day clock measures the insurer, not them. Resolved from the
+    // repair order behind each quotation, across both tag fields.
+    const insuranceExempt = new Set<number>();
+    const insuranceTags = await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
+    if (insuranceTags.some((m) => m.ids.size) && has('sale_order_id')) {
+      const soIds = [...new Set([...open, ...confirmed].map((q) => q.id as number))];
+      for (let i = 0; i < soIds.length; i += 2000) {
+        try {
+          const insured = (await call('repair.order', 'search_read', [[
+            ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
+            ...anyTagDomain(insuranceTags),
+          ]], { fields: ['sale_order_id'], limit: 0 })) as Rec[];
+          for (const r of insured) {
+            const id = m2o(r.sale_order_id)?.[0];
+            if (id != null) insuranceExempt.add(id);
+          }
+        } catch { /* leave this chunk unexempted rather than dropping the KPI */ }
+      }
+    }
+
+    for (const q of open) {
+      if (insuranceExempt.has(q.id as number)) continue;
+      const created = odooTime(q.create_date);
+      if (created == null) continue;
+      push(2, q, now - created <= limitMs, (q.name as string) || '');
+    }
     for (const q of confirmed) {
+      if (insuranceExempt.has(q.id as number)) continue;
       const created = odooTime(q.create_date);
       const approved = odooTime(q.date_order);
       if (created == null || approved == null) continue;
       push(2, q, approved - created <= limitMs, (q.name as string) || '');
+    }
+    if (insuranceExempt.size) {
+      notes.push(`Quote approval excluded ${insuranceExempt.size} insurance quotation${insuranceExempt.size === 1 ? '' : 's'} — approval there is the insurer's to give.`);
     }
   }
 

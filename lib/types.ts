@@ -117,7 +117,7 @@ export const KPI_DEFINITIONS = [
   { id: 4, name: 'Quote before starting repair', group: 'Quotations', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag on creation',          group: 'Tagging', rule: 'A tag must be added to every RO within the configured time of creation.' },
   { id: 8, name: 'Car in / out tag',         group: 'Tagging', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
-  { id: 2, name: 'Quote approval',           group: 'Quotations', rule: 'Quotations must not sit awaiting approval beyond the configured time.' },
+  { id: 2, name: 'Quote approval',           group: 'Quotations', rule: 'Quotations must not sit awaiting approval beyond the configured time. Insurance jobs are excluded — approval is the insurer\'s to give.' },
   { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', rule: 'A vehicle cannot await labour beyond the configured time.' },
@@ -215,6 +215,9 @@ export interface KpiConfig {
     /** Tags that mark a vehicle as on/off site (CAR-IN / CAR-OUT). Leave empty
      *  to auto-detect tags named like "CAR IN" / "CAR-OUT". */
     presenceTags: StageSelector;
+    /** Tags marking an insurance job, excluded from Quote approval. Leave empty
+     *  to auto-detect tags named like "Insurance". */
+    insuranceTags: StageSelector;
     /** States that count as CLOSED. Anything else is an open RO (KPI 9). */
     closed: StageSelector;
     /** Reaching this state means check-in is done and inspection has begun (KPIs 12, 14, 15). */
@@ -251,6 +254,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     awaitingParts:  { kind: 'priority', values: ['P'] },            // Awaiting Parts
     awaitingLabour: { kind: 'priority', values: ['I'] },            // Awaiting Labour
     presenceTags:   { kind: 'tag',      values: [] },               // empty → auto-detect CAR-IN / CAR-OUT
+    insuranceTags:  { kind: 'tag',      values: [] },               // empty → auto-detect "Insurance"
     closed:         { kind: 'priority', values: ['X'] },            // Closed and Invoiced
     // repair_state ("Repair Status") is the field driving this instance's workflow
     // bar: New → Inspection → Confirmed → Under Repair → QA → After QA → Repaired.
