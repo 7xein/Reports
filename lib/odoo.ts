@@ -128,6 +128,21 @@ export async function branchCompanyIds(branch: Branch): Promise<number[]> {
     .filter(Boolean);
 }
 
+/**
+ * Configured company names with no match in Odoo, as "Name (Branch)".
+ *
+ * Branch filters match on exact name, so a rename produces a silent zero rather
+ * than an error. Callers surface this so the zero is explained at the point it
+ * appears instead of only in the server log.
+ */
+export async function unresolvedCompanies(): Promise<string[]> {
+  const map = await getCompanyIds();
+  return Object.entries(BRANCH_CLUSTERS)
+    .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })))
+    .filter((c) => !map[c.name])
+    .map((c) => `${c.name} (${c.branch})`);
+}
+
 export async function allTrackedCompanyIds(): Promise<number[]> {
   const map = await getCompanyIds();
   return ALL_TRACKED_COMPANIES.map((n) => map[n]).filter(Boolean);
@@ -671,6 +686,8 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
  *                  Defaults to yesterday if not provided.
  */
 export interface OdooSalesSnapshot {
+  /** Configured companies Odoo does not know about — each is silently worth 0. */
+  unresolved: string[];
   date: string;
   salesTotal: Record<Branch, number>;    // all posted out-invoices
   salesWithout: Record<Branch, number>;  // invoices without a warranty line
@@ -728,7 +745,7 @@ export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapsh
     ]),
   ]);
 
-  return { date: dateStr, salesTotal, salesWithout };
+  return { date: dateStr, salesTotal, salesWithout, unresolved: await unresolvedCompanies() };
 }
 
 // ── KPI: live option lists + field verification ────────────────────

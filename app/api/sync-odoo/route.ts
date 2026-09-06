@@ -171,6 +171,7 @@ export async function POST(request: NextRequest) {
         date: result.date,
         salesTotal: result.salesTotal,
         salesWithout: result.salesWithout,
+        unresolved: result.unresolved,
         saved: false,
       });
     } catch (error) {

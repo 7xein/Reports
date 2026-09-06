@@ -437,7 +437,11 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       }
 
       setSyncSalesStatus('success');
-      setMessage(`✓ Sales data loaded for ${data.date} — total and without-warranty from Odoo. Review, then Save`);
+      // A company Odoo cannot find contributes 0 without failing, so say which.
+      const unresolved: string[] = data.unresolved ?? [];
+      setMessage(unresolved.length
+        ? `✓ Sales loaded for ${data.date}, but these companies were NOT found in Odoo and count as 0: ${unresolved.join(', ')}. Check the company name in Odoo, then re-sync.`
+        : `✓ Sales data loaded for ${data.date} — total and without-warranty from Odoo. Review, then Save`);
     } catch (err) {
       setMessage(`Sales sync failed: ${err instanceof Error ? err.message : String(err)}`);
       setSyncSalesStatus('error');
