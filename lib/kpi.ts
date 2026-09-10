@@ -230,6 +230,29 @@ async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
 type Rec = Record<string, unknown>;
 type FieldsMeta = Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
 
+/**
+ * Partner ids in the order they actually appear in a chatter message.
+ *
+ * partner_ids is a many2many, so Odoo returns it in the comodel's sort order,
+ * not the order they were typed. Who was mentioned FIRST decides who carries an
+ * unanswered request, so that order is recovered from the message body, where
+ * each mention is an anchor carrying the partner id.
+ */
+function mentionOrder(body: unknown, recipients: number[]): number[] {
+  const ordered: number[] = [];
+  if (typeof body === 'string' && recipients.length > 1) {
+    const re = /data-oe-model="res\.partner"[^>]*?data-oe-id="(\d+)"|data-oe-id="(\d+)"[^>]*?data-oe-model="res\.partner"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body)) !== null) {
+      const id = Number(m[1] ?? m[2]);
+      if (Number.isFinite(id) && recipients.includes(id) && !ordered.includes(id)) ordered.push(id);
+    }
+  }
+  // Anyone the body did not reveal keeps their original position, at the back.
+  for (const r of recipients) if (!ordered.includes(r)) ordered.push(r);
+  return ordered;
+}
+
 /** Matches tag names like "CAR-IN", "CAR IN", "CAR OUT", "car_out". */
 const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 
@@ -1085,11 +1108,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Modelled as a conversation, not as isolated messages. Each RO's comments are
   // walked in order while tracking who currently owes whom a reply:
   //
-  //   • A comment by someone who owes a reply DISCHARGES that debt, and is judged
-  //     on how long it took.
-  //   • A mention only creates a debt for people the author was not just
-  //     answering. So "@ahmed where is the part?" obliges Ahmed, but Ahmed's
-  //     "@hussein on the way" answers it without obliging Hussein back.
+  //   • One message is ONE request, however many people it mentions — tagging
+  //     three people asks for an answer, not three answers. Whichever of them
+  //     comments first settles it and is judged on how long it took; the others
+  //     are not judged at all. If nobody answers, it falls to the person
+  //     mentioned FIRST, who is the one actually being asked.
+  //   • A mention only creates a request for people the author was not just
+  //     answering. So "@ahmed where is the part?" asks Ahmed, but Ahmed's
+  //     "@hussein on the way" answers it without asking Hussein back.
   //
   // Without that second rule the thread never closes: every courteous reply
   // starts a new clock and whoever speaks last always fails.
@@ -1134,7 +1160,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             ['res_id', 'in', roIds],
             ['date', '>=', wStart],
             ['message_type', '=', 'comment'],
-          ]], { fields: ['res_id', 'date', 'author_id', recipientField], limit: 0 })) as Rec[];
+          ]], { fields: ['res_id', 'date', 'author_id', 'body', recipientField], limit: 0 })) as Rec[];
 
           const byRo = new Map<number, Rec[]>();
           for (const m of thread) {
@@ -1153,9 +1179,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             if (!info?.branch) continue;
             msgs.sort((a, b) => (odooTime(a.date) ?? 0) - (odooTime(b.date) ?? 0));
 
-            // debtor partner → who asked, and when. One debt per asker: a nudge
-            // does not restart the clock, it keeps running from the first ask.
-            const owed = new Map<number, { by: number; at: number }[]>();
+            // Open requests on this RO. Each one names its asker, when it was
+            // made, and everyone who could answer it — in the order tagged.
+            let open: { by: number; at: number; candidates: number[] }[] = [];
 
             for (const m of msgs) {
               const at = odooTime(m.date);
@@ -1163,36 +1189,36 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
               if (at == null || author == null) continue;
               involved.add(author);
 
-              // 1. Anything this author owes is now answered.
+              // 1. Any request this author could answer is settled by commenting.
               const answered = new Set<number>();
-              for (const debt of owed.get(author) ?? []) {
-                answered.add(debt.by);
-                if (debt.at >= weekFrom && debt.at < weekTo) {
-                  judgements.push({ partner: author, compliant: at - debt.at <= limitMs, ref: info.name, branch: info.branch });
+              const settled = open.filter((o) => o.candidates.includes(author));
+              for (const o of settled) {
+                answered.add(o.by);
+                if (o.at >= weekFrom && o.at < weekTo) {
+                  judgements.push({ partner: author, compliant: at - o.at <= limitMs, ref: info.name, branch: info.branch });
                 }
               }
-              owed.delete(author);
+              if (settled.length) open = open.filter((o) => !settled.includes(o));
 
-              // 2. New debts — but not back onto the people just answered.
-              for (const pid of ((m[recipientField] as number[] | undefined) ?? [])) {
-                if (pid === author || answered.has(pid)) continue;
-                involved.add(pid);
-                const list = owed.get(pid) ?? [];
-                if (list.some((d) => d.by === author)) continue;   // already owes this asker
-                list.push({ by: author, at });
-                owed.set(pid, list);
-              }
+              // 2. A new request — but not back at whoever was just answered.
+              const recipients = (m[recipientField] as number[] | undefined) ?? [];
+              const candidates = mentionOrder(m.body, recipients)
+                .filter((pid) => pid !== author && !answered.has(pid));
+              if (!candidates.length) continue;
+              for (const pid of candidates) involved.add(pid);
+              // A nudge does not restart the clock — it keeps running from the
+              // first ask, so an existing request from the same person stands.
+              if (open.some((o) => o.by === author && o.candidates.some((c) => candidates.includes(c)))) continue;
+              open.push({ by: author, at, candidates });
             }
 
-            // Debts still open at the end of the thread.
-            for (const [debtor, debts] of owed) {
-              for (const debt of debts) {
-                if (debt.at < weekFrom || debt.at >= weekTo) continue;
-                if (now - debt.at > limitMs) {
-                  judgements.push({ partner: debtor, compliant: false, ref: info.name, branch: info.branch });
-                } else {
-                  pending++;   // still inside the window, not yet answerable
-                }
+            // Requests nobody answered fall to whoever was mentioned first.
+            for (const o of open) {
+              if (o.at < weekFrom || o.at >= weekTo) continue;
+              if (now - o.at > limitMs) {
+                judgements.push({ partner: o.candidates[0], compliant: false, ref: info.name, branch: info.branch });
+              } else {
+                pending++;   // still inside the window, not yet answerable
               }
             }
           }
@@ -1343,7 +1369,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     13: 'A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest.',
     14: 'Check-in counts as complete the moment the RO reaches Inspection.',
     15: 'Measured from the RO entering Inspection to its quotation being created.',
-    17: 'Time from being @mentioned to your next comment on that RO. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. Judged against whoever was mentioned.',
+    17: 'Time from being @mentioned to your next comment on that RO. Tagging several people is one request — whoever answers first settles it, and if nobody does it falls to the person tagged first. Answering someone does not oblige them to answer you back, so a thread closes instead of looping.',
     16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',
     11: 'Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
