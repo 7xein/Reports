@@ -1082,12 +1082,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPI 17 — answering an @mention in the chatter ──
   //
-  // A mention is a chatter comment carrying recipients. The reply is the next
-  // comment on the same repair order written by one of those recipients. Judged
-  // against the person who was asked, not whoever raised the RO — they are
-  // usually different people, and it is the responder whose clock this is.
+  // Modelled as a conversation, not as isolated messages. Each RO's comments are
+  // walked in order while tracking who currently owes whom a reply:
+  //
+  //   • A comment by someone who owes a reply DISCHARGES that debt, and is judged
+  //     on how long it took.
+  //   • A mention only creates a debt for people the author was not just
+  //     answering. So "@ahmed where is the part?" obliges Ahmed, but Ahmed's
+  //     "@hussein on the way" answers it without obliging Hussein back.
+  //
+  // Without that second rule the thread never closes: every courteous reply
+  // starts a new clock and whoever speaks last always fails.
   if (on(17)) {
     const limitMs = (config.thresholds.mentionResponseDays ?? 1) * 86400_000;
+    const weekFrom = Date.parse(wStart.replace(' ', 'T') + 'Z');
+    const weekTo = Date.parse(wEnd.replace(' ', 'T') + 'Z');
+
     try {
       const mm = (await call('mail.message', 'fields_get', [], { attributes: ['type', 'relation'] })) as FieldsMeta;
       const recipientField = ['partner_ids', 'notified_partner_ids']
@@ -1101,7 +1111,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           ['date', '>=', wStart], ['date', '<', wEnd],
           ['message_type', '=', 'comment'],
           [recipientField, '!=', false],
-        ]], { fields: ['res_id', 'date', 'author_id', recipientField], limit: 0 })) as Rec[];
+        ]], { fields: ['res_id'], limit: 0 })) as Rec[];
 
         if (!mentions.length) {
           notes.push('No chatter mentions were posted on repair orders this week.');
@@ -1117,34 +1127,78 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             };
           }
 
-          // Every comment on those ROs from the first mention onwards. A reply is
-          // simply the recipient posting after being asked.
-          let earliest = Infinity;
-          for (const m of mentions) { const t = odooTime(m.date); if (t != null && t < earliest) earliest = t; }
-          const sinceIso = new Date(earliest).toISOString().slice(0, 19).replace('T', ' ');
-          const replies = (await call('mail.message', 'search_read', [[
+          // The whole conversation on those ROs, from the start of the week on.
+          // Replies posted after the week still close a debt raised inside it.
+          const thread = (await call('mail.message', 'search_read', [[
             ['model', '=', 'repair.order'],
             ['res_id', 'in', roIds],
-            ['date', '>=', sinceIso],
+            ['date', '>=', wStart],
             ['message_type', '=', 'comment'],
-          ]], { fields: ['res_id', 'date', 'author_id'], limit: 0 })) as Rec[];
+          ]], { fields: ['res_id', 'date', 'author_id', recipientField], limit: 0 })) as Rec[];
 
-          // res_id → author partner → the times they posted, ascending.
-          const postsByRo = new Map<number, Map<number, number[]>>();
-          for (const m of replies) {
-            const t = odooTime(m.date);
-            const a = m2o(m.author_id)?.[0];
-            if (t == null || a == null) continue;
+          const byRo = new Map<number, Rec[]>();
+          for (const m of thread) {
             const rid = m.res_id as number;
-            let per = postsByRo.get(rid);
-            if (!per) { per = new Map(); postsByRo.set(rid, per); }
-            const list = per.get(a);
-            if (list) list.push(t); else per.set(a, [t]);
+            const list = byRo.get(rid);
+            if (list) list.push(m); else byRo.set(rid, [m]);
           }
-          for (const per of postsByRo.values()) for (const list of per.values()) list.sort((a, b) => a - b);
 
-          // Who was mentioned: partner names for display, user ids for attribution.
-          const partnerIds = [...new Set(mentions.flatMap((m) => (m[recipientField] as number[] | undefined) ?? []))];
+          type Judgement = { partner: number; compliant: boolean; ref: string; branch: Branch };
+          const judgements: Judgement[] = [];
+          const involved = new Set<number>();
+          let pending = 0;
+
+          for (const [rid, msgs] of byRo) {
+            const info = roInfo[rid];
+            if (!info?.branch) continue;
+            msgs.sort((a, b) => (odooTime(a.date) ?? 0) - (odooTime(b.date) ?? 0));
+
+            // debtor partner → who asked, and when. One debt per asker: a nudge
+            // does not restart the clock, it keeps running from the first ask.
+            const owed = new Map<number, { by: number; at: number }[]>();
+
+            for (const m of msgs) {
+              const at = odooTime(m.date);
+              const author = m2o(m.author_id)?.[0];
+              if (at == null || author == null) continue;
+              involved.add(author);
+
+              // 1. Anything this author owes is now answered.
+              const answered = new Set<number>();
+              for (const debt of owed.get(author) ?? []) {
+                answered.add(debt.by);
+                if (debt.at >= weekFrom && debt.at < weekTo) {
+                  judgements.push({ partner: author, compliant: at - debt.at <= limitMs, ref: info.name, branch: info.branch });
+                }
+              }
+              owed.delete(author);
+
+              // 2. New debts — but not back onto the people just answered.
+              for (const pid of ((m[recipientField] as number[] | undefined) ?? [])) {
+                if (pid === author || answered.has(pid)) continue;
+                involved.add(pid);
+                const list = owed.get(pid) ?? [];
+                if (list.some((d) => d.by === author)) continue;   // already owes this asker
+                list.push({ by: author, at });
+                owed.set(pid, list);
+              }
+            }
+
+            // Debts still open at the end of the thread.
+            for (const [debtor, debts] of owed) {
+              for (const debt of debts) {
+                if (debt.at < weekFrom || debt.at >= weekTo) continue;
+                if (now - debt.at > limitMs) {
+                  judgements.push({ partner: debtor, compliant: false, ref: info.name, branch: info.branch });
+                } else {
+                  pending++;   // still inside the window, not yet answerable
+                }
+              }
+            }
+          }
+
+          // Names for display, user ids for attribution.
+          const partnerIds = [...involved];
           const names: Record<number, string> = {};
           const userIds: Record<number, number> = {};
           if (partnerIds.length) {
@@ -1163,28 +1217,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             } catch { /* attribute to the partner name alone */ }
           }
 
-          let judged = 0, pending = 0;
-          for (const m of mentions) {
-            const at = odooTime(m.date);
-            const rid = m.res_id as number;
-            const info = roInfo[rid];
-            if (at == null || !info?.branch) continue;
-
-            const author = m2o(m.author_id)?.[0] ?? null;
-            // Mentioning yourself is not a request for a reply.
-            const asked = ((m[recipientField] as number[] | undefined) ?? []).filter((pid) => pid !== author);
-
-            for (const pid of asked) {
-              const who = { id: userIds[pid] ?? null, name: names[pid] ?? `Partner ${pid}` };
-              const replied = (postsByRo.get(rid)?.get(pid) ?? []).find((t) => t > at);
-
-              if (replied != null) { judged++; pushFor(17, info.branch, who, replied - at <= limitMs, info.name); }
-              else if (now - at > limitMs) { judged++; pushFor(17, info.branch, who, false, info.name); }
-              else pending++;   // still inside the window, not yet answerable
-            }
+          for (const j of judgements) {
+            pushFor(17, j.branch, { id: userIds[j.partner] ?? null, name: names[j.partner] ?? `Partner ${j.partner}` }, j.compliant, j.ref);
           }
-          if (!judged && pending) {
-            notes.push(`All ${pending} chatter mention${pending === 1 ? '' : 's'} this week are still inside the reply window.`);
+          if (!judgements.length && pending) {
+            notes.push(`All ${pending} open chatter mention${pending === 1 ? '' : 's'} this week are still inside the reply window.`);
           }
         }
       }
@@ -1306,7 +1343,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     13: 'A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest.',
     14: 'Check-in counts as complete the moment the RO reaches Inspection.',
     15: 'Measured from the RO entering Inspection to its quotation being created.',
-    17: 'Measured from an @mention in the chatter to the next comment that person posts on the same RO. Judged against whoever was mentioned, not whoever raised the RO.',
+    17: 'Time from being @mentioned to your next comment on that RO. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. Judged against whoever was mentioned.',
     16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',
     11: 'Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
