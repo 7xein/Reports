@@ -3,7 +3,7 @@
 import { Fragment, useState } from 'react';
 import { Shell } from '@/components/Shell';
 import {
-  BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry,
+  BRANCHES, WORKSHOP_BRANCHES, WIP_METRICS, WipMetricKey, ReportData, RegionalSalesEntry,
   getSubBranches, hasSubBranches, subKey, WipSubValues,
 } from '@/lib/types';
 import { getWeekStart } from '@/lib/sales-utils';
@@ -22,7 +22,7 @@ const BRANCH_COLORS: Record<string, string> = {
 /** Enumerate editable input locations: branch name (single) or `${branch}__${sub}`. */
 function wipLocationKeys(): string[] {
   const keys: string[] = [];
-  for (const b of BRANCHES) {
+  for (const b of WORKSHOP_BRANCHES) {
     const subs = getSubBranches(b);
     if (subs.length) subs.forEach((s) => keys.push(subKey(b, s)));
     else keys.push(b);
@@ -48,7 +48,7 @@ function buildWipPayload(values: Record<WipMetricKey, Record<string, number>>) {
   for (const m of WIP_METRICS) {
     outValues[m.key] = {};
     outSub[m.key] = {};
-    for (const b of BRANCHES) {
+    for (const b of WORKSHOP_BRANCHES) {
       outValues[m.key][b] = branchTotalOf(values, m.key, b);
       if (hasSubBranches(b)) {
         for (const sub of getSubBranches(b)) {
@@ -143,7 +143,7 @@ function WipEntryTable({
           </tr>
         </thead>
         <tbody>
-          {BRANCHES.map((b) => {
+          {WORKSHOP_BRANCHES.map((b) => {
             const subs = getSubBranches(b);
             const color = BRANCH_COLORS[b] ?? '#78C41A';
 
@@ -317,7 +317,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         setWipValues((prev) => {
           const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
           for (const m of WIP_METRICS) {
-            for (const b of BRANCHES) {
+            for (const b of WORKSHOP_BRANCHES) {
               if (hasSubBranches(b)) {
                 for (const sub of getSubBranches(b)) {
                   const k = subKey(b, sub);
@@ -372,7 +372,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
         setWipWeeklyValues((prev) => {
           const next: Record<WipMetricKey, Record<string, number>> = JSON.parse(JSON.stringify(prev));
           for (const m of WIP_METRICS) {
-            for (const b of BRANCHES) {
+            for (const b of WORKSHOP_BRANCHES) {
               if (hasSubBranches(b)) {
                 for (const sub of getSubBranches(b)) {
                   const k = subKey(b, sub);

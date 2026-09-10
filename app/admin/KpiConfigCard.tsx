@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
+  WORKSHOP_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
 } from '@/lib/types';
 
 interface OdooOptions {
@@ -83,7 +83,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         ...p,
         saRoster: exists
           ? p.saRoster.filter((r) => r.odooUserId !== user.id)
-          : [...p.saRoster, { odooUserId: user.id, name: user.name, branch: BRANCHES[0] }],
+          : [...p.saRoster, { odooUserId: user.id, name: user.name, branch: WORKSHOP_BRANCHES[0] }],
       };
     });
   }
@@ -286,7 +286,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                     <td className="py-1.5 px-3">
                       <select disabled={!entry} value={entry?.branch ?? ''} onChange={(e) => setSaBranch(u.id, e.target.value)}
                         className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
-                        {BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                        {WORKSHOP_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                       </select>
                     </td>
                   </tr>

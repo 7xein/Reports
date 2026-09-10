@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { TrendChart } from '@/components/TrendChart';
 import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
 import { WipMetricsLegend } from '@/components/WipMetricsLegend';
-import { BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch } from '@/lib/types';
+import { WORKSHOP_BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 import { downloadMetricCsv } from '@/lib/export-csv';
 
@@ -17,7 +17,7 @@ function sumAllBranches(entry: WipDailyEntry): Record<WipMetricKey, number> {
   return Object.fromEntries(
     WIP_METRICS.map((m) => [
       m.key,
-      BRANCHES.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
+      WORKSHOP_BRANCHES.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
     ])
   ) as Record<WipMetricKey, number>;
 }
@@ -63,7 +63,7 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
       {/* Branch selector */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <span className="text-sm font-semibold text-ink-muted mr-1">Branch:</span>
-        {(['all', ...BRANCHES] as const).map((b) => {
+        {(['all', ...WORKSHOP_BRANCHES] as const).map((b) => {
           const active = branchFilter === b;
           const color = BRANCH_COLORS[b === 'all' ? 'All Branches' : b] ?? '#78C41A';
           return (

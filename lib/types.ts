@@ -1,6 +1,13 @@
 export const BRANCHES = ['Dubai', 'Ajman', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'EV Hub', 'Qatar'] as const;
 export type Branch = typeof BRANCHES[number];
 
+/**
+ * Branches that actually repair cars. EV Hub sells but has no workshop, so WIP
+ * and the KPIs skip it — there is no job card to count or advisor to score.
+ * The sales dashboards use the full BRANCHES list.
+ */
+export const WORKSHOP_BRANCHES = BRANCHES.filter((b) => b !== 'EV Hub') as readonly Branch[];
+
 // ── Sub-branches ──────────────────────────────────────────────────────────
 // Branches that operate multiple service locations. Omitted branches stay
 // single-location. Keys for stored sub-values use the form `${branch}__${sub}`.

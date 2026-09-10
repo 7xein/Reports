@@ -10,7 +10,7 @@
  */
 
 import {
-  BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, kpiDisplayName,
+  WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, kpiDisplayName,
   KpiWeekSummary,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
@@ -624,7 +624,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // company id → branch
   const idToBranch: Record<number, Branch> = {};
-  for (const b of BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
+  // EV Hub is absent, so its companies never resolve to a branch and its
+  // records drop out of every KPI at the push() guard.
+  for (const b of WORKSHOP_BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
 
   // Which optional fields exist on this instance?
   const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
@@ -1382,7 +1384,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // ── Roll up ────────────────────────────────────────────────────────
   const roster = config.saRoster ?? [];
 
-  const branches: BranchNode[] = BRANCHES.map((b) => {
+  const branches: BranchNode[] = WORKSHOP_BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
     const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames);
 

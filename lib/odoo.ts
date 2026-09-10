@@ -9,7 +9,7 @@
  */
 
 import type { WipMetricKey, Branch } from './types';
-import { BRANCHES, subKey } from './types';
+import { BRANCHES, WORKSHOP_BRANCHES, subKey } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -219,7 +219,8 @@ function rollUp(perCompany: Record<string, number>): {
 } {
   const branchTotals = {} as Record<Branch, number>;
   const subValues: Record<string, number> = {};
-  for (const branch of BRANCHES) {
+  // WIP counts job cards, so EV Hub is out — it has no workshop.
+  for (const branch of WORKSHOP_BRANCHES) {
     const companies = BRANCH_CLUSTERS[branch] || [];
     branchTotals[branch] = companies.reduce((sum, c) => sum + (perCompany[c] ?? 0), 0);
     const subMap = SUB_BRANCH_COMPANY[branch];

@@ -6,12 +6,12 @@ import { MetricsTable } from '@/components/MetricsTable';
 import { WipWeeklyTrend } from '@/components/WipWeeklyTrend';
 import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
 import { WipMetricsLegend } from '@/components/WipMetricsLegend';
-import { BRANCHES, WIP_METRICS, WipWeeklyEntry, WipMetricKey, Branch } from '@/lib/types';
+import { WORKSHOP_BRANCHES, WIP_METRICS, WipWeeklyEntry, WipMetricKey, Branch } from '@/lib/types';
 import { downloadMetricCsv } from '@/lib/export-csv';
 
 function emptyBranchValues(): Record<WipMetricKey, Record<Branch, number>> {
   return Object.fromEntries(
-    WIP_METRICS.map((m) => [m.key, Object.fromEntries(BRANCHES.map((b) => [b, 0]))])
+    WIP_METRICS.map((m) => [m.key, Object.fromEntries(WORKSHOP_BRANCHES.map((b) => [b, 0]))])
   ) as Record<WipMetricKey, Record<Branch, number>>;
 }
 
@@ -19,7 +19,7 @@ function sumTotals(values: Record<WipMetricKey, Record<Branch, number>>): Record
   return Object.fromEntries(
     WIP_METRICS.map((m) => [
       m.key,
-      BRANCHES.reduce((sum, b) => sum + (values[m.key]?.[b] ?? 0), 0),
+      WORKSHOP_BRANCHES.reduce((sum, b) => sum + (values[m.key]?.[b] ?? 0), 0),
     ])
   ) as Record<WipMetricKey, number>;
 }
@@ -142,7 +142,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
           <span className="text-evs-green-dark transition-transform group-open:rotate-90">▸</span>
           Show full table — all metrics by branch
         </summary>
-        <MetricsTable branches={BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
+        <MetricsTable branches={WORKSHOP_BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
       </details>
 
       <WipMetricsLegend />

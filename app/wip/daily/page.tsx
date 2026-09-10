@@ -1,7 +1,7 @@
 import { Shell } from '@/components/Shell';
 import { WipDailyClient } from './WipDailyClient';
 import { readData } from '@/lib/data-store';
-import { BRANCHES, WIP_METRICS, WipMetricKey } from '@/lib/types';
+import { WORKSHOP_BRANCHES, WIP_METRICS, WipMetricKey } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
@@ -19,7 +19,7 @@ function sumTotals(entry: { values: Record<string, Record<string, number>> }): R
   return Object.fromEntries(
     WIP_METRICS.map((m) => [
       m.key,
-      BRANCHES.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
+      WORKSHOP_BRANCHES.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
     ])
   ) as Record<WipMetricKey, number>;
 }
