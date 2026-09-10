@@ -634,6 +634,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const evals: Evaluation[] = [];
   const roCountByUser: Record<number, number> = {};
 
+  /**
+   * Record an evaluation against a named person rather than the record's creator.
+   * Most KPIs judge whoever raised the RO; this one judges whoever was asked.
+   */
+  const pushFor = (
+    kpiId: number,
+    branch: Branch | undefined,
+    user: { id: number | null; name: string },
+    compliant: boolean,
+    ref: string,
+  ) => {
+    if (!branch) return;
+    evals.push({ kpiId, branch, userId: user.id, userName: user.name, compliant, ref });
+  };
+
   const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string) => {
     const cid = m2o(rec.company_id)?.[0];
     const branch = cid != null ? idToBranch[cid] : undefined;
@@ -1064,6 +1079,120 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
+
+  // ── KPI 17 — answering an @mention in the chatter ──
+  //
+  // A mention is a chatter comment carrying recipients. The reply is the next
+  // comment on the same repair order written by one of those recipients. Judged
+  // against the person who was asked, not whoever raised the RO — they are
+  // usually different people, and it is the responder whose clock this is.
+  if (on(17)) {
+    const limitMs = (config.thresholds.mentionResponseDays ?? 1) * 86400_000;
+    try {
+      const mm = (await call('mail.message', 'fields_get', [], { attributes: ['type', 'relation'] })) as FieldsMeta;
+      const recipientField = ['partner_ids', 'notified_partner_ids']
+        .find((f) => mm[f]?.relation === 'res.partner');
+
+      if (!recipientField) {
+        notes.push('Chatter response is inactive — mail.message has no recipient field, so mentions cannot be read.');
+      } else {
+        const mentions = (await call('mail.message', 'search_read', [[
+          ['model', '=', 'repair.order'],
+          ['date', '>=', wStart], ['date', '<', wEnd],
+          ['message_type', '=', 'comment'],
+          [recipientField, '!=', false],
+        ]], { fields: ['res_id', 'date', 'author_id', recipientField], limit: 0 })) as Rec[];
+
+        if (!mentions.length) {
+          notes.push('No chatter mentions were posted on repair orders this week.');
+        } else {
+          const roIds = [...new Set(mentions.map((m) => m.res_id as number))];
+          const ros = (await call('repair.order', 'read', [roIds], { fields: ['name', 'company_id'] })) as Rec[];
+          const roInfo: Record<number, { name: string; branch: Branch | undefined }> = {};
+          for (const r of ros) {
+            const cid = m2o(r.company_id)?.[0];
+            roInfo[r.id as number] = {
+              name: (r.name as string) || '',
+              branch: cid != null ? idToBranch[cid] : undefined,
+            };
+          }
+
+          // Every comment on those ROs from the first mention onwards. A reply is
+          // simply the recipient posting after being asked.
+          let earliest = Infinity;
+          for (const m of mentions) { const t = odooTime(m.date); if (t != null && t < earliest) earliest = t; }
+          const sinceIso = new Date(earliest).toISOString().slice(0, 19).replace('T', ' ');
+          const replies = (await call('mail.message', 'search_read', [[
+            ['model', '=', 'repair.order'],
+            ['res_id', 'in', roIds],
+            ['date', '>=', sinceIso],
+            ['message_type', '=', 'comment'],
+          ]], { fields: ['res_id', 'date', 'author_id'], limit: 0 })) as Rec[];
+
+          // res_id → author partner → the times they posted, ascending.
+          const postsByRo = new Map<number, Map<number, number[]>>();
+          for (const m of replies) {
+            const t = odooTime(m.date);
+            const a = m2o(m.author_id)?.[0];
+            if (t == null || a == null) continue;
+            const rid = m.res_id as number;
+            let per = postsByRo.get(rid);
+            if (!per) { per = new Map(); postsByRo.set(rid, per); }
+            const list = per.get(a);
+            if (list) list.push(t); else per.set(a, [t]);
+          }
+          for (const per of postsByRo.values()) for (const list of per.values()) list.sort((a, b) => a - b);
+
+          // Who was mentioned: partner names for display, user ids for attribution.
+          const partnerIds = [...new Set(mentions.flatMap((m) => (m[recipientField] as number[] | undefined) ?? []))];
+          const names: Record<number, string> = {};
+          const userIds: Record<number, number> = {};
+          if (partnerIds.length) {
+            try {
+              const partners = (await call('res.partner', 'read', [partnerIds], { fields: ['display_name'] })) as Rec[];
+              for (const pt of partners) names[pt.id as number] = (pt.display_name as string) || `Partner ${pt.id}`;
+            } catch { /* fall back to the id below */ }
+            try {
+              const users = (await call('res.users', 'search_read', [[['partner_id', 'in', partnerIds]]], {
+                fields: ['partner_id'], limit: 0,
+              })) as Rec[];
+              for (const usr of users) {
+                const pid = m2o(usr.partner_id)?.[0];
+                if (pid != null) userIds[pid] = usr.id as number;
+              }
+            } catch { /* attribute to the partner name alone */ }
+          }
+
+          let judged = 0, pending = 0;
+          for (const m of mentions) {
+            const at = odooTime(m.date);
+            const rid = m.res_id as number;
+            const info = roInfo[rid];
+            if (at == null || !info?.branch) continue;
+
+            const author = m2o(m.author_id)?.[0] ?? null;
+            // Mentioning yourself is not a request for a reply.
+            const asked = ((m[recipientField] as number[] | undefined) ?? []).filter((pid) => pid !== author);
+
+            for (const pid of asked) {
+              const who = { id: userIds[pid] ?? null, name: names[pid] ?? `Partner ${pid}` };
+              const replied = (postsByRo.get(rid)?.get(pid) ?? []).find((t) => t > at);
+
+              if (replied != null) { judged++; pushFor(17, info.branch, who, replied - at <= limitMs, info.name); }
+              else if (now - at > limitMs) { judged++; pushFor(17, info.branch, who, false, info.name); }
+              else pending++;   // still inside the window, not yet answerable
+            }
+          }
+          if (!judged && pending) {
+            notes.push(`All ${pending} chatter mention${pending === 1 ? '' : 's'} this week are still inside the reply window.`);
+          }
+        }
+      }
+    } catch (e) {
+      notes.push(`Chatter response could not be computed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
   if (on(6) || on(7)) {
     // Baseline population: OPEN ROs created in the last N days. Closed work is
@@ -1177,6 +1306,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     13: 'A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest.',
     14: 'Check-in counts as complete the moment the RO reaches Inspection.',
     15: 'Measured from the RO entering Inspection to its quotation being created.',
+    17: 'Measured from an @mention in the chatter to the next comment that person posts on the same RO. Judged against whoever was mentioned, not whoever raised the RO.',
     16: 'Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you.',
     11: 'Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,

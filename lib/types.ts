@@ -121,6 +121,7 @@ export const KPI_DEFINITIONS = [
   { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', rule: 'A vehicle cannot await labour beyond the configured time.' },
+  { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', rule: 'When someone is @mentioned on a repair order, they must reply in the chatter within the configured time.' },
   { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
   { id: 15, name: 'Inspection duration',     group: 'Workshop stages', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
   { id: 16, name: 'QA duration',             group: 'Workshop stages', rule: 'A repair order must not sit in QA longer than the configured time.' },
@@ -153,6 +154,7 @@ export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thres
     case 14: return `Check-in within ${days(t.checkInDays ?? 1)} of RO`;
     case 15: return `Inspection ≤ ${days(t.inspectionDays ?? 3)}`;
     case 16: return `QA ≤ ${days(t.qaDays ?? 1)}`;
+    case 17: return `Reply to a mention ≤ ${days(t.mentionResponseDays ?? 1)}`;
     default: return fallback;
   }
 }
@@ -202,6 +204,8 @@ export interface KpiConfig {
     inspectionDays?: number;
     /** Max days a repair order may sit in QA (KPI 16). */
     qaDays?: number;
+    /** Max days to reply after being @mentioned in a repair order's chatter (KPI 17). */
+    mentionResponseDays?: number;
     /** Grace after delivery before the follow-up KPI judges an RO. */
     followUpGraceDays?: number;
     /** Below this many applicable records a KPI is flagged as low-volume (n=X). */
@@ -247,7 +251,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, followUpGraceDays: 1, lowVolumeMin: 5 },
+  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, mentionResponseDays: 1, lowVolumeMin: 5 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state

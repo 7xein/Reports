@@ -203,6 +203,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['inspectionDays', 'Inspection duration (days)'],
           ['quoteAfterInspectionDays', 'Quote within (days of inspection starting)'],
           ['qaDays', 'QA duration (days)'],
+          ['mentionResponseDays', 'Reply to a chatter mention (days)'],
           ['quoteApprovalDays', 'Quote approval (days)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
           ['invoiceGraceMinutes', 'Invoice posted within (minutes of Repaired)'],
