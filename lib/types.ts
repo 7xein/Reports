@@ -5,7 +5,7 @@ export type Branch = typeof BRANCHES[number];
 // Branches that operate multiple service locations. Omitted branches stay
 // single-location. Keys for stored sub-values use the form `${branch}__${sub}`.
 export const SUB_BRANCHES: Record<string, string[]> = {
-  'Dubai':     ['Main branch', 'Emarat - Albuhaira', 'Emarat - Mahrawan'],
+  'Dubai':     ['Main branch', 'Emarat - Albarsha', 'Emarat - Altwar'],
   'Sharjah':   ['Main branch', 'Emarat - Muwafja'],
   'Abu Dhabi': ['Main branch', 'AlMushrif'],
 };
