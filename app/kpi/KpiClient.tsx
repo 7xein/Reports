@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
-import { KPI_DEFINITIONS, KpiWeekSummary } from '@/lib/types';
+import { KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL } from '@/lib/types';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai: '#78C41A', Ajman: '#3B82F6', Sharjah: '#F59E0B',
@@ -95,6 +95,10 @@ function KpiRow({ cell, delta, expandable = false }: {
           {lowVolume && (
             <span className="text-[10px] font-semibold text-ink-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0"
               title="Low volume — small sample, read with care">n={cell.applicable}</span>
+          )}
+          {EXCLUDED_FROM_OVERALL.includes(cell.id) && (
+            <span className="text-[10px] font-semibold text-ink-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0"
+              title="Shown for reference — not included in the overall achievement">not in overall</span>
           )}
         </span>
 

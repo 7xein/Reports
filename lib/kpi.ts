@@ -10,7 +10,7 @@
  */
 
 import {
-  WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, kpiDisplayName,
+  WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
   KpiWeekSummary,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
@@ -126,7 +126,9 @@ function aggregate(
 
 /** Overall achievement = mean of the KPI percentages that have applicable records. */
 function overall(cells: KpiCell[]): number | null {
-  const active = cells.filter((c) => c.pct !== null);
+  // Every level — advisor, branch, company — averages here, and the weekly
+  // history copies these values, so excluding a KPI once excludes it everywhere.
+  const active = cells.filter((c) => c.pct !== null && !EXCLUDED_FROM_OVERALL.includes(c.id));
   if (!active.length) return null;
   return active.reduce((s, c) => s + (c.pct as number), 0) / active.length;
 }

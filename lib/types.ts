@@ -170,6 +170,15 @@ export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thres
 export const SNAPSHOT_KPI_IDS: number[] = [6, 7];
 
 /**
+ * KPIs shown on the page but left out of the overall achievement average.
+ *
+ * Weekly closure rate measures throughput rather than compliance — an RO opened
+ * on Thursday cannot reasonably close by Friday — so averaging it in dragged
+ * every branch's headline down for reasons no advisor controls.
+ */
+export const EXCLUDED_FROM_OVERALL: readonly number[] = [9];
+
+/**
  * How a workflow state is identified on repair.order. This Odoo instance keeps
  * its workflow in `priority_matrix_status` (stage_id is unused), but stage/tag
  * are supported so the mapping stays configurable.
