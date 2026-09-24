@@ -14,7 +14,7 @@ export const WORKSHOP_BRANCHES = BRANCHES.filter((b) => b !== 'EV Hub') as reado
 export const SUB_BRANCHES: Record<string, string[]> = {
   'Dubai':     ['Main branch', 'Emarat - Albarsha', 'Emarat - Altwar'],
   'Sharjah':   ['Main branch', 'Emarat - Muwafja'],
-  'Abu Dhabi': ['Main branch', 'AlMushrif'],
+  'Abu Dhabi': ['Main branch', 'Almushrif'],
 };
 export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];
 export const hasSubBranches = (b: string): boolean => (SUB_BRANCHES[b]?.length ?? 0) > 0;

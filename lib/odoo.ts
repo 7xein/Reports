@@ -29,7 +29,7 @@ export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
   'Dubai':     ['EVS Dubai', 'Emarat - Altwar', 'Emarat - Albarsha'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
   'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
-  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'AlMushrif'],
+  'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Almushrif'],
   'Al Ain':    ['EVS ELECTRIC VEHICLE SERVICE AL AIN'],
   'EV Hub':    ['EV HUB'],
   'Qatar':     ['EVS ELECTRIC VEHICLE SERVICE QATAR'],
@@ -52,7 +52,7 @@ const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
   },
   'Abu Dhabi': {
     'Main branch':        'EVS ELECTRIC VEHICLE SERVICE ABU DHABI',
-    'AlMushrif':          'AlMushrif',
+    'Almushrif':          'Almushrif',
   },
 };
 
@@ -121,11 +121,30 @@ export async function getCompanyIds(): Promise<Record<string, number>> {
   return companyIdCache;
 }
 
+/**
+ * Company id for a configured name.
+ *
+ * Exact match first, then case- and whitespace-insensitive. Odoo company names
+ * are typed by people and get re-typed on every rename, so "Almushrif" vs
+ * "AlMushrif" is a matter of time — and an exact-only match turns that into a
+ * silent zero rather than an error. The relaxed pass costs nothing and removes
+ * a whole class of invisible breakage.
+ */
+function companyIdFor(map: Record<string, number>, name: string): number | undefined {
+  const exact = map[name];
+  if (exact) return exact;
+  const want = name.trim().toLowerCase();
+  for (const [known, id] of Object.entries(map)) {
+    if (known.trim().toLowerCase() === want) return id;
+  }
+  return undefined;
+}
+
 export async function branchCompanyIds(branch: Branch): Promise<number[]> {
   const map = await getCompanyIds();
   return (BRANCH_CLUSTERS[branch] || [])
-    .map((n) => { const id = map[n]; if (!id) console.warn(`⚠ Company "${n}" not found in Odoo`); return id; })
-    .filter(Boolean);
+    .map((n) => { const id = companyIdFor(map, n); if (!id) console.warn(`⚠ Company "${n}" not found in Odoo`); return id; })
+    .filter((id): id is number => id != null);
 }
 
 /**
@@ -139,13 +158,13 @@ export async function unresolvedCompanies(): Promise<string[]> {
   const map = await getCompanyIds();
   return Object.entries(BRANCH_CLUSTERS)
     .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })))
-    .filter((c) => !map[c.name])
+    .filter((c) => !companyIdFor(map, c.name))
     .map((c) => `${c.name} (${c.branch})`);
 }
 
 export async function allTrackedCompanyIds(): Promise<number[]> {
   const map = await getCompanyIds();
-  return ALL_TRACKED_COMPANIES.map((n) => map[n]).filter(Boolean);
+  return ALL_TRACKED_COMPANIES.map((n) => companyIdFor(map, n)).filter(Boolean) as number[];
 }
 
 /** Reverse of getCompanyIds: company id → name. */
@@ -181,7 +200,7 @@ async function searchCountByCompany(model: string, domain: OdooDomain): Promise<
   const map = await getCompanyIds();
   const out: Record<string, number> = {};
   for (const name of ALL_TRACKED_COMPANIES) {
-    const id = map[name];
+    const id = companyIdFor(map, name);
     if (!id) { out[name] = 0; continue; }
     out[name] = await call(model, 'search_count', [[...domain, ['company_id', '=', id]]]);
   }
@@ -193,7 +212,7 @@ async function warrantiesByCompany(extra: OdooDomain = []): Promise<Record<strin
   const map = await getCompanyIds();
   const out: Record<string, number> = {};
   for (const name of ALL_TRACKED_COMPANIES) {
-    const id = map[name];
+    const id = companyIdFor(map, name);
     if (!id) { out[name] = 0; continue; }
     try {
       out[name] = await call('fleet.warranty', 'search_count', [[
@@ -438,12 +457,12 @@ export async function fetchRepairOrdersForExport(
   companyIdCache = null;
 
   // Only the MAIN company of each export branch — drop station companies
-  // (Emarat sites, AlMushrif), EV Hub and Qatar.
+  // (Emarat sites, Almushrif), EV Hub and Qatar.
   const companyMap = await getCompanyIds();
   const idToBranch: Record<number, Branch> = {};
   const exportCompanyIds: number[] = [];
   for (const branch of EXPORT_BRANCHES) {
-    const mainId = companyMap[BRANCH_CLUSTERS[branch][0]];
+    const mainId = companyIdFor(companyMap, BRANCH_CLUSTERS[branch][0]);
     if (mainId) { idToBranch[mainId] = branch; exportCompanyIds.push(mainId); }
   }
 
@@ -554,7 +573,7 @@ export async function fetchInvoiceSalesForExport(dateStr: string): Promise<Recor
   const result: Record<string, number> = {};
   for (const branch of EXPORT_BRANCHES) {
     result[branch] = 0;
-    const id = companyMap[BRANCH_CLUSTERS[branch][0]];
+    const id = companyIdFor(companyMap, BRANCH_CLUSTERS[branch][0]);
     if (id) { idToBranch[id] = branch; ids.push(id); }
   }
 
@@ -912,9 +931,9 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
 
     // Anything invoicing that no branch claims. This is where a renamed or
     // duplicated company hides.
-    const knownNames = new Set(tracked);
+    const knownNames = new Set(tracked.map((n) => n.trim().toLowerCase()));
     const strays = Object.keys(any)
-      .filter((n) => !knownNames.has(n))
+      .filter((n) => !knownNames.has(n.trim().toLowerCase()))
       .sort((x, y) => (posted[y]?.amt ?? 0) - (posted[x]?.amt ?? 0))
       .slice(0, 15);
     notes.push(strays.length
@@ -931,7 +950,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     const companyMap = await getCompanyIds();
     const configured = Object.entries(BRANCH_CLUSTERS)
       .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })));
-    const missing = configured.filter((c) => !companyMap[c.name]);
+    const missing = configured.filter((c) => !companyIdFor(companyMap, c.name));
     const known = new Set(configured.map((c) => c.name));
     const unmatched = Object.keys(companyMap).filter((n) => !known.has(n));
 
