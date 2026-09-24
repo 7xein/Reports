@@ -878,14 +878,14 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     const companyMap = await getCompanyIds();
     const idToName: Record<number, string> = {};
     for (const [n, id] of Object.entries(companyMap)) idToName[id] = n;
-    const trackedForProbe = await allTrackedCompanyIds();
     const since30 = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
 
     const tally = async (extra: OdooDomain) => {
       const groups = (await call('account.move', 'read_group', [[
         ['move_type', '=', 'out_invoice'],
         ['date', '>=', since30],
-        ['company_id', 'in', trackedForProbe],
+        // No company filter: a branch reading low usually means its invoices sit
+        // on a company no branch claims, and that only shows if we count them all.
         ...extra,
       ]], { fields: ['company_id', 'amount_untaxed'], groupby: ['company_id'], lazy: true })) as ReadGroupResult[];
       const out: Record<string, { n: number; amt: number }> = {};
@@ -901,13 +901,25 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     };
 
     const [posted, any] = await Promise.all([tally([['state', '=', 'posted']]), tally([])]);
-    const line = Object.values(BRANCH_CLUSTERS).flat().map((name) => {
-      const p = posted[name], a = any[name];
-      if (!a) return `${name}: none`;
-      const amt = Math.round(p?.amt ?? 0).toLocaleString('en-US');
-      return `${name}: ${p?.n ?? 0} posted of ${a.n} (AED ${amt})`;
-    });
-    notes.push(`Customer invoices per company, last 30 days — ${line.join(' · ')}`);
+    const fmt = (name: string) => {
+      const pp = posted[name], aa = any[name];
+      if (!aa) return `${name}: none`;
+      return `${name}: ${pp?.n ?? 0} posted of ${aa.n} (AED ${Math.round(pp?.amt ?? 0).toLocaleString('en-US')})`;
+    };
+
+    const tracked = Object.values(BRANCH_CLUSTERS).flat();
+    notes.push(`Invoices per COUNTED company, last 30 days — ${tracked.map(fmt).join(' · ')}`);
+
+    // Anything invoicing that no branch claims. This is where a renamed or
+    // duplicated company hides.
+    const knownNames = new Set(tracked);
+    const strays = Object.keys(any)
+      .filter((n) => !knownNames.has(n))
+      .sort((x, y) => (posted[y]?.amt ?? 0) - (posted[x]?.amt ?? 0))
+      .slice(0, 15);
+    notes.push(strays.length
+      ? `⚠ Invoicing companies NOT counted by any branch — ${strays.map(fmt).join(' · ')}`
+      : 'Every invoicing company in Odoo is claimed by a branch.');
   } catch (e) {
     notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
   }
