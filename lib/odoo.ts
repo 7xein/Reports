@@ -745,6 +745,81 @@ async function salesByBranch(dateStr: string, extra: OdooDomain): Promise<Record
   return out;
 }
 
+/** Per-day, per-branch sales for a date range. */
+export interface OdooSalesRange {
+  start: string;
+  end: string;
+  /** date → branch → amount. Only days with sales appear. */
+  totals: Record<string, Record<string, number>>;
+  without: Record<string, Record<string, number>>;
+  invoiceCount: number;
+  unresolved: string[];
+}
+
+/**
+ * Every invoice in a date range, totalled per day and per branch.
+ *
+ * The daily sync asks "what was invoiced on this date" once and never returns,
+ * so an invoice posted later but dated earlier can never reach the figure. This
+ * re-reads a whole span in one pass, which is what makes back-dated invoices
+ * show up.
+ *
+ * Reads the invoices rather than grouping server-side by date: Odoo formats
+ * date groups for display, and parsing those back is locale-dependent.
+ */
+export async function fetchSalesRange(start: string, end: string): Promise<OdooSalesRange> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const idToBranch: Record<number, string> = {};
+  for (const branch of BRANCHES) {
+    for (const id of await branchCompanyIds(branch)) idToBranch[id] = branch;
+  }
+  const ids = Object.keys(idToBranch).map(Number);
+
+  const base: OdooDomain = [
+    ['move_type', '=', 'out_invoice'],
+    ['state', '=', 'posted'],
+    ['date', '>=', start],
+    ['date', '<=', end],
+    ['company_id', 'in', ids],
+    ['partner_id', 'not ilike', 'EVS Electric'],
+  ];
+
+  const read = async (extra: OdooDomain) =>
+    (await call('account.move', 'search_read', [[...base, ...extra]], {
+      fields: ['company_id', 'date', 'amount_untaxed'], limit: 0,
+    })) as Record<string, unknown>[];
+
+  const [all, withoutWarranty] = await Promise.all([
+    read([]),
+    read([
+      ['invoice_line_ids', 'not ilike', 'warranty category'],
+      ['invoice_line_ids', 'not ilike', 'warranty 5years'],
+    ]),
+  ]);
+
+  const bucket = (rows: Record<string, unknown>[]) => {
+    const out: Record<string, Record<string, number>> = {};
+    for (const r of rows) {
+      const cid = m2oId(r.company_id);
+      const branch = cid != null ? idToBranch[cid] : undefined;
+      const date = typeof r.date === 'string' ? r.date.slice(0, 10) : null;
+      if (!branch || !date) continue;
+      (out[date] ??= {})[branch] = (out[date][branch] ?? 0) + ((r.amount_untaxed as number) || 0);
+    }
+    return out;
+  };
+
+  return {
+    start, end,
+    totals: bucket(all),
+    without: bucket(withoutWarranty),
+    invoiceCount: all.length,
+    unresolved: await unresolvedCompanies(),
+  };
+}
+
 export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapshot> {
   cachedUid = null;
   companyIdCache = null;

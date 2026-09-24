@@ -3,7 +3,8 @@
  *
  * Two modes:
  *   GET  — Vercel Cron hits this daily at 08:00 Gulf and reports on YESTERDAY.
- *          Fetches the WIP snapshot AND that day's sales, and auto-saves both.
+ *          Fetches the WIP snapshot and re-reads the WHOLE month's sales, so an
+ *          invoice posted late but dated earlier still lands. Auto-saves both.
  *   POST — Admin "Sync from Odoo" button. Fetches and returns data for
  *          preview in the form (does NOT auto-save; the user clicks Save).
  *          If body includes { autoSave: true }, it saves immediately.
@@ -14,7 +15,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales } from '@/lib/odoo';
+import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales, fetchSalesRange } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
 import { BRANCHES, type WipDailyEntry, type RegionalSalesEntry } from '@/lib/types';
@@ -56,10 +57,14 @@ export async function GET(request: NextRequest) {
   // only the label they are filed under — and at 08:00, before the day's work
   // starts, that reading is yesterday's closing backlog.
   const date = gulfYesterday();
+  const monthStart = `${date.slice(0, 7)}-01`;
   console.log(`🔄 [cron] Odoo sync for ${date}…`);
+  // Sales are re-read for the whole month, not just the target day. A day that
+  // was already synced is synced again, which is the only way an invoice entered
+  // late under an earlier date ever reaches the monthly figure.
   const [wipRes, salesRes] = await Promise.allSettled([
     fetchWipSnapshot(date),
-    fetchDailySales(date),
+    fetchSalesRange(monthStart, date),
   ]);
 
   const errors: string[] = [];
@@ -84,44 +89,48 @@ export async function GET(request: NextRequest) {
       data.wipHistory.sort((a, b) => a.date.localeCompare(b.date));
     }
 
-    let salesRows = 0;
+    let salesRows = 0, salesDays = 0;
     if (salesRes.status === 'fulfilled') {
       const sales = salesRes.value;
       // Same shape the admin form writes, so a manual edit afterwards behaves
       // identically to one made on top of a hand-entered row.
-      const rows: RegionalSalesEntry[] = BRANCHES
-        .map((b) => {
-          const total = sales.salesTotal[b] ?? 0;
-          const without = sales.salesWithout[b] ?? 0;
-          return {
-            date: sales.date,
+      const rows: RegionalSalesEntry[] = [];
+      for (const [day, byBranch] of Object.entries(sales.totals)) {
+        for (const b of BRANCHES) {
+          const total = byBranch[b] ?? 0;
+          if (total <= 0) continue;
+          const without = sales.without[day]?.[b] ?? 0;
+          rows.push({
+            date: day,
             branch: b,
             actualSales: total,
             salesWithoutWarranty: Math.min(without, total),
             notes: 'Synced from Odoo',
-          };
-        })
-        .filter((r) => r.actualSales > 0);
+          });
+        }
+      }
+      salesDays = Object.keys(sales.totals).length;
 
       if (!data.regional.salesLog) data.regional.salesLog = [];
-      // Replace only this date's rows for the branches we actually got figures
-      // for. A branch with no sales keeps whatever was entered by hand.
+      // Replace only the (date, branch) pairs Odoo actually returned figures for.
+      // A branch with no sales that day keeps whatever was entered by hand.
+      const replacing = new Set(rows.map((r) => `${r.date}|${r.branch}`));
       data.regional.salesLog = [
-        ...data.regional.salesLog.filter(
-          (e) => !(e.date === sales.date && rows.some((r) => r.branch === e.branch)),
-        ),
+        ...data.regional.salesLog.filter((e) => !replacing.has(`${e.date}|${e.branch}`)),
         ...rows,
       ];
       salesRows = rows.length;
     }
 
     await writeData(data);
-    console.log(`💾 [cron] Saved ${date} — WIP ${wipRes.status}, ${salesRows} sales rows`);
+    console.log(`💾 [cron] Saved ${date} — WIP ${wipRes.status}, ${salesRows} sales rows over ${salesDays} days`);
 
     return NextResponse.json({
       success: true,
       date,
       wip: wipRes.status === 'fulfilled' ? 'saved' : 'failed',
+      salesFrom: monthStart,
+      salesDays,
       salesRows,
       ...(errors.length ? { warnings: errors } : {}),
     });
