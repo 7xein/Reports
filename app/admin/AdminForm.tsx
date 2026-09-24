@@ -239,6 +239,7 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
 
   // ── Odoo Sales sync state
   const [syncingSales, setSyncingSales] = useState(false);
+  const [syncingMonth, setSyncingMonth] = useState(false);
   const [syncSalesStatus, setSyncSalesStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   // ── WIP Daily state
@@ -394,6 +395,36 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
       setSyncWeeklyStatus('error');
     } finally {
       setSyncingWeekly(false);
+    }
+  }
+
+  /** Re-read every day of the selected month from Odoo and save immediately. */
+  async function syncMonthFromOdoo() {
+    setSyncingMonth(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/sync-odoo', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'sales-month', date: newDate }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(`Month re-sync failed: ${data?.detail || data?.error || 'Unknown error'}`);
+        setSyncingMonth(false);
+        return;
+      }
+      const unresolved: string[] = data.unresolved ?? [];
+      setMessage(
+        `✓ Re-read ${data.from} → ${data.to}: ${data.invoices} invoices across ${data.days} days, ${data.rows} branch-days saved.`
+        + (unresolved.length ? ` NOT found in Odoo and counted as 0: ${unresolved.join(', ')}.` : '')
+        + ' Reload the sales pages to see the new totals.',
+      );
+    } catch (e) {
+      setMessage(`Month re-sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncingMonth(false);
     }
   }
 
@@ -780,6 +811,40 @@ export function AdminForm({ initialData }: { initialData: ReportData }) {
                       <path d="M15 3v4h-4M5 17v-4h4" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                     Sync from Odoo
+                  </>
+                )}
+              </button>
+
+              {/* ── Re-read the whole month (catches back-dated invoices) ── */}
+              <button
+                onClick={syncMonthFromOdoo}
+                disabled={syncingMonth || syncingSales || saving}
+                title="Re-read every day of this month from Odoo and save. Picks up invoices entered late under an earlier date."
+                className={`
+                  inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+                  border-2 transition-all duration-200
+                  ${syncingMonth
+                    ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+                    : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'
+                  }
+                  disabled:opacity-50
+                `}
+              >
+                {syncingMonth ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Re-reading month…
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <rect x="3" y="4" width="14" height="13" rx="2" />
+                      <path d="M3 8h14M7 2v3M13 2v3" strokeLinecap="round" />
+                    </svg>
+                    Re-sync Month
                   </>
                 )}
               </button>

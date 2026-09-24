@@ -167,6 +167,62 @@ export async function POST(request: NextRequest) {
     // No body or invalid JSON — fine, use defaults
   }
 
+  // ── Month-to-date sales re-sync (saves immediately) ───────────────
+  // The same work the cron does nightly, on demand. Useful when an invoice is
+  // entered late under an earlier date, or after fixing a company name.
+  if (body?.mode === 'sales-month') {
+    try {
+      const ref = typeof body?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
+        ? body.date
+        : new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 10);
+      const monthStart = `${ref.slice(0, 7)}-01`;
+      console.log(`🔄 [manual] Re-reading sales ${monthStart} → ${ref}…`);
+      const sales = await fetchSalesRange(monthStart, ref);
+
+      const rows: RegionalSalesEntry[] = [];
+      for (const [day, byBranch] of Object.entries(sales.totals)) {
+        for (const b of BRANCHES) {
+          const total = byBranch[b] ?? 0;
+          if (total <= 0) continue;
+          rows.push({
+            date: day,
+            branch: b,
+            actualSales: total,
+            salesWithoutWarranty: Math.min(sales.without[day]?.[b] ?? 0, total),
+            notes: 'Synced from Odoo',
+          });
+        }
+      }
+
+      const data = await readData();
+      if (!data.regional.salesLog) data.regional.salesLog = [];
+      const replacing = new Set(rows.map((r) => `${r.date}|${r.branch}`));
+      data.regional.salesLog = [
+        ...data.regional.salesLog.filter((e) => !replacing.has(`${e.date}|${e.branch}`)),
+        ...rows,
+      ];
+      await writeData(data);
+
+      return NextResponse.json({
+        success: true,
+        mode: 'sales-month',
+        from: monthStart,
+        to: ref,
+        days: Object.keys(sales.totals).length,
+        rows: rows.length,
+        invoices: sales.invoiceCount,
+        unresolved: sales.unresolved,
+        saved: true,
+      });
+    } catch (error) {
+      console.error('❌ [manual] month sales re-sync failed:', error);
+      return NextResponse.json(
+        { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
   // ── Sales sync mode ───────────────────────────────────────────────
   if (body?.mode === 'sales') {
     try {
