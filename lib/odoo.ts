@@ -714,19 +714,67 @@ export interface OdooSalesSnapshot {
 }
 
 /**
+ * The partner records behind our own companies.
+ *
+ * Every Odoo company has a partner, and that partner is who appears as the
+ * customer when one company invoices another. Matching on ids rather than on a
+ * name is what makes this survive a rename — the old `not ilike 'EVS Electric'`
+ * only ever caught the five companies whose names happen to contain that
+ * string, so invoices to EVS Dubai, the Emarat stations, Almushrif and EV HUB
+ * were all counted as outside revenue.
+ */
+export async function internalPartnerIds(): Promise<number[]> {
+  const map = await getCompanyIds();
+  const ids = ALL_TRACKED_COMPANIES
+    .map((n) => companyIdFor(map, n))
+    .filter((id): id is number => id != null);
+  if (!ids.length) return [];
+  try {
+    const comps = (await call('res.company', 'read', [ids], { fields: ['partner_id'] })) as Record<string, unknown>[];
+    return comps.map((c) => m2oId(c.partner_id)).filter((id): id is number => id != null);
+  } catch {
+    return [];
+  }
+}
+
+let movePartnerFieldCache: string | null = null;
+
+/** commercial_partner_id resolves a delivery contact back to its parent company. */
+async function movePartnerField(): Promise<string> {
+  if (movePartnerFieldCache) return movePartnerFieldCache;
+  try {
+    const meta = (await call('account.move', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    movePartnerFieldCache = Object.prototype.hasOwnProperty.call(meta, 'commercial_partner_id')
+      ? 'commercial_partner_id'
+      : 'partner_id';
+  } catch {
+    movePartnerFieldCache = 'partner_id';
+  }
+  return movePartnerFieldCache;
+}
+
+/**
  * Drop invoices EVS raises against itself — except EV Hub's.
  *
  * Internal EVS-to-EVS invoices are transfers, not revenue, so counting them
- * would double-count the same money. EV Hub is the exception: it is the sister
+ * double-counts the same money. EV Hub is the exception: it is the sister
  * company that sells parts TO EVS, so those invoices are precisely its business.
  * Excluding them left it reporting only the fraction sold to outside customers.
  *
- * Expressed as "company is EV Hub OR the customer is not EVS", which keeps the
- * whole thing to one query.
+ * Expressed as "company is EV Hub OR the customer is not one of ours", which
+ * keeps the whole thing to one query.
  */
 async function excludeInternalSales(): Promise<OdooDomain> {
-  const evHubIds = await branchCompanyIds('EV Hub');
-  const notInternal: [string, string, unknown] = ['partner_id', 'not ilike', 'EVS Electric'];
+  const [evHubIds, internal, field] = await Promise.all([
+    branchCompanyIds('EV Hub'),
+    internalPartnerIds(),
+    movePartnerField(),
+  ]);
+  // If the partners cannot be resolved, fall back to the old name match rather
+  // than silently counting every internal transfer as revenue.
+  const notInternal: [string, string, unknown] = internal.length
+    ? [field, 'not in', internal]
+    : ['partner_id', 'not ilike', 'EVS Electric'];
   return evHubIds.length
     ? ['|', ['company_id', 'in', evHubIds], notInternal]
     : [notInternal];
@@ -1037,6 +1085,17 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   } catch (e) {
     notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+
+  // Which partners count as "us" for the internal-sales filter.
+  try {
+    const internal = await internalPartnerIds();
+    if (internal.length) {
+      const names = (await call('res.partner', 'read', [internal], { fields: ['display_name'] })) as Record<string, unknown>[];
+      notes.push(`Invoices to these partners are treated as internal and excluded (EV Hub exempt): ${names.map((n) => n.display_name).join(' · ')}`);
+    } else {
+      notes.push('⚠ Could not resolve our own companies to partner records — internal-sales filtering fell back to matching the name "EVS Electric".');
+    }
+  } catch { /* non-fatal diagnostic */ }
 
   // Company-name resolution. Branch filters match on exact NAME, so a company
   // renamed in Odoo silently contributes zero rather than erroring — the failure
