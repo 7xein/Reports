@@ -713,16 +713,36 @@ export interface OdooSalesSnapshot {
   salesWithout: Record<Branch, number>;  // invoices without a warranty line
 }
 
+/**
+ * Drop invoices EVS raises against itself — except EV Hub's.
+ *
+ * Internal EVS-to-EVS invoices are transfers, not revenue, so counting them
+ * would double-count the same money. EV Hub is the exception: it is the sister
+ * company that sells parts TO EVS, so those invoices are precisely its business.
+ * Excluding them left it reporting only the fraction sold to outside customers.
+ *
+ * Expressed as "company is EV Hub OR the customer is not EVS", which keeps the
+ * whole thing to one query.
+ */
+async function excludeInternalSales(): Promise<OdooDomain> {
+  const evHubIds = await branchCompanyIds('EV Hub');
+  const notInternal: [string, string, unknown] = ['partner_id', 'not ilike', 'EVS Electric'];
+  return evHubIds.length
+    ? ['|', ['company_id', 'in', evHubIds], notInternal]
+    : [notInternal];
+}
+
 /** Sum amount_untaxed per branch for posted out-invoices on a date, plus an extra filter. */
 async function salesByBranch(dateStr: string, extra: OdooDomain): Promise<Record<Branch, number>> {
   const trackedIds = await allTrackedCompanyIds();
+  const internal = await excludeInternalSales();
   const groups = await call('account.move', 'read_group', [
     [
       ['move_type', '=', 'out_invoice'],
       ['state', '=', 'posted'],
       ['date', '=', dateStr],
       ['company_id', 'in', trackedIds],
-      ['partner_id', 'not ilike', 'EVS Electric'],
+      ...internal,
       ...extra,
     ],
   ], {
@@ -783,7 +803,7 @@ export async function fetchSalesRange(start: string, end: string): Promise<OdooS
     ['date', '>=', start],
     ['date', '<=', end],
     ['company_id', 'in', ids],
-    ['partner_id', 'not ilike', 'EVS Electric'],
+    ...(await excludeInternalSales()),
   ];
 
   const read = async (extra: OdooDomain) =>
