@@ -265,6 +265,8 @@ const DOM_ROS_WITHOUT_TAGS: OdooDomain        = [['state', '!=', 'cancel'], ['ta
 const DOM_QUOTATIONS_NOT_APPROVED: OdooDomain = [['state', '=', 'draft']];
 const DOM_ROS_WITHOUT_INVOICES: OdooDomain    = [['state', '!=', 'cancel'], ['priority_matrix_status', '!=', 'X'], ['tag_ids', 'not ilike', 'cancel']];
 const DOM_WARRANTIES_ACTIVATED: OdooDomain    = [['state', '=', 'activated']];
+// Work finished but not billed: Repaired, yet not "Invoiced & Closed".
+const DOM_REPAIRED_NOT_INVOICED: OdooDomain   = [['state', '=', 'done'], ['priority_matrix_status', '!=', 'X']];
 
 /** A: "WIP daily not invoiced" — sale.order */
 const qSaleOrdersToInvoice = (extra: OdooDomain = []) =>
@@ -290,6 +292,11 @@ const qQuotationsNotApproved = (extra: OdooDomain = []) =>
  *  many2many tag_ids filter miscounts under read_group JOINs. */
 const qRosWithoutInvoices = (extra: OdooDomain = []) =>
   searchCountByCompany('repair.order', [...DOM_ROS_WITHOUT_INVOICES, ...extra]);
+
+/** H: "Repaired but not invoiced" — repair.order. No many2many filter, so
+ *  read_group counts correctly here. */
+const qRepairedNotInvoiced = (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', [...DOM_REPAIRED_NOT_INVOICED, ...extra]);
 
 /** Saturday→Saturday window used by the daily "ROs Without Tags" metric. */
 function currentSaturdayWindow(): OdooDomain {
@@ -324,6 +331,7 @@ const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDom
   rosWithoutTags:       { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_TAGS,                                fields: REPAIR_FIELDS },
   quotationsNotApproved:{ model: 'sale.order',     domain: () => DOM_QUOTATIONS_NOT_APPROVED,                         fields: SALE_FIELDS },
   rosWithoutInvoices:   { model: 'repair.order',   domain: () => DOM_ROS_WITHOUT_INVOICES,                            fields: REPAIR_FIELDS },
+  repairedNotInvoiced:  { model: 'repair.order',   domain: () => DOM_REPAIRED_NOT_INVOICED,                           fields: REPAIR_FIELDS },
 };
 
 /**
@@ -633,6 +641,7 @@ export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapsho
     rosWithoutTags,
     quotationsNotApproved,
     rosWithoutInvoices,
+    repairedNotInvoiced,
   ] = await Promise.all([
     qSaleOrdersToInvoice(),
     qOpenRepairOrders(),
@@ -641,6 +650,7 @@ export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapsho
     qRosWithoutTags(currentSaturdayWindow()),
     qQuotationsNotApproved(),
     qRosWithoutInvoices(),
+    qRepairedNotInvoiced(),
   ]);
 
   return buildSnapshot(snapshotDate, {
@@ -651,6 +661,7 @@ export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapsho
     rosWithoutTags,
     quotationsNotApproved,
     rosWithoutInvoices,
+    repairedNotInvoiced,
   });
 }
 
@@ -676,6 +687,7 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
     rosWithoutTags,
     quotationsNotApproved,
     rosWithoutInvoices,
+    repairedNotInvoiced,
   ] = await Promise.all([
     qSaleOrdersToInvoice(dateRange),
     qOpenRepairOrders(dateRange),
@@ -684,6 +696,7 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
     qRosWithoutTags(dateRange),
     qQuotationsNotApproved(dateRange),
     qRosWithoutInvoices(dateRange),
+    qRepairedNotInvoiced(dateRange),
   ]);
 
   return buildSnapshot(endDate, {
@@ -694,6 +707,7 @@ export async function fetchWipWeeklySnapshot(startDate: string, endDate: string)
     rosWithoutTags,
     quotationsNotApproved,
     rosWithoutInvoices,
+    repairedNotInvoiced,
   });
 }
 

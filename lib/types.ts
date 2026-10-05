@@ -29,6 +29,7 @@ export const WIP_METRICS = [
   { key: 'rosWithoutTags',       label: 'ROs Without Tags',                           short: 'No Tags',        lowerIsBetter: true,  isCurrency: false, description: 'Active repair orders with no tags assigned.' },
   { key: 'quotationsNotApproved',label: 'Quotations Not Approved',                    short: 'Pend. Appr.',    lowerIsBetter: true,  isCurrency: false, description: 'Draft quotations / sale orders still awaiting approval.' },
   { key: 'rosWithoutInvoices',   label: 'Repair Orders With No Invoices',             short: 'No Invoices',    lowerIsBetter: true,  isCurrency: false, description: 'Repair orders not yet invoiced & closed (priority-matrix status is not "Invoiced & Closed", and not tagged Cancel).' },
+  { key: 'repairedNotInvoiced',  label: 'Repaired But Not Invoiced',                  short: 'Repaired, Unbilled', lowerIsBetter: true, isCurrency: false, description: 'Repair work is finished (status Repaired) but the job has not reached "Invoiced & Closed" — finished work still waiting to be billed.' },
 ] as const;
 export type WipMetricKey = typeof WIP_METRICS[number]['key'];
 
