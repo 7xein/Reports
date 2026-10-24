@@ -117,24 +117,40 @@ export interface RegionalData {
 // Names here are threshold-free fallbacks — kpiDisplayName() builds the label
 // shown in the UI from the configured thresholds, so they can never drift.
 export const KPI_DEFINITIONS = [
-  { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', rule: 'The invoice linked to the RO must be posted within the configured time of the repair being marked Repaired.' },
-  { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
-  { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', rule: 'Every QA-flagged vehicle that reaches Repaired must have the service advisor follow-up screenshot uploaded.' },
-  { id: 3, name: 'SO before repaired',       group: 'Quotations', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
-  { id: 12, name: 'Quote after RO',          group: 'Quotations', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
-  { id: 4, name: 'Quote before starting repair', group: 'Quotations', rule: 'A quotation must exist before repair work starts.' },
-  { id: 5, name: 'Tag on creation',          group: 'Tagging', rule: 'A tag must be added to every RO within the configured time of creation.' },
-  { id: 8, name: 'Car in / out tag',         group: 'Tagging', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
-  { id: 2, name: 'Quote approval',           group: 'Quotations', rule: 'Quotations must not sit awaiting approval beyond the configured time. Insurance jobs are excluded — approval is the insurer\'s to give.' },
-  { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
-  { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
-  { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', rule: 'A vehicle cannot await labour beyond the configured time.' },
-  { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', rule: 'An @mention on a repair order must be answered in the chatter within the configured time. Tagging several people is one request — any of them may answer it; unanswered, it falls to the one tagged first.' },
-  { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
-  { id: 15, name: 'Inspection duration',     group: 'Workshop stages', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
-  { id: 16, name: 'QA duration',             group: 'Workshop stages', rule: 'A repair order must not sit in QA longer than the configured time.' },
+  { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', section: 'advisor', rule: 'The invoice linked to the RO must be posted within the configured time of the repair being marked Repaired.' },
+  { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', section: 'advisor', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
+  { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', section: 'advisor', rule: 'Every QA-flagged vehicle that reaches Repaired must have the service advisor follow-up screenshot uploaded.' },
+  { id: 3, name: 'SO before repaired',       group: 'Quotations', section: 'advisor', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
+  { id: 12, name: 'Quote after RO',          group: 'Quotations', section: 'advisor', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
+  { id: 4, name: 'Quote before starting repair', group: 'Quotations', section: 'advisor', rule: 'A quotation must exist before repair work starts.' },
+  { id: 5, name: 'Tag on creation',          group: 'Tagging', section: 'advisor', rule: 'A tag must be added to every RO within the configured time of creation.' },
+  { id: 8, name: 'Car in / out tag',         group: 'Tagging', section: 'advisor', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
+  { id: 2, name: 'Quote approval',           group: 'Quotations', section: 'advisor', rule: 'Quotations must not sit awaiting approval beyond the configured time. Insurance jobs are excluded — approval is the insurer\'s to give.' },
+  { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', section: 'workshop', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
+  { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', section: 'workshop', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
+  { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', section: 'workshop', rule: 'A vehicle cannot await labour beyond the configured time.' },
+  { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', section: 'workshop', rule: 'An @mention on a repair order must be answered in the chatter within the configured time. Tagging several people is one request — any of them may answer it; unanswered, it falls to the one tagged first.' },
+  { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', section: 'advisor', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
+  { id: 15, name: 'Inspection duration',     group: 'Workshop stages', section: 'workshop', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
+  { id: 16, name: 'QA duration',             group: 'Workshop stages', section: 'workshop', rule: 'A repair order must not sit in QA longer than the configured time.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
+
+export type KpiSection = 'advisor' | 'workshop';
+
+export const KPI_SECTION_ORDER: readonly KpiSection[] = ['advisor', 'workshop'];
+
+export const KPI_SECTION_LABELS: Record<KpiSection, string> = {
+  advisor: 'Service Advisor',
+  workshop: 'Workshop',
+};
+
+/** Which section a KPI belongs to: the saved override first, then the definition's default. */
+export function sectionOf(id: number, cfg?: { kpiSections?: Record<number, KpiSection> }): KpiSection {
+  const override = cfg?.kpiSections?.[id];
+  if (override === 'advisor' || override === 'workshop') return override;
+  return (KPI_DEFINITIONS.find((d) => d.id === id)?.section ?? 'advisor') as KpiSection;
+}
 
 const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
 
@@ -249,6 +265,11 @@ export interface KpiConfig {
   saRoster: SaRosterEntry[];
   enabledKpis: number[];
   /**
+   * Per-KPI section override, edited in Admin — it overrides the per-definition
+   * default. Absent ids fall back to the KPI_DEFINITIONS default.
+   */
+  kpiSections?: Record<number, KpiSection>;
+  /**
    * Which date KPIs 6 & 7 measure "time in state" from.
    *  auto        → date_last_stage_update if the field exists, else create_date
    *  create_date → age of the RO itself (never hides a stale vehicle)
@@ -321,8 +342,18 @@ export function withKpiDefaults(cfg?: Partial<KpiConfig> | null): KpiConfig {
 export interface KpiWeekSummary {
   weekStart: string;
   generatedAt: string;
-  company: { achievement: number | null; kpis: Record<string, number | null> };
-  branches: Record<string, { achievement: number | null; kpis: Record<string, number | null> }>;
+  company: {
+    achievement: number | null;
+    kpis: Record<string, number | null>;
+    /** Per-section achievement. Absent on weeks stored before sections existed. */
+    sections?: Record<string, number | null>;
+  };
+  branches: Record<string, {
+    achievement: number | null;
+    kpis: Record<string, number | null>;
+    /** Per-section achievement. Absent on weeks stored before sections existed. */
+    sections?: Record<string, number | null>;
+  }>;
 }
 
 export interface ReportData {

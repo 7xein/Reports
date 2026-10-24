@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   WORKSHOP_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
+  KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf,
 } from '@/lib/types';
 
 interface OdooOptions {
@@ -43,6 +44,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   const [loadingOpts, setLoadingOpts] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [personSearch, setPersonSearch] = useState('');
 
   useEffect(() => {
     fetch('/api/kpi/odoo-options', { credentials: 'include' })
@@ -99,6 +101,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     }));
   }
 
+  function setKpiSection(id: number, section: KpiSection) {
+    setCfg((p) => ({ ...p, kpiSections: { ...(p.kpiSections ?? {}), [id]: section } }));
+  }
+
   async function save() {
     setSaving(true); setMessage('');
     try {
@@ -117,6 +123,15 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       setMessage(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setSaving(false); }
   }
+
+  const allUsers = opts?.users ?? [];
+  const personQuery = personSearch.trim().toLowerCase();
+  const matchedUsers = allUsers.filter(
+    (u) => !rosterById.has(u.id) && (personQuery === '' || u.name.toLowerCase().includes(personQuery)),
+  );
+  const shownMatchIds = new Set(matchedUsers.slice(0, 60).map((u) => u.id));
+  const hiddenMatchCount = matchedUsers.length - shownMatchIds.size;
+  const visibleUsers = allUsers.filter((u) => rosterById.has(u.id) || shownMatchIds.has(u.id));
 
   const inputCls = 'w-24 px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm';
 
@@ -257,24 +272,28 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         ))}
       </div>
 
-      {/* 3. SA roster */}
-      <div className="text-sm font-bold text-ink mb-1">3. Service advisor roster</div>
+      {/* 3. Tracked people roster */}
+      <div className="text-sm font-bold text-ink mb-1">3. Tracked people</div>
       <p className="text-xs text-ink-muted mb-3">
-        Only checked users appear at the SA level. Everyone&apos;s ROs still count toward branch totals.
+        Only checked users are measured individually. Everyone&apos;s ROs still count toward branch totals.
       </p>
       {opts && opts.users.length > 0 ? (
+        <>
+        <input type="text" value={personSearch} onChange={(e) => setPersonSearch(e.target.value)}
+          placeholder="Search people…"
+          className="text-sm border border-border rounded px-3 py-1.5 text-ink focus:border-evs-green focus:outline-none mb-2" />
         <div className="overflow-x-auto max-h-72 overflow-y-auto border border-border rounded-md mb-6">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-border">
-                <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Is SA</th>
+                <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Tracked</th>
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Odoo user</th>
                 <th className="text-right py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">ROs (90d)</th>
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Branch</th>
               </tr>
             </thead>
             <tbody>
-              {opts.users.map((u) => {
+              {visibleUsers.map((u) => {
                 const entry = rosterById.get(u.id);
                 return (
                   <tr key={u.id} className="border-b border-border last:border-b-0">
@@ -282,7 +301,9 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                       <input type="checkbox" checked={!!entry} onChange={() => toggleSa(u)} className="cursor-pointer" />
                     </td>
                     <td className="py-1.5 px-3 text-ink">{u.name}</td>
-                    <td className="py-1.5 px-3 text-right tabular-nums text-ink-muted">{u.roCount}</td>
+                    <td className="py-1.5 px-3 text-right tabular-nums text-ink-muted">
+                      {u.roCount > 0 ? <span className="text-[10px] text-ink-muted">{u.roCount} ROs</span> : null}
+                    </td>
                     <td className="py-1.5 px-3">
                       <select disabled={!entry} value={entry?.branch ?? ''} onChange={(e) => setSaBranch(u.id, e.target.value)}
                         className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
@@ -292,11 +313,24 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                   </tr>
                 );
               })}
+              {visibleUsers.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="py-2 px-3 text-xs text-ink-muted">No one matches that search.</td>
+                </tr>
+              )}
+              {hiddenMatchCount > 0 && (
+                <tr>
+                  <td colSpan={4} className="py-2 px-3 text-xs text-ink-muted">
+                    …and {hiddenMatchCount} more — refine your search
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
+        </>
       ) : (
-        <div className="text-sm text-ink-muted mb-6">{loadingOpts ? '' : 'No RO creators found in the last 90 days.'}</div>
+        <div className="text-sm text-ink-muted mb-6">{loadingOpts ? '' : 'No Odoo users found.'}</div>
       )}
 
       {/* 4. Enabled KPIs */}
@@ -310,6 +344,34 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                 on ? 'bg-evs-green text-white border-evs-green' : 'bg-white text-ink-muted border-border hover:border-gray-400'}`}>
               {kpiDisplayName(k.id, k.name, cfg.thresholds)}
             </button>
+          );
+        })}
+      </div>
+
+      {/* 5. KPI sections */}
+      <div className="text-sm font-bold text-ink mb-1">5. KPI sections</div>
+      <p className="text-xs text-ink-muted mb-3">
+        KPIs are grouped on the dashboard into Service Advisor and Workshop, each with its own total.
+        Both still feed the branch total.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5 mb-6">
+        {KPI_DEFINITIONS.map((k) => {
+          const current = sectionOf(k.id, cfg);
+          return (
+            <div key={k.id} className="flex items-center justify-between gap-3 min-w-0">
+              <span className="text-[13px] text-ink truncate" title={k.rule}>
+                {kpiDisplayName(k.id, k.name, cfg.thresholds)}
+              </span>
+              <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0">
+                {KPI_SECTION_ORDER.map((s) => (
+                  <button key={s} onClick={() => setKpiSection(k.id, s)}
+                    className={`text-[11px] font-semibold px-2.5 py-1 transition-colors cursor-pointer ${
+                      current === s ? 'bg-evs-green text-white' : 'bg-white text-ink-muted hover:text-ink'}`}>
+                    {KPI_SECTION_LABELS[s]}
+                  </button>
+                ))}
+              </div>
+            </div>
           );
         })}
       </div>

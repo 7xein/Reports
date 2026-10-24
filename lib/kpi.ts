@@ -11,7 +11,7 @@
 
 import {
   WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
-  KpiWeekSummary,
+  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, sectionOf,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
 
@@ -60,6 +60,7 @@ export interface KpiCell {
   applicable: number;
   pct: number | null;        // null = N/A (nothing applicable)
   snapshot: boolean;         // true = point-in-time KPI (ignores the week window)
+  section: KpiSection;       // resolved against the admin override, not the default
   note?: string;             // extra context shown in the ⓘ tooltip
   violations: string[];      // capped at 50
 }
@@ -68,6 +69,7 @@ export interface SaNode {
   odooUserId: number;
   name: string;
   achievement: number | null;
+  sections: Record<KpiSection, number | null>;
   roCount: number;
   kpis: KpiCell[];
 }
@@ -75,6 +77,7 @@ export interface SaNode {
 export interface BranchNode {
   name: string;
   achievement: number | null;
+  sections: Record<KpiSection, number | null>;
   applicableTotal: number;
   kpis: KpiCell[];
   serviceAdvisors: SaNode[];
@@ -83,7 +86,7 @@ export interface BranchNode {
 export interface KpiTree {
   week: { start: string; end: string };
   generatedAt: string;
-  company: { achievement: number | null; kpis: KpiCell[] };
+  company: { achievement: number | null; sections: Record<KpiSection, number | null>; kpis: KpiCell[] };
   branches: BranchNode[];
   notes: string[];
 }
@@ -105,6 +108,7 @@ function aggregate(
   enabled: number[],
   snapshotNotes?: Record<number, string>,
   names?: Record<number, string>,
+  sections?: Record<number, KpiSection>,
 ): KpiCell[] {
   return KPI_DEFINITIONS.filter((d) => enabled.includes(d.id)).map((d) => {
     const mine = evals.filter((e) => e.kpiId === d.id);
@@ -114,6 +118,7 @@ function aggregate(
     return {
       id: d.id,
       name: names?.[d.id] ?? d.name,
+      section: sections?.[d.id] ?? sectionOf(d.id),
       compliant,
       applicable,
       pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
@@ -124,13 +129,32 @@ function aggregate(
   });
 }
 
+/**
+ * Which KPIs an achievement average counts. The overall and the per-section
+ * figures must share this one rule — if they ever disagree about what counts,
+ * the sections stop reconciling with the total they sit under.
+ */
+const countsTowardOverall = (c: KpiCell) => c.pct !== null && !EXCLUDED_FROM_OVERALL.includes(c.id);
+
+const meanPct = (cells: KpiCell[]): number | null =>
+  cells.length ? cells.reduce((s, c) => s + (c.pct as number), 0) / cells.length : null;
+
 /** Overall achievement = mean of the KPI percentages that have applicable records. */
 function overall(cells: KpiCell[]): number | null {
   // Every level — advisor, branch, company — averages here, and the weekly
   // history copies these values, so excluding a KPI once excludes it everywhere.
-  const active = cells.filter((c) => c.pct !== null && !EXCLUDED_FROM_OVERALL.includes(c.id));
-  if (!active.length) return null;
-  return active.reduce((s, c) => s + (c.pct as number), 0) / active.length;
+  return meanPct(cells.filter(countsTowardOverall));
+}
+
+/** Per-section achievement, using the same inclusion rule as the overall. */
+function sectionTotals(cells: KpiCell[], config: KpiConfig): Record<KpiSection, number | null> {
+  const scored = cells.filter(countsTowardOverall);
+  // Deliberately NOT what `overall` averages: the overall is the mean of every
+  // scored KPI, not the mean of these two — sections with unequal KPI counts
+  // would otherwise reweight the headline figure.
+  return Object.fromEntries(
+    KPI_SECTION_ORDER.map((s) => [s, meanPct(scored.filter((c) => sectionOf(c.id, config) === s))]),
+  ) as Record<KpiSection, number | null>;
 }
 
 // ── Odoo domain from a configured selector ─────────────────────────
@@ -1361,6 +1385,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
   // Labels carry the configured thresholds, e.g. "Delivered in 2 days after repair".
+  // Resolved once here so every level agrees, and so the client never has to
+  // know about the override map to place a KPI in the right section.
+  const sectionById: Record<number, KpiSection> = Object.fromEntries(
+    KPI_DEFINITIONS.map((d) => [d.id, sectionOf(d.id, config)]),
+  );
   const displayNames: Record<number, string> = Object.fromEntries(
     KPI_DEFINITIONS.map((d) => [d.id, kpiDisplayName(d.id, d.name, config.thresholds)]),
   );
@@ -1388,7 +1417,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   const branches: BranchNode[] = WORKSHOP_BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
-    const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames);
+    const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames, sectionById);
 
     // Advisors are placed by the branch assigned to them in the roster — never by
     // the company on their ROs — so each one appears exactly once, under their own
@@ -1397,11 +1426,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       .filter((r) => r.branch === b)
       .map((r) => {
         const mine = evals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, enabled, snapshotNotes, displayNames);
+        const cells = aggregate(mine, enabled, snapshotNotes, displayNames, sectionById);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
           achievement: overall(cells),
+          sections: sectionTotals(cells, config),
           roCount: roCountByUser[r.odooUserId] ?? 0,
           kpis: cells,
         };
@@ -1411,6 +1441,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     return {
       name: b,
       achievement: overall(kpis),
+      sections: sectionTotals(kpis, config),
       applicableTotal: kpis.reduce((s, c) => s + c.applicable, 0),
       kpis,
       serviceAdvisors,
@@ -1421,12 +1452,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
   }
 
-  const companyKpis = aggregate(evals, enabled, snapshotNotes, displayNames);
+  const companyKpis = aggregate(evals, enabled, snapshotNotes, displayNames, sectionById);
 
   return {
     week: { start, end },
     generatedAt: new Date().toISOString(),
-    company: { achievement: overall(companyKpis), kpis: companyKpis },
+    company: { achievement: overall(companyKpis), sections: sectionTotals(companyKpis, config), kpis: companyKpis },
     branches,
     notes,
   };
@@ -1439,9 +1470,9 @@ export function summariseTree(tree: KpiTree): KpiWeekSummary {
   return {
     weekStart: tree.week.start,
     generatedAt: tree.generatedAt,
-    company: { achievement: tree.company.achievement, kpis: pcts(tree.company.kpis) },
+    company: { achievement: tree.company.achievement, sections: tree.company.sections, kpis: pcts(tree.company.kpis) },
     branches: Object.fromEntries(
-      tree.branches.map((b) => [b.name, { achievement: b.achievement, kpis: pcts(b.kpis) }]),
+      tree.branches.map((b) => [b.name, { achievement: b.achievement, sections: b.sections, kpis: pcts(b.kpis) }]),
     ),
   };
 }

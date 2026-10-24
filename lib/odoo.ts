@@ -937,7 +937,11 @@ export interface KpiOdooOptions {
   stages: { id: number; name: string }[];
   /** repair.order tag records. */
   tags: { id: number; name: string }[];
-  /** Users who created ROs in the last 90 days — SA roster candidates. */
+  /**
+   * Every active internal Odoo user, selectable for KPI measurement.
+   * `roCount` is a hint — ROs created in the last 90 days, 0 for users who
+   * never raise ROs (parts staff, workshop managers, and so on).
+   */
   users: { id: number; name: string; roCount: number }[];
   /** fields_get verification, surfaced in the admin UI. */
   fieldReport: {
@@ -1028,7 +1032,10 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     } catch { notes.push('tag_ids comodel could not be read.'); }
   }
 
-  // SA candidates: who created ROs in the last 90 days (grouped, not row-by-row).
+  // Selectable users: every active internal user, with the RO count (last 90
+  // days, grouped not row-by-row) kept as a hint where there is one. KPIs now
+  // judge chatter mentions too, so parts staff and managers who never raise an
+  // RO still have to be selectable.
   const since = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
   const trackedIds = await allTrackedCompanyIds();
   const users: { id: number; name: string; roCount: number }[] = [];
@@ -1042,8 +1049,29 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
       if (!u) continue;
       users.push({ id: u[0], name: u[1], roCount: (g.create_uid_count ?? g.__count ?? 0) as number });
     }
-    users.sort((a, b) => b.roCount - a.roCount);
-  } catch { notes.push('Could not group ROs by creator for the SA roster.'); }
+  } catch { notes.push('Could not group ROs by creator — RO counts will show as 0.'); }
+
+  const roCreatorCount = users.length;
+  try {
+    const recs = (await call('res.users', 'search_read', [[
+      ['active', '=', true],
+      ['share', '=', false],
+    ]], { fields: ['name'], limit: 1000 })) as { id: number; name?: string }[];
+    if (recs.length >= 1000) {
+      notes.push('⚠ Hit the 1000-user read cap — some active users may be missing from the list.');
+    }
+    const seen = new Set(users.map((u) => u.id));
+    for (const r of recs) {
+      if (r.id == null || seen.has(r.id)) continue;
+      seen.add(r.id);
+      users.push({ id: r.id, name: r.name || `#${r.id}`, roCount: 0 });
+    }
+  } catch {
+    notes.push('Could not read the full internal user list — only RO creators are selectable.');
+  }
+
+  users.sort((a, b) => b.roCount - a.roCount || a.name.localeCompare(b.name));
+  notes.push(`Selectable users: ${users.length} (${roCreatorCount} have created a repair order in the last 90 days).`);
 
   // Spell out what each list actually contains — the workflow bar in Odoo can be
   // driven by state OR stage_id, and knowing which saves a lot of guessing.

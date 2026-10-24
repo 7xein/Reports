@@ -2,11 +2,30 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
-import { KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL } from '@/lib/types';
+import {
+  KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL,
+  KPI_SECTION_ORDER, KPI_SECTION_LABELS, type KpiSection,
+} from '@/lib/types';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai: '#78C41A', Ajman: '#3B82F6', Sharjah: '#F59E0B',
   'Abu Dhabi': '#8B5CF6', 'Al Ain': '#EF4444', 'EV Hub': '#EC4899', Qatar: '#06B6D4',
+};
+
+/**
+ * Section accents are deliberately cool hues, kept well clear of the warm
+ * green → amber → red performance scale, so a category colour can never be
+ * mistaken for a score.
+ */
+const SECTION_ACCENT: Record<KpiSection, string> = {
+  advisor: '#0ea5e9',
+  workshop: '#6366f1',
+};
+
+/** Short section labels for the compact two-figure readouts. */
+const SECTION_SHORT: Record<KpiSection, string> = {
+  advisor: 'SA',
+  workshop: 'WS',
 };
 
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
@@ -144,32 +163,88 @@ function KpiRow({ cell, delta, expandable = false }: {
   );
 }
 
+/** Compact "SA 62% · WS 48%" readout. Section totals always come from the tree. */
+const fmtPctShort = (p: number | null) => (p === null ? '—' : `${Math.round(p)}%`);
+
+function SectionFigures({ sections, labelClass, className = '' }: {
+  sections: Record<KpiSection, number | null>;
+  labelClass: string;
+  className?: string;
+}) {
+  return (
+    <span className={`text-[11px] tabular-nums whitespace-nowrap ${className}`}>
+      {KPI_SECTION_ORDER.map((s, i) => (
+        <span key={s}>
+          {i > 0 && <span className={labelClass}> · </span>}
+          <span className={labelClass}>{SECTION_SHORT[s]} </span>
+          <span className="font-bold" style={{ color: band(sections[s]).hex }}>{fmtPctShort(sections[s])}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 // ── Grouped sections ───────────────────────────────────────────────
-function KpiSections({ cells, deltaFor, expandable = false }: {
+function KpiSections({ cells, sections, deltaFor, expandable = false }: {
   cells: KpiCell[];
+  sections: Record<KpiSection, number | null>;
   deltaFor: (id: number) => number | null;
   expandable?: boolean;
 }) {
   return (
-    <div className="grid lg:grid-cols-2 gap-4 mb-4">
-      {GROUP_ORDER.map((group, i) => {
-        const all = cells.filter((c) => GROUP_OF[c.id] === group);
-        if (!all.length) return null;
-        // An odd number of groups leaves the last one alone on its row — let it
-        // run full width rather than sit next to a gap.
-        const wide = GROUP_ORDER.length % 2 === 1 && i === GROUP_ORDER.length - 1;
-        // Worst-first within the group; unmeasured KPIs sink to the bottom.
-        const ordered = [...all].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+    <div className="mb-4">
+      {KPI_SECTION_ORDER.map((section, si) => {
+        // The per-KPI override lives in admin and is already baked into the
+        // server-computed section totals — rows only need the default grouping.
+        const sectionCells = cells.filter((c) => c.section === section);
+        // Groups whose KPIs span both sections legitimately appear under each,
+        // showing only that section's rows.
+        const groups = GROUP_ORDER
+          .map((group) => ({ group, all: sectionCells.filter((c) => GROUP_OF[c.id] === group) }))
+          .filter((g) => g.all.length > 0);
+        // No cards means no section at all — never a header on its own.
+        if (!groups.length) return null;
+
+        const measured = sectionCells.filter((c) => c.pct !== null).length;
+        const accent = SECTION_ACCENT[section];
+        const total = sections[section];
+
         return (
-          <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
-            <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
-              <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
-              <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
-              <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
+          <div key={section} className={si > 0 ? 'mt-8' : ''}>
+            <div className="flex items-baseline flex-wrap gap-x-2 pb-2 mb-3 border-b border-border">
+              <span className="w-1 h-4 rounded-full shrink-0" style={{ background: accent }} />
+              <span className="text-[13px] font-black uppercase tracking-[0.18em]" style={{ color: accent }}>
+                {KPI_SECTION_LABELS[section]}
+              </span>
+              <span className="ml-auto flex items-baseline gap-2">
+                <span className={`text-xl font-black tabular-nums ${band(total).text}`}>{fmtPct(total)}</span>
+                <span className="text-[11px] text-ink-muted whitespace-nowrap">
+                  {measured} of {sectionCells.length} measured
+                </span>
+              </span>
             </div>
-            {ordered.map((c) => (
-              <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
-            ))}
+
+            <div className="grid lg:grid-cols-2 gap-4">
+              {groups.map(({ group, all }, i) => {
+                // An odd number of cards leaves the last one alone on its row —
+                // let it run full width rather than sit next to a gap.
+                const wide = groups.length % 2 === 1 && i === groups.length - 1;
+                // Worst-first within the group; unmeasured KPIs sink to the bottom.
+                const ordered = [...all].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+                return (
+                  <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
+                    <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
+                      <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
+                      <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    {ordered.map((c) => (
+                      <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         );
       })}
@@ -296,6 +371,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                       </span>
                     )}
                   </div>
+                  <SectionFigures sections={tree.company.sections} labelClass="text-white/50" className="mt-2 block" />
                   <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · all branches</div>
                 </div>
 
@@ -368,6 +444,8 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                               style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
                           </span>
                           <span className="flex-1 sm:hidden" />
+                          <SectionFigures sections={b.sections} labelClass="text-ink-muted"
+                            className="hidden md:flex items-baseline gap-1 shrink-0" />
                           <Delta value={branchDelta(b.name)} className="w-14 text-right" />
                           <span className={`text-sm font-bold tabular-nums w-16 text-right ${bb.text}`}>{fmtPct(b.achievement)}</span>
                         </div>
@@ -376,7 +454,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   })}
               </div>
 
-              <KpiSections cells={tree.company.kpis} deltaFor={kpiDelta} />
+              <KpiSections cells={tree.company.kpis} sections={tree.company.sections} deltaFor={kpiDelta} />
             </>
           )}
 
@@ -395,12 +473,12 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
               </div>
 
-              <KpiSections cells={branchNode.kpis} deltaFor={kpiDelta} />
+              <KpiSections cells={branchNode.kpis} sections={branchNode.sections} deltaFor={kpiDelta} />
 
-              <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3 mt-5">Service Advisors</div>
+              <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3 mt-5">People</div>
               {branchNode.serviceAdvisors.length === 0 ? (
                 <div className="bg-white rounded-lg p-6 text-sm text-ink-muted shadow-sm">
-                  No service advisors on the roster for {branchNode.name}. Add them in <strong>Admin → KPI Configuration</strong>.
+                  No people on the roster for {branchNode.name}. Add them in <strong>Admin → KPI Configuration</strong>.
                 </div>
               ) : (
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -431,7 +509,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <span className={`text-3xl font-black tabular-nums ${band(saNode.achievement).text}`}>{fmtPct(saNode.achievement)}</span>
               </div>
-              <KpiSections cells={saNode.kpis} deltaFor={() => null} expandable />
+              <KpiSections cells={saNode.kpis} sections={saNode.sections} deltaFor={() => null} expandable />
             </>
           )}
         </>
