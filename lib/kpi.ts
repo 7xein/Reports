@@ -950,6 +950,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['company_id', 'in', trackedIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'date_order'], limit: 0 })) as Rec[];
 
+    // Both repair.order lookups below ask about the same quotations, so the id
+    // list is built once and shared.
+    const soIds = [...new Set([...open, ...confirmed].map((q) => q.id as number))];
+
     // Insurance jobs are exempt: approval is the insurer's to give, so holding an
     // advisor to a two-day clock measures the insurer, not them. Resolved from the
     // repair order behind each quotation, across both tag fields.
@@ -961,7 +965,6 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const insuranceExempt = new Set<number>();
     const insuranceTags = await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
     if (insuranceTags.some((m) => m.ids.size) && has('sale_order_id')) {
-      const soIds = [...new Set([...open, ...confirmed].map((q) => q.id as number))];
       for (let i = 0; i < soIds.length; i += 2000) {
         try {
           const insured = (await call('repair.order', 'search_read', [[
@@ -976,14 +979,42 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     }
 
+    // KPI 2 is the one KPI built from sale.order, so the historical filter on
+    // repair.order never reaches it. A quotation whose work has all been moved to
+    // Historical is dead work and nobody should be scored on it — but "no repair
+    // order at all" is a quotation in its own right, and one live order means the
+    // work is still live. So this query must see BOTH sides: adding `notHist`
+    // would hide the historical rows and make the two cases indistinguishable.
+    const hasLiveRo = new Map<number, boolean>();
+    if (has('sale_order_id') && histField.length) {
+      for (let i = 0; i < soIds.length; i += 2000) {
+        try {
+          const ros = (await call('repair.order', 'search_read', [[
+            ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
+          ]], { fields: ['sale_order_id', ...histField], limit: 0 })) as Rec[];
+          for (const r of ros) {
+            const id = m2o(r.sale_order_id)?.[0];
+            // OR-accumulated, so the order the rows arrive in cannot matter.
+            if (id != null) hasLiveRo.set(id, (hasLiveRo.get(id) ?? false) || !isHistorical(r));
+          }
+        } catch { /* a failed chunk leaves its quotations out of the map, so they stay scored rather than vanishing from the KPI */ }
+      }
+    }
+    // Absent from the map means nothing is linked, which is still scored; only a
+    // recorded `false` — orders exist and every one of them is historical — is dead work.
+    const allWorkHistorical = (id: number) => hasLiveRo.get(id) === false;
+
+    let historicalSkipped = 0;
     for (const q of open) {
       if (insuranceExempt.has(q.id as number)) continue;
+      if (allWorkHistorical(q.id as number)) { historicalSkipped++; continue; }
       const created = odooTime(q.create_date);
       if (created == null) continue;
       push(2, q, now - created <= limitMs, (q.name as string) || '');
     }
     for (const q of confirmed) {
       if (insuranceExempt.has(q.id as number)) continue;
+      if (allWorkHistorical(q.id as number)) { historicalSkipped++; continue; }
       const created = odooTime(q.create_date);
       const approved = odooTime(q.date_order);
       if (created == null || approved == null) continue;
@@ -991,6 +1022,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
     if (insuranceExempt.size) {
       notes.push(`Quote approval excluded ${insuranceExempt.size} insurance quotation${insuranceExempt.size === 1 ? '' : 's'} — approval there is the insurer's to give.`);
+    }
+    if (historicalSkipped) {
+      notes.push(`Quote approval excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} whose repair orders have all been moved to Historical — that work is out of the working set.`);
     }
   }
 
