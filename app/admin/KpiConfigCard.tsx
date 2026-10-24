@@ -157,6 +157,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     setCfg((p) => ({ ...p, saRoster: p.saRoster.map((r) => (r.odooUserId === userId ? { ...r, branch } : r)) }));
   }
 
+  function setSaSection(userId: number, section: KpiSection) {
+    setCfg((p) => ({ ...p, saRoster: p.saRoster.map((r) => (r.odooUserId === userId ? { ...r, section } : r)) }));
+  }
+
   /**
    * Reads 30 days of Odoo activity into a review panel. Slow (~30s). A second run
    * replaces the whole preview, and a failure leaves both preview and roster alone.
@@ -436,6 +440,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       </div>
       <p className="text-xs text-ink-muted mb-3">
         Only checked users are measured individually. Everyone&apos;s ROs still count toward branch totals.
+        A person&apos;s section decides which group they appear under on the KPI page — it is separate from
+        which section a KPI itself belongs to (set in 5. KPI sections).
       </p>
 
       {/* 3a. Suggestion preview — reviewed here, merged into the roster only on apply. */}
@@ -513,6 +519,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Odoo user</th>
                 <th className="text-right py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">ROs (90d)</th>
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Branch</th>
+                <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Section</th>
               </tr>
             </thead>
             <tbody>
@@ -533,17 +540,25 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                         {WORKSHOP_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                       </select>
                     </td>
+                    <td className="py-1.5 px-3">
+                      {/* Absent section means Service Advisor — the documented default, so never blank. */}
+                      <select disabled={!entry} value={entry?.section ?? 'advisor'}
+                        onChange={(e) => setSaSection(u.id, e.target.value as KpiSection)}
+                        className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
+                        {KPI_SECTION_ORDER.map((s) => <option key={s} value={s}>{KPI_SECTION_LABELS[s]}</option>)}
+                      </select>
+                    </td>
                   </tr>
                 );
               })}
               {visibleUsers.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="py-2 px-3 text-xs text-ink-muted">No one matches that search.</td>
+                  <td colSpan={5} className="py-2 px-3 text-xs text-ink-muted">No one matches that search.</td>
                 </tr>
               )}
               {hiddenMatchCount > 0 && (
                 <tr>
-                  <td colSpan={4} className="py-2 px-3 text-xs text-ink-muted">
+                  <td colSpan={5} className="py-2 px-3 text-xs text-ink-muted">
                     …and {hiddenMatchCount} more — refine your search
                   </td>
                 </tr>
