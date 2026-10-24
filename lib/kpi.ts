@@ -13,7 +13,7 @@ import {
   WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
   KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, sectionOf,
 } from './types';
-import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain } from './odoo';
+import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 
 // ── Week helpers ───────────────────────────────────────────────────
 const GULF_OFFSET_MS = 4 * 3600 * 1000;
@@ -658,6 +658,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
   const stageNames = await resolveStageNames(config, meta);
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
+  // Orders moved to Odoo's "Historical Orders" tab are out of the working set, so
+  // no KPI may be computed from one. Resolved once — the probe hits Odoo, and
+  // almost every query below needs the clause.
+  const notHist = await notHistorical();
+  // `read` takes ids, not a domain, so the chatter-driven paths have to bring the
+  // flag back with the rows and drop them here. Empty where the field is absent:
+  // asking for a field Odoo doesn't have fails the whole call.
+  const histField = has(HISTORICAL_FIELD) ? [HISTORICAL_FIELD] : [];
   // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
   // otherwise falls back to create_date — deliberately NOT write_date, which any
   // edit resets and which therefore hides genuinely stale vehicles.
@@ -713,10 +721,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     });
   };
 
+  // Shared by every weekly repair.order query, so the historical clause lands on
+  // all of them from here.
   const weekDomain: OdooDomain = [
     ['create_date', '>=', wStart],
     ['create_date', '<', wEnd],
     ['company_id', 'in', trackedIds],
+    ...notHist,
   ];
   const enabled = config.enabledKpis ?? [];
   const on = (id: number) => enabled.includes(id);
@@ -740,6 +751,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     if (on(13) && !followUpField) {
       notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
     }
+    roFields.push(...histField);   // the chatter branch below reads by id, past any domain
     const roCtx = { bin_size: true };
     const tfRepaired = trackedField(config.stageMap.repaired, meta, stageNames);
 
@@ -752,7 +764,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
     let repaired: Rec[];
     if (enteredIds.length) {
-      repaired = (await call('repair.order', 'read', [enteredIds], { fields: roFields, context: roCtx })) as Rec[];
+      // Dropped before invoices are looked up, so a historical order is never timed.
+      repaired = ((await call('repair.order', 'read', [enteredIds], { fields: roFields, context: roCtx })) as Rec[])
+        .filter((r) => !isHistorical(r));
     } else {
       repaired = (await call('repair.order', 'search_read', [[
         ...selectorDomain(config.stageMap.repaired), ...weekDomain,
@@ -807,7 +821,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Uses the chatter log for the moment the RO entered "under repair", so both check
   // a real sequence: KPI 4 wants the quote *created* first, KPI 3 wants it *approved*.
   if ((on(3) || on(4)) && has('sale_order_id')) {
-    const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
+    const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id', ...histField];
     const tf = trackedField(config.stageMap.underRepair, meta, stageNames);
 
     // ROs that STARTED repair during this week, whatever state they're in now.
@@ -816,7 +830,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
     let inRepair: Rec[];
     if (startedIds.length) {
-      inRepair = (await call('repair.order', 'read', [startedIds], { fields: roFields })) as Rec[];
+      // Read by id, so the domain cannot help — drop them before any quote is judged.
+      inRepair = ((await call('repair.order', 'read', [startedIds], { fields: roFields })) as Rec[])
+        .filter((r) => !isHistorical(r));
     } else {
       inRepair = (await call('repair.order', 'search_read', [[
         ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
@@ -937,6 +953,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Insurance jobs are exempt: approval is the insurer's to give, so holding an
     // advisor to a two-day clock measures the insurer, not them. Resolved from the
     // repair order behind each quotation, across both tag fields.
+    //
+    // This lookup deliberately does NOT exclude historical orders. It asks a
+    // question of fact — was this an insurance job — and that stays true after
+    // the order is moved to Historical. Filtering here would quietly revoke the
+    // exemption and start charging advisors for the insurer's delay.
     const insuranceExempt = new Set<number>();
     const insuranceTags = await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
     if (insuranceTags.some((m) => m.ids.size) && has('sale_order_id')) {
@@ -945,7 +966,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         try {
           const insured = (await call('repair.order', 'search_read', [[
             ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
-            ...anyTagDomain(insuranceTags),
+            ...anyTagDomain(insuranceTags),   // keep the OR-block last; it is prefix notation
           ]], { fields: ['sale_order_id'], limit: 0 })) as Rec[];
           for (const r of insured) {
             const id = m2o(r.sale_order_id)?.[0];
@@ -1066,9 +1087,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
 
     if (ids.length) {
-      const ros = (await call('repair.order', 'read', [ids], {
-        fields: ['name', 'create_uid', 'company_id', 'sale_order_id'],
-      })) as Rec[];
+      // Ids come from the chatter, so the historical ones have to be dropped here.
+      const ros = ((await call('repair.order', 'read', [ids], {
+        fields: ['name', 'create_uid', 'company_id', 'sale_order_id', ...histField],
+      })) as Rec[]).filter((r) => !isHistorical(r));
 
       const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
       const soCreated: Record<number, number> = {};
@@ -1109,9 +1131,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
 
     if (ids.length) {
-      const ros = (await call('repair.order', 'read', [ids], {
-        fields: ['name', 'create_uid', 'company_id'],
-      })) as Rec[];
+      // Ids come from the chatter, so the historical ones have to be dropped here.
+      const ros = ((await call('repair.order', 'read', [ids], {
+        fields: ['name', 'create_uid', 'company_id', ...histField],
+      })) as Rec[]).filter((r) => !isHistorical(r));
       const timeline = await stateTimeline(ids, tfQa.field);
 
       for (const r of ros) {
@@ -1171,9 +1194,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           notes.push('No chatter mentions were posted on repair orders this week.');
         } else {
           const roIds = [...new Set(mentions.map((m) => m.res_id as number))];
-          const ros = (await call('repair.order', 'read', [roIds], { fields: ['name', 'company_id'] })) as Rec[];
+          const ros = (await call('repair.order', 'read', [roIds], { fields: ['name', 'company_id', ...histField] })) as Rec[];
           const roInfo: Record<number, { name: string; branch: Branch | undefined }> = {};
           for (const r of ros) {
+            // Left out of roInfo altogether, which drops the whole conversation at the
+            // branch guard below — nobody may be owed a reply over a historical order.
+            if (isHistorical(r)) continue;
             const cid = m2o(r.company_id)?.[0];
             roInfo[r.id as number] = {
               name: (r.name as string) || '',
@@ -1296,6 +1322,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['create_date', '>=', sinceIso],
       ...selectorDomainNot(config.stageMap.closed),
       ['company_id', 'in', trackedIds],
+      ...notHist,
     ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
 
 /** Every open RO in the window counts; the stuck ones are the violations. */
@@ -1317,6 +1344,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const recs = (await call('repair.order', 'search_read', [[
         ...selectorDomain(sel),
         ['company_id', 'in', trackedIds],
+        ...notHist,
       ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
       const tf = trackedField(sel, meta, stageNames);
       const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
@@ -1345,6 +1373,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         const openROs = (await call('repair.order', 'search_read', [[
           ...selectorDomainNot(config.stageMap.closed),
           ['company_id', 'in', trackedIds],
+          ...notHist,
         ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
 
         const lineIds = [...new Set(openROs.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];

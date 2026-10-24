@@ -273,16 +273,16 @@ const qSaleOrdersToInvoice = (extra: OdooDomain = []) =>
   groupCountByCompany('sale.order', [...DOM_SALE_ORDERS_TO_INVOICE, ...extra]);
 
 /** B: "Daily WIP open RO's" — repair.order */
-const qOpenRepairOrders = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [...DOM_OPEN_REPAIR_ORDERS, ...extra]);
+const qOpenRepairOrders = async (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', await liveRepairDomain(DOM_OPEN_REPAIR_ORDERS, extra));
 
 /** D: "Repair Orders completed without quotation" — repair.order */
-const qRosWithoutQuotations = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [...DOM_ROS_WITHOUT_QUOTATIONS, ...extra]);
+const qRosWithoutQuotations = async (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', await liveRepairDomain(DOM_ROS_WITHOUT_QUOTATIONS, extra));
 
 /** E: "No tags WIP" — repair.order */
-const qRosWithoutTags = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [...DOM_ROS_WITHOUT_TAGS, ...extra]);
+const qRosWithoutTags = async (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', await liveRepairDomain(DOM_ROS_WITHOUT_TAGS, extra));
 
 /** F: "WIP Quotes not approved" — sale.order (draft only) */
 const qQuotationsNotApproved = (extra: OdooDomain = []) =>
@@ -290,13 +290,13 @@ const qQuotationsNotApproved = (extra: OdooDomain = []) =>
 
 /** G: "WIP not invoiced" — repair.order. search_count per company because the
  *  many2many tag_ids filter miscounts under read_group JOINs. */
-const qRosWithoutInvoices = (extra: OdooDomain = []) =>
-  searchCountByCompany('repair.order', [...DOM_ROS_WITHOUT_INVOICES, ...extra]);
+const qRosWithoutInvoices = async (extra: OdooDomain = []) =>
+  searchCountByCompany('repair.order', await liveRepairDomain(DOM_ROS_WITHOUT_INVOICES, extra));
 
 /** H: "Repaired but not invoiced" — repair.order. No many2many filter, so
  *  read_group counts correctly here. */
-const qRepairedNotInvoiced = (extra: OdooDomain = []) =>
-  groupCountByCompany('repair.order', [...DOM_REPAIRED_NOT_INVOICED, ...extra]);
+const qRepairedNotInvoiced = async (extra: OdooDomain = []) =>
+  groupCountByCompany('repair.order', await liveRepairDomain(DOM_REPAIRED_NOT_INVOICED, extra));
 
 /** Saturday→Saturday window used by the daily "ROs Without Tags" metric. */
 function currentSaturdayWindow(): OdooDomain {
@@ -312,6 +312,51 @@ function currentSaturdayWindow(): OdooDomain {
     ['create_date', '>=', start.toISOString().split('T')[0]],
     ['create_date', '<', end.toISOString().split('T')[0]],
   ];
+}
+
+// ── Historical orders ──────────────────────────────────────────────
+/** For the paths that read ids straight from the chatter, where no domain applies. */
+export const HISTORICAL_FIELD = 'is_historical';
+export const isHistorical = (rec: Record<string, unknown>): boolean => rec[HISTORICAL_FIELD] === true;
+
+let historicalProbe: Promise<boolean> | null = null;
+
+/**
+ * Repair orders moved to Odoo's "Historical Orders" tab carry is_historical.
+ * They are deliberately out of the working set, so nothing — WIP, KPIs or
+ * exports — may count them.
+ *
+ * Guarded because the field is a customisation on this instance: elsewhere the
+ * clause is simply empty rather than making every query fail.
+ */
+export async function notHistorical(): Promise<OdooDomain> {
+  // Cache the promise, not the result: the snapshot builders all fire at once,
+  // and caching only the settled value would let five of them race the same
+  // fields_get before any of them finishes.
+  historicalProbe ??= (async () => {
+    try {
+      const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+      return Object.prototype.hasOwnProperty.call(meta, HISTORICAL_FIELD);
+    } catch {
+      // A failed probe must not disable the filter for the life of the process:
+      // forget it so the next call retries, rather than silently counting
+      // historical orders again until a redeploy.
+      historicalProbe = null;
+      return false;
+    }
+  })();
+  // '= false' also matches NULL, which is what records predating the field hold.
+  return (await historicalProbe) ? [[HISTORICAL_FIELD, '=', false]] : [];
+}
+
+/**
+ * The single place a repair.order domain gets narrowed to the working set.
+ * Both the WIP counts and the record exports behind them build their domains
+ * here, so the clause can never be added to one side and forgotten on the
+ * other — a metric's total always reconciles with the rows it drills down to.
+ */
+async function liveRepairDomain(base: OdooDomain, extra: OdooDomain = []): Promise<OdooDomain> {
+  return [...base, ...extra, ...(await notHistorical())];
 }
 
 // ── Record export (live CSV) ───────────────────────────────────────
@@ -362,7 +407,11 @@ export async function fetchMetricRecords(
   } else if (metric === 'rosWithoutTags') {
     extra = currentSaturdayWindow();
   }
-  const base = [...def.domain(), ...extra];
+  // Only repair.order carries is_historical — adding the clause to the
+  // sale.order / fleet.warranty metrics would make those queries fail.
+  const base: OdooDomain = def.model === 'repair.order'
+    ? await liveRepairDomain(def.domain(), extra)
+    : [...def.domain(), ...extra];
 
   if (def.warranty) {
     // Warranty company link may live on write_uid.company_id; fall back to company_id.
@@ -489,11 +538,11 @@ export async function fetchRepairOrdersForExport(
 
   const start = gulfDayWindowUtc(opts.startDate ?? dateStr).start; // start-of-day GST
   const end = gulfDayWindowUtc(dateStr).end;                       // end-of-day GST on dateStr
-  const domain: OdooDomain = [
+  const domain: OdooDomain = await liveRepairDomain([
     ['create_date', '>=', start],
     ['create_date', '<=', end],
     ['company_id', 'in', exportCompanyIds],
-  ];
+  ]);
   if (opts.wipOnly) domain.push(['priority_matrix_status', '!=', 'X']);
 
   const records = (await call('repair.order', 'search_read', [domain], { fields, limit: 0 })) as Record<string, unknown>[];
@@ -1040,10 +1089,10 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   const trackedIds = await allTrackedCompanyIds();
   const users: { id: number; name: string; roCount: number }[] = [];
   try {
-    const groups = (await call('repair.order', 'read_group', [[
+    const groups = (await call('repair.order', 'read_group', [await liveRepairDomain([
       ['create_date', '>=', since],
       ['company_id', 'in', trackedIds],
-    ]], { fields: ['create_uid'], groupby: ['create_uid'], lazy: true })) as ReadGroupResult[];
+    ])], { fields: ['create_uid'], groupby: ['create_uid'], lazy: true })) as ReadGroupResult[];
     for (const g of groups) {
       const u = g.create_uid as [number, string] | undefined;
       if (!u) continue;
