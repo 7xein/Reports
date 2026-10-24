@@ -68,6 +68,8 @@ export interface KpiCell {
 export interface SaNode {
   odooUserId: number;
   name: string;
+  /** Which section this person belongs to; roster entries saved without one are advisors. */
+  section: KpiSection;
   achievement: number | null;
   sections: Record<KpiSection, number | null>;
   roCount: number;
@@ -1493,6 +1495,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
+          section: r.section ?? 'advisor',
           achievement: overall(cells),
           sections: sectionTotals(cells, config),
           roCount: roCountByUser[r.odooUserId] ?? 0,

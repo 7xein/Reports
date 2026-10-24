@@ -1289,3 +1289,351 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     },
   };
 }
+
+// ── KPI roster: suggest who to measure, from recent activity ───────
+/**
+ * One person the KPI roster could contain, together with the evidence behind
+ * every guess. The admin reviews this before saving, so each field that is a
+ * judgement (branch, section) ships with the counts it was derived from —
+ * a suggestion that cannot be checked is worse than no suggestion.
+ */
+export interface RosterSuggestion {
+  odooUserId: number;
+  name: string;
+  /** Branch carrying the most of their activity; null when none of it is ours. */
+  branch: string | null;
+  /** Anyone who raised an RO or a quotation is treated as a Service Advisor. */
+  section: 'advisor' | 'workshop';
+  jobTitle: string | null;
+  department: string | null;
+  rosCreated: number;
+  quotesCreated: number;
+  /** repair_state changes they authored, read from the tracking log. */
+  stageMoves: number;
+  /** Comments they authored on repair orders. */
+  chatterPosts: number;
+  /** branch → activity count, so the UI can show why the branch was picked. */
+  branchCounts: Record<string, number>;
+}
+
+/** Activity window for the roster suggestion. */
+const ROSTER_DAYS = 30;
+
+/** Odoo chokes on very large `in` lists, so every id list goes in slices. */
+const ID_CHUNK = 2000;
+function idChunks(ids: number[], size = ID_CHUNK): number[][] {
+  if (ids.length <= size) return ids.length ? [ids] : [];
+  const out: number[][] = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Who has been working in the last 30 days, which branch they worked in, and
+ * whether they look like a Service Advisor or Workshop — assembled from four
+ * independent signals so the admin can populate the KPI roster from evidence
+ * instead of typing a hundred names.
+ *
+ * Deliberately a SUGGESTION: every count that fed a guess is returned alongside
+ * it, and each signal is read in its own try/catch so one unreadable model
+ * degrades a single column to zero instead of losing the whole list.
+ */
+export async function fetchRosterSuggestion(): Promise<{ people: RosterSuggestion[]; notes: string[] }> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const notes: string[] = [];
+  const since = new Date(Date.now() - ROSTER_DAYS * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+
+  // Scope: WORKSHOP branches only, matching the KPI engine. EV Hub is a sales
+  // location with no workshop, so it holds no roster and appears in no KPI tree
+  // — suggesting someone for it would propose a branch that cannot store them.
+  // Someone whose only activity is EV Hub therefore drops out entirely, which is
+  // correct; mixed activity resolves to their workshop branch.
+  //
+  // Without this inversion nothing can be attributed, so it is the one failure
+  // that ends the run — with the reason in the notes rather than as a throw.
+  let trackedIds: number[] = [];
+  const idToBranch: Record<number, Branch> = {};
+  try {
+    for (const b of WORKSHOP_BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
+    trackedIds = Object.keys(idToBranch).map(Number);
+  } catch (e) {
+    notes.push(`No activity could be read — the tracked companies did not resolve: ${errText(e)}`);
+    return { people: [], notes };
+  }
+  if (!trackedIds.length) {
+    notes.push('⚠ None of the configured companies resolved in Odoo, so no activity can be attributed — the suggestion is empty.');
+    return { people: [], notes };
+  }
+  const notHist = await notHistorical();
+
+  type Tally = {
+    name: string;
+    rosCreated: number;
+    quotesCreated: number;
+    stageMoves: number;
+    chatterPosts: number;
+    branchCounts: Record<string, number>;
+  };
+  const tally = new Map<number, Tally>();
+
+  const credit = (
+    userId: number | null,
+    name: string,
+    key: 'rosCreated' | 'quotesCreated' | 'stageMoves' | 'chatterPosts',
+    n: number,
+    companyId: number | null,
+  ) => {
+    if (userId == null || n <= 0) return;
+    let t = tally.get(userId);
+    if (!t) {
+      t = { name: name || `#${userId}`, rosCreated: 0, quotesCreated: 0, stageMoves: 0, chatterPosts: 0, branchCounts: {} };
+      tally.set(userId, t);
+    } else if (name && t.name.startsWith('#')) {
+      t.name = name;
+    }
+    t[key] += n;
+    const branch = companyId != null ? idToBranch[companyId] : undefined;
+    if (branch) t.branchCounts[branch] = (t.branchCounts[branch] ?? 0) + n;
+  };
+
+  // 1 ── Repair orders created. Grouped by creator AND company (lazy: false) so
+  // one call yields both the count and the branch split behind it.
+  try {
+    const groups = (await call('repair.order', 'read_group', [[
+      ['create_date', '>=', since],
+      ['company_id', 'in', trackedIds],
+      ...notHist,
+    ] as OdooDomain], {
+      fields: ['create_uid', 'company_id'],
+      groupby: ['create_uid', 'company_id'],
+      lazy: false,
+    })) as ReadGroupResult[];
+    for (const g of groups) {
+      credit(m2oId(g.create_uid), m2oName(g.create_uid), 'rosCreated',
+        (g.__count ?? g.create_uid_count ?? 0) as number, m2oId(g.company_id));
+    }
+  } catch (e) {
+    notes.push(`Repair orders created could not be grouped by creator — that column reads 0 for everyone: ${errText(e)}`);
+  }
+
+  // 2 ── Quotations created, same treatment. No historical clause: that flag
+  // lives on repair.order, not on sale.order.
+  try {
+    const groups = (await call('sale.order', 'read_group', [[
+      ['create_date', '>=', since],
+      ['company_id', 'in', trackedIds],
+    ] as OdooDomain], {
+      fields: ['create_uid', 'company_id'],
+      groupby: ['create_uid', 'company_id'],
+      lazy: false,
+    })) as ReadGroupResult[];
+    for (const g of groups) {
+      credit(m2oId(g.create_uid), m2oName(g.create_uid), 'quotesCreated',
+        (g.__count ?? g.create_uid_count ?? 0) as number, m2oId(g.company_id));
+    }
+  } catch (e) {
+    notes.push(`Quotations created could not be grouped by creator — that column reads 0 for everyone: ${errText(e)}`);
+  }
+
+  type Msg = { id?: number; author_id?: unknown; res_id?: number; tracking_value_ids?: number[] };
+
+  // 3 ── Chatter comments on repair orders.
+  let comments: Msg[] = [];
+  try {
+    comments = (await call('mail.message', 'search_read', [[
+      ['model', '=', 'repair.order'],
+      ['date', '>=', since],
+      ['message_type', '=', 'comment'],
+    ] as OdooDomain], { fields: ['author_id', 'res_id'], limit: 0 })) as Msg[];
+  } catch (e) {
+    notes.push(`Chatter posts could not be read — that column reads 0 for everyone: ${errText(e)}`);
+  }
+
+  // 4 ── Stage moves: chatter messages carrying a tracked change of
+  // repair_state. Same v17 / legacy split as the rest of this file — newer
+  // instances reference the field by id, older ones by name.
+  let stageMsgs: Msg[] = [];
+  try {
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    const useFieldId = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id');
+    let fieldId: number | null = null;
+    if (useFieldId) {
+      const frs = (await call('ir.model.fields', 'search_read', [[
+        ['model', '=', 'repair.order'], ['name', '=', 'repair_state'],
+      ] as OdooDomain], { fields: ['id'], limit: 1 })) as { id: number }[];
+      fieldId = frs[0]?.id ?? null;
+      if (fieldId == null) throw new Error('repair_state is not a field on repair.order in this instance');
+    }
+
+    const msgs = (await call('mail.message', 'search_read', [[
+      ['model', '=', 'repair.order'],
+      ['date', '>=', since],
+      ['tracking_value_ids', '!=', false],
+    ] as OdooDomain], { fields: ['author_id', 'res_id', 'tracking_value_ids'], limit: 0 })) as Msg[];
+
+    const tvIds = [...new Set(msgs.flatMap((m) => m.tracking_value_ids ?? []))];
+    const ref = useFieldId ? 'field_id' : 'field';
+    const isStageChange = new Set<number>();
+    for (const chunk of idChunks(tvIds)) {
+      const tvs = (await call('mail.tracking.value', 'read', [chunk], { fields: [ref] })) as Record<string, unknown>[];
+      for (const tv of tvs) {
+        const hit = useFieldId
+          ? m2oId(tv.field_id) === fieldId
+          // The legacy column holds the field NAME; some versions relate it instead.
+          : (Array.isArray(tv.field) ? m2oName(tv.field) : String(tv.field ?? '')) === 'repair_state';
+        if (hit && typeof tv.id === 'number') isStageChange.add(tv.id);
+      }
+    }
+    stageMsgs = msgs.filter((m) => (m.tracking_value_ids ?? []).some((id) => isStageChange.has(id)));
+  } catch (e) {
+    notes.push(`Stage moves could not be read from the chatter — that column reads 0 for everyone: ${errText(e)}`);
+  }
+
+  // Both message signals hang off a repair order but carry no company of their
+  // own, so the orders behind them are resolved once. That single lookup is what
+  // keeps historical orders and untracked companies out of these two columns,
+  // and it is also where the branch for a comment or a stage move comes from.
+  const companyByRo = new Map<number, number>();
+  if (comments.length || stageMsgs.length) {
+    const roIds = [...new Set([...comments, ...stageMsgs]
+      .map((m) => m.res_id)
+      .filter((x): x is number => typeof x === 'number'))];
+    try {
+      for (const chunk of idChunks(roIds)) {
+        const recs = (await call('repair.order', 'search_read', [[
+          ['id', 'in', chunk],
+          ['company_id', 'in', trackedIds],
+          ...notHist,
+        ] as OdooDomain], { fields: ['company_id'], limit: 0 })) as Record<string, unknown>[];
+        for (const r of recs) {
+          const cid = m2oId(r.company_id);
+          if (typeof r.id === 'number' && cid != null) companyByRo.set(r.id, cid);
+        }
+      }
+    } catch (e) {
+      comments = [];
+      stageMsgs = [];
+      notes.push(`Chatter posts and stage moves read 0 — the repair orders behind them could not be checked for company or historical status: ${errText(e)}`);
+    }
+  }
+
+  // Message authors are PARTNERS; the roster is keyed on users.
+  const userByPartner = new Map<number, { id: number; name: string }>();
+  const partnerIds = [...new Set([...comments, ...stageMsgs]
+    .map((m) => m2oId(m.author_id))
+    .filter((x): x is number => x != null))];
+  if (partnerIds.length) {
+    try {
+      for (const chunk of idChunks(partnerIds)) {
+        const users = (await call('res.users', 'search_read', [[
+          ['partner_id', 'in', chunk],
+        ] as OdooDomain], { fields: ['partner_id', 'name'], limit: 0 })) as Record<string, unknown>[];
+        for (const u of users) {
+          const pid = m2oId(u.partner_id);
+          if (pid != null && typeof u.id === 'number') {
+            userByPartner.set(pid, { id: u.id, name: (u.name as string) || `#${u.id}` });
+          }
+        }
+      }
+    } catch (e) {
+      notes.push(`Chatter authors could not be matched to Odoo users, so chatter posts and stage moves read 0: ${errText(e)}`);
+    }
+  }
+
+  const creditMessages = (msgs: Msg[], key: 'chatterPosts' | 'stageMoves'): number => {
+    let skipped = 0;
+    for (const m of msgs) {
+      const pid = m2oId(m.author_id);
+      const user = pid != null ? userByPartner.get(pid) : undefined;
+      const cid = m.res_id != null ? companyByRo.get(m.res_id) : undefined;
+      if (!user || cid == null) { skipped++; continue; }
+      credit(user.id, user.name, key, 1, cid);
+    }
+    return skipped;
+  };
+  const skippedComments = creditMessages(comments, 'chatterPosts');
+  const skippedStage = creditMessages(stageMsgs, 'stageMoves');
+  if (skippedComments || skippedStage) {
+    notes.push(`Not counted: ${skippedComments} comment(s) and ${skippedStage} stage move(s) — the author is not an Odoo user, or the order is historical or outside the tracked companies.`);
+  }
+
+  // 5 ── Job title and department, if this instance has HR at all. Optional by
+  // design: the suggestion stands on the activity counts alone.
+  const userIds = [...tally.keys()];
+  const jobByUser = new Map<number, { jobTitle: string | null; department: string | null }>();
+  if (userIds.length) {
+    try {
+      const meta = (await call('hr.employee', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+      const hasField = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
+      if (!hasField('user_id')) throw new Error('hr.employee has no user_id to join on');
+      // Ask only for the columns this instance has: requesting an absent field
+      // fails the whole read.
+      const fields = ['user_id', ...['job_title', 'department_id'].filter(hasField)];
+
+      for (const chunk of idChunks(userIds)) {
+        const emps = (await call('hr.employee', 'search_read', [[
+          ['user_id', 'in', chunk],
+        ] as OdooDomain], { fields, limit: 0 })) as Record<string, unknown>[];
+        for (const emp of emps) {
+          const uid = m2oId(emp.user_id);
+          if (uid == null) continue;
+          // A user can hold one employee record per company; first filled wins.
+          const prev = jobByUser.get(uid);
+          jobByUser.set(uid, {
+            jobTitle: prev?.jobTitle ?? ((emp.job_title as string | false | undefined) || null),
+            department: prev?.department ?? (m2oName(emp.department_id) || null),
+          });
+        }
+      }
+      notes.push(`hr.employee is available — job title or department found for ${jobByUser.size} of ${userIds.length} people.`);
+    } catch (e) {
+      notes.push(`Job titles were unavailable (hr.employee could not be read), so job title and department are blank: ${errText(e)}`);
+    }
+  }
+
+  // Derive the two guesses. Branch: whichever carries the most activity, ties
+  // broken on the branch order the dashboards already use, so the same evidence
+  // always suggests the same branch. Section: raising an RO or a quotation is
+  // advisor work — simple enough to explain, and the counts let a human overrule it.
+  const people: RosterSuggestion[] = [];
+  for (const [odooUserId, t] of tally) {
+    const total = t.rosCreated + t.quotesCreated + t.stageMoves + t.chatterPosts;
+    if (total <= 0) continue;
+    let branch: string | null = null;
+    let best = 0;
+    for (const b of WORKSHOP_BRANCHES) {
+      const n = t.branchCounts[b] ?? 0;
+      if (n > best) { best = n; branch = b; }
+    }
+    const job = jobByUser.get(odooUserId);
+    people.push({
+      odooUserId,
+      name: t.name,
+      branch,
+      section: t.rosCreated + t.quotesCreated > 0 ? 'advisor' : 'workshop',
+      jobTitle: job?.jobTitle ?? null,
+      department: job?.department ?? null,
+      rosCreated: t.rosCreated,
+      quotesCreated: t.quotesCreated,
+      stageMoves: t.stageMoves,
+      chatterPosts: t.chatterPosts,
+      branchCounts: t.branchCounts,
+    });
+  }
+
+  const totalOf = (p: RosterSuggestion) => p.rosCreated + p.quotesCreated + p.stageMoves + p.chatterPosts;
+  people.sort((a, b) => totalOf(b) - totalOf(a) || a.name.localeCompare(b.name));
+
+  const advisors = people.filter((p) => p.section === 'advisor').length;
+  const unplaced = people.filter((p) => !p.branch).length;
+  notes.unshift(`${people.length} people were active in the last ${ROSTER_DAYS} days`
+    + ` — ${advisors} look like Service Advisors (they created a repair order or a quotation),`
+    + ` ${people.length - advisors} like Workshop`
+    + `${unplaced ? `; ${unplaced} could not be placed in a branch` : ''}.`);
+
+  return { people, notes };
+}

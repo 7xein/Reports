@@ -481,20 +481,40 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   No people on the roster for {branchNode.name}. Add them in <strong>Admin → KPI Configuration</strong>.
                 </div>
               ) : (
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {branchNode.serviceAdvisors.map((s) => {
-                    const sb = band(s.achievement);
-                    return (
-                      <button key={s.odooUserId} onClick={() => setSa(s.odooUserId)}
-                        className="text-left bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-all cursor-pointer border-t-2"
-                        style={{ borderTopColor: sb.hex }}>
-                        <div className="font-bold text-ink truncate">{s.name}</div>
-                        <div className={`text-2xl font-black tabular-nums mt-1 ${sb.text}`}>{fmtPct(s.achievement)}</div>
-                        <div className="text-xs text-ink-muted mt-1.5">{s.roCount} RO{s.roCount !== 1 ? 's' : ''} this week</div>
-                      </button>
-                    );
-                  })}
-                </div>
+                KPI_SECTION_ORDER.map((section, si) => {
+                  // Already sorted by achievement in the engine — filtering keeps that order.
+                  const people = branchNode.serviceAdvisors.filter((s) => s.section === section);
+                  // No people means no section at all — never a header on its own.
+                  if (!people.length) return null;
+                  const accent = SECTION_ACCENT[section];
+                  return (
+                    <div key={section} className={si > 0 ? 'mt-6' : ''}>
+                      <div className="flex items-baseline flex-wrap gap-x-2 mb-3">
+                        <span className="w-1 h-3.5 rounded-full shrink-0" style={{ background: accent }} />
+                        <span className="text-[11px] font-black uppercase tracking-[0.18em]" style={{ color: accent }}>
+                          {KPI_SECTION_LABELS[section]}
+                        </span>
+                        <span className="ml-auto text-[11px] text-ink-muted whitespace-nowrap">
+                          {people.length} {people.length === 1 ? 'person' : 'people'}
+                        </span>
+                      </div>
+                      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {people.map((s) => {
+                          const sb = band(s.achievement);
+                          return (
+                            <button key={s.odooUserId} onClick={() => setSa(s.odooUserId)}
+                              className="text-left bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-all cursor-pointer border-t-2"
+                              style={{ borderTopColor: sb.hex }}>
+                              <div className="font-bold text-ink truncate">{s.name}</div>
+                              <div className={`text-2xl font-black tabular-nums mt-1 ${sb.text}`}>{fmtPct(s.achievement)}</div>
+                              <div className="text-xs text-ink-muted mt-1.5">{s.roCount} RO{s.roCount !== 1 ? 's' : ''} this week</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </>
           )}

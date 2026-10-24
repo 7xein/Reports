@@ -20,6 +20,64 @@ interface OdooOptions {
   };
 }
 
+/**
+ * One suggested roster member, mirroring GET /api/kpi/roster-suggestion.
+ * Declared here for the same reason OdooOptions is: lib/odoo.ts is a server
+ * module and this card is a client component.
+ */
+interface RosterSuggestion {
+  odooUserId: number;
+  name: string;
+  branch: string | null;
+  section: KpiSection;
+  jobTitle: string | null;
+  department: string | null;
+  rosCreated: number;
+  quotesCreated: number;
+  stageMoves: number;
+  chatterPosts: number;
+  branchCounts: Record<string, number>;
+}
+
+/** A suggestion plus the reviewer's edits. Lives outside cfg until it is applied. */
+interface SuggestedPerson extends RosterSuggestion {
+  branchPick: string;
+  sectionPick: KpiSection;
+  checked: boolean;
+  /** Odoo gave no branch the dropdown can offer, so branchPick is a fallback. */
+  weakBranch: boolean;
+}
+
+const countLabel = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Why someone was suggested: job data first, then only the counts that are non-zero. */
+function evidenceLine(s: RosterSuggestion): string {
+  const bits: string[] = [];
+  if (s.jobTitle) bits.push(s.jobTitle);
+  if (s.department) bits.push(`${s.department} dept`);
+  if (s.rosCreated > 0) bits.push(countLabel(s.rosCreated, 'RO', 'ROs'));
+  if (s.quotesCreated > 0) bits.push(countLabel(s.quotesCreated, 'quote', 'quotes'));
+  if (s.stageMoves > 0) bits.push(countLabel(s.stageMoves, 'stage move', 'stage moves'));
+  if (s.chatterPosts > 0) bits.push(countLabel(s.chatterPosts, 'comment', 'comments'));
+  return bits.join(' · ');
+}
+
+/**
+ * Normalise one API suggestion into an editable row. A branch the dropdown cannot
+ * offer — null, or outside WORKSHOP_BRANCHES — falls back to the first workshop
+ * branch and is flagged, so applying can never write a null or unlisted branch.
+ */
+function toSuggestedPerson(s: RosterSuggestion, alreadyTracked: boolean): SuggestedPerson {
+  const usable = !!s.branch && (WORKSHOP_BRANCHES as readonly string[]).includes(s.branch);
+  return {
+    ...s,
+    branchPick: usable ? (s.branch as string) : WORKSHOP_BRANCHES[0],
+    sectionPick: s.section === 'workshop' ? 'workshop' : 'advisor',
+    checked: !alreadyTracked,
+    weakBranch: !usable,
+  };
+}
+
 type MapKey = 'inspection' | 'qa' | 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'insuranceTags' | 'closed';
 const MAP_LABELS: Record<MapKey, string> = {
   inspection: 'Inspection', qa: 'QA',
@@ -45,6 +103,11 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [personSearch, setPersonSearch] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
+  // null = no preview open. The preview is deliberately separate from cfg:
+  // nothing reaches the roster until "Add selected to roster" is pressed.
+  const [suggestions, setSuggestions] = useState<SuggestedPerson[] | null>(null);
+  const [suggestNotes, setSuggestNotes] = useState<string[]>([]);
 
   useEffect(() => {
     fetch('/api/kpi/odoo-options', { credentials: 'include' })
@@ -94,6 +157,73 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     setCfg((p) => ({ ...p, saRoster: p.saRoster.map((r) => (r.odooUserId === userId ? { ...r, branch } : r)) }));
   }
 
+  /**
+   * Reads 30 days of Odoo activity into a review panel. Slow (~30s). A second run
+   * replaces the whole preview, and a failure leaves both preview and roster alone.
+   */
+  async function loadSuggestion() {
+    setSuggesting(true); setMessage('');
+    try {
+      const res = await fetch('/api/kpi/roster-suggestion', { credentials: 'include' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(`Error ${res.status}: ${body?.detail || body?.error || res.statusText}`);
+        return;
+      }
+      const people: RosterSuggestion[] = Array.isArray(body?.people) ? body.people : [];
+      setSuggestions(people.map((p) => toSuggestedPerson(p, rosterById.has(p.odooUserId))));
+      setSuggestNotes(Array.isArray(body?.notes) ? body.notes : []);
+    } catch (e) {
+      setMessage(`Suggestion failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setSuggesting(false); }
+  }
+
+  function toggleSuggestion(userId: number) {
+    setSuggestions((p) => p && p.map((s) => (s.odooUserId === userId ? { ...s, checked: !s.checked } : s)));
+  }
+
+  function setAllSuggestions(checked: boolean) {
+    setSuggestions((p) => p && p.map((s) => ({ ...s, checked })));
+  }
+
+  function setSuggestionBranch(userId: number, branch: string) {
+    setSuggestions((p) => p && p.map((s) => (s.odooUserId === userId ? { ...s, branchPick: branch } : s)));
+  }
+
+  function setSuggestionSection(userId: number, section: KpiSection) {
+    setSuggestions((p) => p && p.map((s) => (s.odooUserId === userId ? { ...s, sectionPick: section } : s)));
+  }
+
+  function discardSuggestion() {
+    setSuggestions(null); setSuggestNotes([]);
+  }
+
+  /**
+   * Merges the checked rows into the roster: upsert by odooUserId, so re-checking
+   * someone already tracked updates their row instead of duplicating it. Unchecked
+   * rows and untouched roster entries are left exactly as they were, and nothing is
+   * persisted — save() stays an explicit act.
+   */
+  function applySuggestion() {
+    const picked = (suggestions ?? []).filter((s) => s.checked);
+    if (picked.length === 0) {
+      setMessage('Nothing selected — the roster is unchanged.');
+      return;
+    }
+    setCfg((p) => {
+      const next = [...p.saRoster];
+      for (const s of picked) {
+        const entry = { odooUserId: s.odooUserId, name: s.name, branch: s.branchPick, section: s.sectionPick };
+        const at = next.findIndex((r) => r.odooUserId === s.odooUserId);
+        if (at >= 0) next[at] = { ...next[at], ...entry };
+        else next.push(entry);
+      }
+      return { ...p, saRoster: next };
+    });
+    discardSuggestion();
+    setMessage(`✓ Added ${countLabel(picked.length, 'person', 'people')} to the roster — not saved yet. Press Save KPI Configuration below to persist.`);
+  }
+
   function toggleKpi(id: number) {
     setCfg((p) => ({
       ...p,
@@ -134,6 +264,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   const visibleUsers = allUsers.filter((u) => rosterById.has(u.id) || shownMatchIds.has(u.id));
 
   const inputCls = 'w-24 px-3 py-1.5 border border-border rounded text-right tabular-nums text-ink focus:border-evs-green focus:outline-none text-sm';
+  const selectedSuggestions = suggestions?.filter((s) => s.checked).length ?? 0;
+  // No focus:outline-none on the preview controls — the focus ring must stay visible.
+  const suggestPillCls = 'text-xs px-2.5 py-1 rounded-full border bg-white text-ink-muted border-border hover:border-gray-400 transition-colors cursor-pointer';
+  const suggestSelectCls = 'text-xs border border-border rounded px-2 py-1 text-ink bg-white focus:border-evs-green';
 
   return (
     <div className="bg-white rounded-lg shadow-sm p-6 mt-5">
@@ -273,10 +407,99 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       </div>
 
       {/* 3. Tracked people roster */}
-      <div className="text-sm font-bold text-ink mb-1">3. Tracked people</div>
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+        <div className="text-sm font-bold text-ink">3. Tracked people</div>
+        <button
+          onClick={loadSuggestion}
+          disabled={suggesting}
+          aria-busy={suggesting}
+          title="Reads the last 30 days of Odoo activity and proposes who to track. Takes up to half a minute; nothing is saved until you apply it."
+          className={`
+            inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+            border-2 transition-all duration-200
+            ${suggesting
+              ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+              : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'}
+            disabled:opacity-50
+          `}
+        >
+          {suggesting ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Reading Odoo…
+            </>
+          ) : 'Suggest from Odoo (30 days)'}
+        </button>
+      </div>
       <p className="text-xs text-ink-muted mb-3">
         Only checked users are measured individually. Everyone&apos;s ROs still count toward branch totals.
       </p>
+
+      {/* 3a. Suggestion preview — reviewed here, merged into the roster only on apply. */}
+      {suggestions && (
+        <div className="border border-border rounded-md p-3 mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+            <span className="text-xs font-bold uppercase tracking-wide text-ink-muted">
+              Suggested from Odoo — nothing is saved until you apply it
+            </span>
+            <span className="text-xs text-ink-muted tabular-nums">
+              {selectedSuggestions} of {suggestions.length} selected
+            </span>
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <button onClick={() => setAllSuggestions(true)} className={suggestPillCls}>Select all</button>
+            <button onClick={() => setAllSuggestions(false)} className={suggestPillCls}>Select none</button>
+          </div>
+          {suggestNotes.map((n) => <div key={n} className="text-xs text-ink-muted mb-1.5">ⓘ {n}</div>)}
+
+          <div className="max-h-72 overflow-y-auto border border-border rounded-md divide-y divide-border">
+            {suggestions.map((s) => {
+              const tracked = rosterById.has(s.odooUserId);
+              const evidence = evidenceLine(s);
+              return (
+                <div key={s.odooUserId} className="flex items-start gap-3 px-3 py-2">
+                  <input type="checkbox" checked={s.checked} onChange={() => toggleSuggestion(s.odooUserId)}
+                    aria-label={`Add ${s.name} to the tracked roster`} className="mt-1 cursor-pointer" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap text-sm text-ink">
+                      <span className="truncate">{s.name}</span>
+                      {tracked && <span className="text-[11px] text-ink-muted">already tracked</span>}
+                      {s.weakBranch && <span className="text-[11px] text-ink-muted">no clear branch</span>}
+                    </div>
+                    {evidence && <div className="text-[11px] text-ink-muted">{evidence}</div>}
+                  </div>
+                  <select value={s.branchPick} aria-label={`Branch for ${s.name}`}
+                    onChange={(e) => setSuggestionBranch(s.odooUserId, e.target.value)} className={suggestSelectCls}>
+                    {WORKSHOP_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                  <select value={s.sectionPick} aria-label={`Section for ${s.name}`}
+                    onChange={(e) => setSuggestionSection(s.odooUserId, e.target.value as KpiSection)} className={suggestSelectCls}>
+                    {KPI_SECTION_ORDER.map((sec) => <option key={sec} value={sec}>{KPI_SECTION_LABELS[sec]}</option>)}
+                  </select>
+                </div>
+              );
+            })}
+            {suggestions.length === 0 && (
+              <div className="px-3 py-2 text-xs text-ink-muted">Odoo reported no activity in the last 30 days.</div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-3">
+            <button onClick={applySuggestion}
+              className="px-4 py-1.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors cursor-pointer">
+              Add selected to roster
+            </button>
+            <button onClick={discardSuggestion}
+              className="px-4 py-1.5 text-sm font-semibold rounded-md border-2 border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark transition-all duration-200 cursor-pointer">
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
+
       {opts && opts.users.length > 0 ? (
         <>
         <input type="text" value={personSearch} onChange={(e) => setPersonSearch(e.target.value)}

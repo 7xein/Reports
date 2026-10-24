@@ -225,6 +225,8 @@ export interface SaRosterEntry {
   odooUserId: number;
   name: string;
   branch: string;
+  /** Which section this person is listed under. Absent means Service Advisor. */
+  section?: KpiSection;
 }
 
 export interface KpiConfig {
