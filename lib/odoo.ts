@@ -1128,6 +1128,31 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // What marks a repair order as "historical"? Orders moved to that tab must
+  // stop counting, and a menu tab in Odoo is just a domain over the same model —
+  // so something on the record has to carry the distinction.
+  try {
+    const flagged = Object.entries(meta)
+      .filter(([n, m]) => /histor|archiv|legacy|old/i.test(n) || /histor|archiv|legacy|old/i.test(m.string ?? ''))
+      .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''} [${m.type}]`);
+    notes.push(`Fields mentioning historical/archive/legacy: ${flagged.join(' · ') || '(none)'}`);
+
+    const booleans = Object.entries(meta)
+      .filter(([, m]) => m.type === 'boolean')
+      .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''}`);
+    notes.push(`Boolean fields on repair.order: ${booleans.join(' · ') || '(none)'}`);
+
+    // Archiving would already hide them from us, so a difference here rules it in
+    // or out immediately.
+    if (has('active')) {
+      const [visible, withArchived] = await Promise.all([
+        call('repair.order', 'search_count', [[]]) as Promise<number>,
+        call('repair.order', 'search_count', [[['active', 'in', [true, false]]]]) as Promise<number>,
+      ]);
+      notes.push(`Repair orders the dashboards can see: ${visible}; including archived: ${withArchived}${visible === withArchived ? ' — nothing is archived, so Historical is not archiving.' : ` — ${withArchived - visible} archived.`}`);
+    }
+  } catch { notes.push('Historical-field probe failed.'); }
+
   // Which partners count as "us" for the internal-sales filter.
   try {
     const internal = await internalPartnerIds();
