@@ -4,22 +4,27 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { WipDailyEntry, WipMetricKey, WIP_METRICS, BRANCHES, Branch } from '@/lib/types';
+import {
+  WipDailyEntry, WipMetricKey, WIP_METRICS, BRANCHES,
+  getSubBranches, hasSubBranches, subKey, parseScope,
+} from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 
 interface TrendChartProps {
   entries: WipDailyEntry[];
   metric: WipMetricKey;
-  branch: 'all' | Branch;
-  onBranchChange: (b: 'all' | Branch) => void;
+  /** 'all', a branch name, or a `${branch}__${station}` key — same scope the page uses. */
+  scope: string;
+  onScopeChange: (s: string) => void;
 }
 
 function sumBranches(values: Record<string, Record<string, number>>, key: string): number {
   return BRANCHES.reduce((sum, b) => sum + ((values[key]?.[b]) ?? 0), 0);
 }
 
-export function TrendChart({ entries, metric, branch, onBranchChange }: TrendChartProps) {
+export function TrendChart({ entries, metric, scope, onScopeChange }: TrendChartProps) {
   const metaMeta = WIP_METRICS.find((m) => m.key === metric)!;
+  const { branch: scopeBranch, sub: scopeSub } = parseScope(scope);
 
   if (entries.length === 0) {
     return (
@@ -34,28 +39,45 @@ export function TrendChart({ entries, metric, branch, onBranchChange }: TrendCha
     .map((e) => ({
       date: e.date,
       value:
-        branch === 'all'
+        scope === 'all'
           ? sumBranches(e.values as Record<string, Record<string, number>>, metric)
-          : ((e.values[metric] as unknown as Record<string, number>)?.[branch] ?? 0),
+          : scopeSub
+            // Stations only exist in subValues — snapshots from before they were recorded read 0.
+            ? (e.subValues?.[metric]?.[scope] ?? 0)
+            : ((e.values[metric] as unknown as Record<string, number>)?.[scope] ?? 0),
     }));
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-ink-muted">
-          {branch === 'all' ? `Total across all ${BRANCHES.length} branches` : `Branch: ${branch}`}
+          {scope === 'all'
+            ? `Total across all ${BRANCHES.length} branches`
+            : scopeSub
+              ? `Station: ${scopeSub} — ${scopeBranch}`
+              : `Branch: ${scopeBranch}`}
         </span>
-        {/* Branch selector styled as a pill */}
+        {/* Scope selector styled as a pill — mirrors the pills above, stations included */}
         <select
-          value={branch}
-          onChange={(e) => onBranchChange(e.target.value as 'all' | Branch)}
+          value={scope}
+          onChange={(e) => onScopeChange(e.target.value)}
           className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1.5 rounded-full border-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-evs-green/30 appearance-none pr-6"
           style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath d=\'M1 1l4 4 4-4\' stroke=\'%2378C41A\' strokeWidth=\'1.5\' fill=\'none\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center' }}
         >
           <option value="all">All Branches</option>
-          {BRANCHES.map((b) => (
-            <option key={b} value={b}>{b}</option>
-          ))}
+          {BRANCHES.map((b) =>
+            // Option labels stay self-describing, so the collapsed select always reads like the pill.
+            hasSubBranches(b) ? (
+              <optgroup key={b} label={b}>
+                <option value={b}>{b}</option>
+                {getSubBranches(b).map((s) => (
+                  <option key={s} value={subKey(b, s)}>{s}</option>
+                ))}
+              </optgroup>
+            ) : (
+              <option key={b} value={b}>{b}</option>
+            )
+          )}
         </select>
       </div>
 

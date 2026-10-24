@@ -1,10 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { TrendChart } from '@/components/TrendChart';
 import { BranchBreakdownBars } from '@/components/BranchBreakdownBars';
 import { WipMetricsLegend } from '@/components/WipMetricsLegend';
-import { WORKSHOP_BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch } from '@/lib/types';
+import {
+  WORKSHOP_BRANCHES, WIP_METRICS, WipDailyEntry, WipMetricKey, Branch,
+  getSubBranches, subKey, parseScope, scopeLabel,
+} from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 import { downloadMetricCsv } from '@/lib/export-csv';
 
@@ -29,6 +32,22 @@ function singleBranchTotals(entry: WipDailyEntry, branch: Branch): Record<WipMet
   ) as Record<WipMetricKey, number>;
 }
 
+/** Values for a single station across all metrics — snapshots taken before stations existed read 0 */
+function singleSubTotals(entry: WipDailyEntry, scopeKey: string): Record<WipMetricKey, number> {
+  return Object.fromEntries(
+    WIP_METRICS.map((m) => [m.key, (entry.subValues?.[m.key]?.[scopeKey]) ?? 0])
+  ) as Record<WipMetricKey, number>;
+}
+
+/** Figures for whatever the page is scoped to: all branches, one branch, or one station */
+function totalsForScope(entry: WipDailyEntry, scope: string): Record<WipMetricKey, number> {
+  if (scope === 'all') return sumAllBranches(entry);
+  // Stations live in subValues; a branch scope keeps reading the authoritative branch total.
+  return parseScope(scope).sub
+    ? singleSubTotals(entry, scope)
+    : singleBranchTotals(entry, scope as Branch);   // every non-station scope is a branch name
+}
+
 const BRANCH_COLORS: Record<string, string> = {
   'All Branches': '#78C41A',
   Dubai:    '#78C41A',
@@ -41,44 +60,125 @@ const BRANCH_COLORS: Record<string, string> = {
 
 export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) {
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
-  const [branchFilter, setBranchFilter] = useState<'all' | Branch>('all');
+  // One scope drives the whole page: 'all', a branch name, or a `${branch}__${station}` key.
+  const [scope, setScope] = useState<string>('all');
+  // Branch whose station menu is open — a single slot, so only one menu is ever open.
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const pillRowRef = useRef<HTMLDivElement>(null);
+
+  // The station menu is a popover: a mousedown outside the pill row, or Escape, dismisses it.
+  useEffect(() => {
+    if (!openMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!pillRowRef.current?.contains(e.target as Node)) setOpenMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenu(null);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openMenu]);
 
   const history = [...wipHistory].sort((a, b) => a.date.localeCompare(b.date));
   const latest = history[history.length - 1];
   const prior  = history[history.length - 2];
 
-  const currentTotals = latest
-    ? (branchFilter === 'all' ? sumAllBranches(latest) : singleBranchTotals(latest, branchFilter))
-    : emptyMetricTotals();
+  const { branch: scopeBranch, sub: scopeSub } = parseScope(scope);
+  // Parent branch of the current scope — '' only while the scope is 'all', which never renders the panel.
+  const panelBranch = scopeBranch ?? '';
 
-  const previousTotals = prior
-    ? (branchFilter === 'all' ? sumAllBranches(prior) : singleBranchTotals(prior, branchFilter))
-    : emptyMetricTotals();
+  const currentTotals  = latest ? totalsForScope(latest, scope) : emptyMetricTotals();
+  const previousTotals = prior  ? totalsForScope(prior,  scope) : emptyMetricTotals();
 
   const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
 
   return (
     <>
-      {/* Branch selector */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      {/* Branch selector — branches with stations split into pill + chevron that drills in */}
+      <div ref={pillRowRef} className="flex flex-wrap items-center gap-2 mb-4">
         <span className="text-sm font-semibold text-ink-muted mr-1">Branch:</span>
         {(['all', ...WORKSHOP_BRANCHES] as const).map((b) => {
-          const active = branchFilter === b;
-          const color = BRANCH_COLORS[b === 'all' ? 'All Branches' : b] ?? '#78C41A';
+          const isAll    = b === 'all';
+          // A branch stays "active" while any of its stations is the scope.
+          const active   = isAll ? scope === 'all' : scopeBranch === b;
+          const color    = BRANCH_COLORS[isAll ? 'All Branches' : b] ?? '#78C41A';
+          const stations = isAll ? [] : getSubBranches(b);
+          const menuOpen = openMenu === b;
+          // The pill names the live scope, so a drilled-in station replaces the branch name on it.
+          const pillLabel = isAll ? 'All Branches' : (active && scopeSub ? scopeSub : b);
+
           return (
-            <button
-              key={b}
-              onClick={() => setBranchFilter(b)}
-              className={`text-sm font-semibold px-4 py-1.5 rounded-full border transition-all ${
-                active
-                  ? 'text-white border-transparent shadow-sm'
-                  : 'bg-white text-ink-muted border-border hover:border-gray-400'
-              }`}
-              style={active ? { backgroundColor: color, borderColor: color } : {}}
-            >
-              {b === 'all' ? 'All Branches' : b}
-            </button>
+            <div key={b} className="relative inline-flex">
+              <button
+                onClick={() => { setScope(b); setOpenMenu(null); }}
+                className={`text-sm font-semibold px-4 py-1.5 ${stations.length > 0 ? 'rounded-l-full pr-3' : 'rounded-full'} border transition-all ${
+                  active
+                    ? 'text-white border-transparent shadow-sm'
+                    : 'bg-white text-ink-muted border-border hover:border-gray-400'
+                }`}
+                style={active ? { backgroundColor: color, borderColor: color } : {}}
+              >
+                {pillLabel}
+              </button>
+
+              {stations.length > 0 && (
+                <button
+                  onClick={() => setOpenMenu(menuOpen ? null : b)}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  aria-label={`Choose a station in ${b}`}
+                  className={`rounded-r-full pl-1.5 pr-2.5 py-1.5 border border-l-0 transition-all ${
+                    active
+                      ? 'text-white border-transparent shadow-sm'
+                      : 'bg-white text-ink-muted border-border hover:border-gray-400'
+                  }`}
+                  style={active ? { backgroundColor: color, borderColor: color } : {}}
+                >
+                  <svg
+                    className={`h-3 w-3 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+                    viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8"
+                  >
+                    <path d="M2.5 4.5L6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              )}
+
+              {menuOpen && (
+                <div className="absolute z-20 top-full mt-1 left-0 min-w-[210px] bg-white border border-border rounded-lg shadow-lg py-1">
+                  {/* Header keeps the branch name, which the pill gives up while a station is scoped */}
+                  <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-muted border-b border-border">
+                    {b}
+                  </div>
+                  <button
+                    onClick={() => { setScope(b); setOpenMenu(null); }}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
+                      scope === b ? 'font-semibold text-evs-green-dark' : ''
+                    }`}
+                  >
+                    Whole branch
+                  </button>
+                  {stations.map((s) => {
+                    const stationScope = subKey(b, s);
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => { setScope(stationScope); setOpenMenu(null); }}
+                        className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
+                          scope === stationScope ? 'font-semibold text-evs-green-dark' : ''
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -133,13 +233,13 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
         <TrendChart
           entries={wipHistory}
           metric={selectedMetric}
-          branch={branchFilter}
-          onBranchChange={setBranchFilter}
+          scope={scope}
+          onScopeChange={setScope}
         />
       </div>
 
-      {/* Branch breakdown — all metrics for selected branch, or all branches for selected metric */}
-      {branchFilter === 'all' ? (
+      {/* Branch breakdown — all metrics for the scoped branch/station, or all branches for selected metric */}
+      {scope === 'all' ? (
         <BranchBreakdownBars
           meta={selectedMeta}
           current={(latest?.values[selectedMetric] ?? {}) as Record<string, number>}
@@ -150,13 +250,14 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
         />
       ) : (
         <SingleBranchPanel
-          branch={branchFilter}
+          branch={panelBranch}
+          label={scopeLabel(scope)}
           currentTotals={currentTotals}
           previousTotals={previousTotals}
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
-          onExport={() => downloadMetricCsv(selectedMetric, branchFilter, setExportingKey)}
-          exporting={exportingKey === branchFilter}
+          onExport={() => downloadMetricCsv(selectedMetric, panelBranch, setExportingKey)}
+          exporting={exportingKey === panelBranch}
         />
       )}
 
@@ -165,9 +266,10 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
   );
 }
 
-/* ─── Single-branch view: show all 7 metrics for the selected branch ──── */
+/* ─── Single-scope view: all 7 metrics for the selected branch or station ──── */
 function SingleBranchPanel({
   branch,
+  label,
   currentTotals,
   previousTotals,
   selectedMetric,
@@ -175,7 +277,10 @@ function SingleBranchPanel({
   onExport,
   exporting,
 }: {
-  branch: Branch;
+  /** Parent branch — drives the colour and the CSV export, which has no station granularity. */
+  branch: string;
+  /** What the figures cover: the branch itself, or one of its stations. */
+  label: string;
   currentTotals: Record<WipMetricKey, number>;
   previousTotals: Record<WipMetricKey, number>;
   selectedMetric: WipMetricKey;
@@ -185,17 +290,22 @@ function SingleBranchPanel({
 }) {
   const color = BRANCH_COLORS[branch] ?? '#78C41A';
   const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
+  // Odoo export has no station filter, so say what the button really hands back.
+  const isStation = label !== branch;
+  const exportTitle = isStation
+    ? `Exports the whole branch — station-level export is not available. ${branch} — ${selectedMeta.label} records (live from Odoo)`
+    : `Export ${branch} — ${selectedMeta.label} records (live from Odoo)`;
 
   return (
     <div className="bg-white rounded-lg p-5 shadow-sm">
       <div className="flex items-center justify-between mb-4 gap-3">
-        <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">All Metrics — {branch}</span>
+        <span className="text-sm font-bold uppercase tracking-wide text-ink-muted">All Metrics — {label}</span>
         <div className="flex items-center gap-3">
           <button
             onClick={onExport}
             disabled={exporting}
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink-muted hover:text-evs-green-dark border border-border hover:border-evs-green rounded-md px-3 py-1.5 transition-colors cursor-pointer disabled:opacity-50"
-            title={`Export ${branch} — ${selectedMeta.label} records (live from Odoo)`}
+            title={exportTitle}
           >
             {exporting ? (
               <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">

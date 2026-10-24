@@ -20,6 +20,21 @@ export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];
 export const hasSubBranches = (b: string): boolean => (SUB_BRANCHES[b]?.length ?? 0) > 0;
 export const subKey = (branch: string, sub: string): string => `${branch}__${sub}`;
 
+/** Split a WIP scope into its branch and, when present, its sub-branch. */
+export function parseScope(scope: string): { branch: string | null; sub: string | null } {
+  if (scope === 'all') return { branch: null, sub: null };
+  // Split on the FIRST separator only — branch and sub names carry spaces, hyphens and dots.
+  const i = scope.indexOf('__');
+  if (i === -1) return { branch: scope, sub: null };
+  return { branch: scope.slice(0, i), sub: scope.slice(i + 2) || null };
+}
+
+/** The label a scope should show: 'All Branches', the branch, or the station. */
+export function scopeLabel(scope: string): string {
+  const { branch, sub } = parseScope(scope);
+  return sub ?? branch ?? 'All Branches';
+}
+
 // ── WIP metrics (7 fields shown in both WIP dashboard views) ──────────────
 export const WIP_METRICS = [
   { key: 'saleOrdersToInvoice',  label: 'Sale Orders / Quotations Without Invoices', short: 'SOs to Invoice', lowerIsBetter: true,  isCurrency: false, description: 'Confirmed sale orders / quotations that still have no invoice generated — billed work not yet invoiced.' },
