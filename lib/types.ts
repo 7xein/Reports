@@ -136,7 +136,7 @@ export const KPI_DEFINITIONS = [
   { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', section: 'advisor', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
   { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', section: 'advisor', rule: 'Every QA-flagged vehicle that reaches Repaired must have the service advisor follow-up screenshot uploaded.' },
   { id: 3, name: 'SO before repaired',       group: 'Quotations', section: 'workshop', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
-  { id: 12, name: 'Quote after RO',          group: 'Quotations', section: 'workshop', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
+  { id: 12, name: 'Quote sent to customer',  group: 'Quotations', section: 'workshop', rule: 'The quotation must reach the customer within the configured time of check-in finishing — measured from the RO entering Inspection to the quotation being created. The appendix chains each stage to the one before it, so this clock starts at check-in, not at the job card opening.' },
   { id: 4, name: 'Quote before starting repair', group: 'Quotations', section: 'workshop', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag on creation',          group: 'Tagging', section: 'advisor', rule: 'A tag must be added to every RO within the configured time of creation.' },
   { id: 8, name: 'Car in / out tag',         group: 'Tagging', section: 'advisor', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
@@ -144,14 +144,29 @@ export const KPI_DEFINITIONS = [
   { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', section: 'workshop', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', section: 'workshop', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', section: 'workshop', rule: 'A vehicle cannot await labour beyond the configured time.' },
-  { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', section: 'workshop', rule: 'An @mention on a repair order must be answered in the chatter within the configured time. Tagging several people is one request — any of them may answer it; unanswered, it falls to the one tagged first.' },
+  { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', section: 'workshop', target: 95, rule: 'An @mention on a repair order must be answered in the chatter within the configured time. Tagging several people is one request — any of them may answer it; unanswered, it falls to the one tagged first.' },
   { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', section: 'advisor', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
   { id: 15, name: 'Inspection duration',     group: 'Workshop stages', section: 'workshop', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
   { id: 16, name: 'QA duration',             group: 'Workshop stages', section: 'workshop', rule: 'A repair order must not sit in QA longer than the configured time.' },
+  { id: 18, name: 'Parts ordered after approval', group: 'Workshop stages', section: 'workshop', rule: 'Parts must be ordered within the configured time of the quotation being approved — measured from approval to when the repair order\'s parts lines were added, since Odoo records no separate "parts confirmed" moment.' },
+  { id: 19, name: 'Quotation approval rate', group: 'Quotations', section: 'advisor', target: 70, rule: 'Of the quotations sent, the share the customer approves.' },
+  { id: 20, name: 'Ready by promised time',  group: 'Delivery & invoicing', section: 'advisor', target: 95, rule: 'The vehicle must reach Repaired by the scheduled delivery date promised to the customer.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
 export type KpiSection = 'advisor' | 'workshop';
+
+/**
+ * The achievement a KPI is judged against when its own definition names none.
+ * The appendix's general rule: below 90% is red.
+ */
+export const DEFAULT_KPI_TARGET = 90;
+
+/** The target percentage for a KPI — its own, or the general 90%. */
+export function targetOf(id: number): number {
+  const def = KPI_DEFINITIONS.find((d) => d.id === id) as { target?: number } | undefined;
+  return def?.target ?? DEFAULT_KPI_TARGET;
+}
 
 export const KPI_SECTION_ORDER: readonly KpiSection[] = ['advisor', 'workshop'];
 
@@ -177,27 +192,32 @@ function minutesLabel(mins: number): string {
   return mins > 0 && mins % 60 === 0 ? plural(mins / 60, 'hour') : plural(mins, 'minute');
 }
 
-/** KPI label with its configured threshold baked in, e.g. "Delivered in 2 days after repair". */
+/** "1" → "1 business hr", "48" → "48 business hrs". */
+function businessHoursLabel(hrs: number): string {
+  return plural(hrs, 'business hr');
+}
+
+/**
+ * KPI label with its configured threshold baked in, e.g. "QA ≤ 9 business hrs".
+ * Every retimed KPI says "business" so nobody reads these limits as wall-clock.
+ */
 export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thresholds']): string {
   const days = (n: number) => plural(n, 'day');
+  const hrs = businessHoursLabel;
   switch (id) {
-    case 1:  return `Invoice within ${minutesLabel(t.invoiceGraceMinutes ?? 60)} of repair`;
-    case 2:  return `Quote approval ≤ ${days(t.quoteApprovalDays ?? 7)}`;
+    case 1:  return `Invoice within ${hrs(t.invoiceHours ?? 1)} of repair`;
+    case 2:  return `Quote approval ≤ ${hrs(t.quoteApprovalHours ?? 48)}`;
     case 5:  return `Tag within ${minutesLabel(t.tagMinutes ?? 60)}`;
     case 6:  return `Awaiting parts ≤ ${days(t.awaitingPartsDays ?? 14)}`;
     case 7:  return `Awaiting labour ≤ ${days(t.awaitingLabourDays ?? 2)}`;
-    case 11: return `Delivered in ${days(t.repairedToDeliveredDays ?? 2)} after repair`;
-    case 12: {
-      // The measured window runs from the START of inspection, so the headline
-      // figure is what's left once the allowed inspection time is spent.
-      const after = Math.max(0, (t.quoteAfterInspectionDays ?? 5) - (t.inspectionDays ?? 3));
-      return `Quote within ${days(after)} after inspection`;
-    }
-    case 14: return `Check-in within ${days(t.checkInDays ?? 1)} of RO`;
-    case 15: return `Inspection ≤ ${days(t.inspectionDays ?? 3)}`;
-    case 16: return `QA ≤ ${days(t.qaDays ?? 1)}`;
-    case 17: return `Reply to a mention ≤ ${days(t.mentionResponseDays ?? 1)}`;
-    default: return fallback;
+    case 11: return `Delivered within ${hrs(t.deliveryHours ?? 48)}`;
+    case 12: return `Quote sent within ${hrs(t.quoteSentHours ?? 4)}`;
+    case 14: return `Check-in within ${hrs(t.checkInHours ?? 3)}`;
+    case 15: return `Inspection ≤ ${hrs(t.inspectionHours ?? 27)}`;
+    case 16: return `QA ≤ ${hrs(t.qaHours ?? 9)}`;
+    case 17: return `Reply to a mention ≤ ${hrs(t.mentionResponseHours ?? 1)}`;
+    case 18: return `Parts ordered ≤ ${hrs(t.partsOrderedHours ?? 2)} of approval`;
+    default: return fallback;  // 19 & 20 are rates, so they carry no time
   }
 }
 
@@ -235,35 +255,45 @@ export interface SaRosterEntry {
 export interface KpiConfig {
   weekStartDay: number;                 // 6 = Saturday
   thresholds: {
-    quoteApprovalDays: number;
+    // ── Journey limits, in BUSINESS hours ───────────────────────────────────
+    // The KPI appendix (effective 1 Nov 2026) sets every journey limit on the
+    // business-hours clock: Sat–Thu 09:00–18:00 Gulf, Friday and publicHolidays
+    // excluded. See lib/business-hours.ts.
+    /** Business hours from RO creation to check-in completing, i.e. reaching Inspection (KPI 14). */
+    checkInHours?: number;
+    /** Business hours from the RO being created to the quotation being sent to the customer (KPI 12). */
+    quoteSentHours?: number;
+    /** Business hours a quotation may sit awaiting customer approval (KPI 2). */
+    quoteApprovalHours?: number;
+    /** Business hours from quotation approval to the parts order being confirmed (KPI 18). */
+    partsOrderedHours?: number;
+    /** Business hours from job card closure to the invoice / service note being posted (KPI 1). */
+    invoiceHours?: number;
+    /** Business hours from job card closure to the vehicle being delivered (KPI 11). */
+    deliveryHours?: number;
+    /** Business hours to reply after being @mentioned in a repair order's chatter (KPI 17). */
+    mentionResponseHours?: number;
+    /** Business hours inspection may run before a quotation exists (KPI 15). */
+    inspectionHours?: number;
+    /** Business hours a repair order may sit in QA (KPI 16). */
+    qaHours?: number;
+
+    // ── Calendar-time thresholds ────────────────────────────────────────────
+    // These stay in calendar time because they measure the calendar ageing of a
+    // backlog rather than service response time.
     tagMinutes: number;
     awaitingPartsDays: number;
     awaitingLabourDays: number;
-    /** Grace after a vehicle reaches delivery before "Invoice on delivery" judges it. */
-    invoiceGraceMinutes?: number;
     /** Window KPIs 6, 7 & 9 measure against — all ROs created in the last N days. */
     snapshotBaselineDays?: number;
-    /** Max days between a vehicle being repaired and delivered (KPI 11). */
-    repairedToDeliveredDays?: number;
-    /**
-     * Max days from the RO ENTERING inspection to its quotation being created
-     * (KPI 12). Displayed net of inspectionDays, so 5 with a 3-day inspection
-     * reads as "Quote within 2 days after inspection".
-     */
-    quoteAfterInspectionDays?: number;
-    /** Max days from RO creation to check-in completing, i.e. reaching Inspection (KPI 14). */
-    checkInDays?: number;
-    /** Max days inspection may run before a quotation exists (KPI 15). */
-    inspectionDays?: number;
-    /** Max days a repair order may sit in QA (KPI 16). */
-    qaDays?: number;
-    /** Max days to reply after being @mentioned in a repair order's chatter (KPI 17). */
-    mentionResponseDays?: number;
-    /** Grace after delivery before the follow-up KPI judges an RO. */
-    followUpGraceDays?: number;
     /** Below this many applicable records a KPI is flagged as low-volume (n=X). */
     lowVolumeMin?: number;
+
+    /** Grace after delivery before the follow-up KPI judges an RO. */
+    followUpGraceDays?: number;
   };
+  /** Gulf dates (YYYY-MM-DD) excluded from the business-hours clock. */
+  publicHolidays?: string[];
   stageMap: {
     repaired: StageSelector;
     underRepair: StageSelector;
@@ -309,7 +339,13 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, mentionResponseDays: 1, lowVolumeMin: 5 },
+  thresholds: {
+    // Business hours — see lib/business-hours.ts
+    checkInHours: 3, quoteSentHours: 4, quoteApprovalHours: 48, partsOrderedHours: 2,
+    invoiceHours: 1, deliveryHours: 48, mentionResponseHours: 1, inspectionHours: 27, qaHours: 9,
+    // Calendar time
+    tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, snapshotBaselineDays: 90, lowVolumeMin: 5,
+  },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -324,7 +360,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     qa:             { kind: 'repairState', values: [] },             // pick the QA value in Admin
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 18, 19, 20],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };

@@ -103,6 +103,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [personSearch, setPersonSearch] = useState('');
+  // The holidays box is edited as free text so a half-typed line survives a keystroke.
+  const [holidayText, setHolidayText] = useState(
+    (withKpiDefaults(initialConfig).publicHolidays ?? []).join('\n'),
+  );
   const [suggesting, setSuggesting] = useState(false);
   // null = no preview open. The preview is deliberately separate from cfg:
   // nothing reaches the roster until "Add selected to roster" is pressed.
@@ -350,24 +354,39 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
 
       {/* 2. Thresholds */}
       <div className="text-sm font-bold text-ink mb-3">2. Thresholds</div>
+      <p className="text-xs text-ink-muted mb-2">
+        Counted on the business-hours clock: work hours are Sat–Thu 09:00–18:00; Fridays and public holidays do not count.
+      </p>
+      <div className="flex flex-wrap gap-5 mb-5">
+        {([
+          ['checkInHours', 'Check-in within (business hrs)'],
+          ['inspectionHours', 'Inspection duration (business hrs)'],
+          ['quoteSentHours', 'Quote sent after inspection (business hrs)'],
+          ['quoteApprovalHours', 'Quote approval (business hrs)'],
+          ['partsOrderedHours', 'Parts ordered after approval (business hrs)'],
+          ['qaHours', 'QA duration (business hrs)'],
+          ['invoiceHours', 'Invoice posted after Repaired (business hrs)'],
+          ['deliveryHours', 'Delivered after Repaired (business hrs)'],
+          ['mentionResponseHours', 'Reply to a chatter mention (business hrs)'],
+        ] as const).map(([k, label]) => (
+          <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
+            {label}
+            <input type="number" min="0" className={inputCls} value={cfg.thresholds[k] ?? 0}
+              onChange={(e) => setCfg((p) => ({ ...p, thresholds: { ...p.thresholds, [k]: parseInt(e.target.value) || 0 } }))} />
+          </label>
+        ))}
+      </div>
+      <p className="text-xs text-ink-muted mb-2">Counted in calendar time, including Fridays and holidays.</p>
       <div className="flex flex-wrap gap-5 mb-6">
         {([
-          ['checkInDays', 'Check-in within (days of RO)'],
-          ['inspectionDays', 'Inspection duration (days)'],
-          ['quoteAfterInspectionDays', 'Quote within (days of inspection starting)'],
-          ['qaDays', 'QA duration (days)'],
-          ['mentionResponseDays', 'Reply to a chatter mention (days)'],
-          ['quoteApprovalDays', 'Quote approval (days)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
-          ['invoiceGraceMinutes', 'Invoice posted within (minutes of Repaired)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
-          ['repairedToDeliveredDays', 'Repaired → delivered/invoiced (days)'],
           ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],
         ] as const).map(([k, label]) => (
           <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
             {label}
-            <input type="number" min="0" className={inputCls} value={cfg.thresholds[k]}
+            <input type="number" min="0" className={inputCls} value={cfg.thresholds[k] ?? 0}
               onChange={(e) => setCfg((p) => ({ ...p, thresholds: { ...p.thresholds, [k]: parseInt(e.target.value) || 0 } }))} />
           </label>
         ))}
@@ -408,6 +427,29 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             <span>{label}</span>
           </label>
         ))}
+      </div>
+
+      {/* 2c. Public holidays */}
+      <div className="text-sm font-bold text-ink mb-1">2c. Public holidays</div>
+      <p className="text-xs text-ink-muted mb-2">
+        One date per line (YYYY-MM-DD). These days are skipped by every business-hours KPI, exactly like Fridays.
+      </p>
+      <div className="mb-6">
+        <label className="text-sm text-ink-muted flex flex-col gap-2">
+          Gulf public holidays
+          {/* Bound to the raw text rather than to the parsed list: feeding the list
+              back into the box would swallow each newline as it is typed. */}
+          <textarea rows={4} spellCheck={false} placeholder={'2026-12-02\n2026-12-03'}
+            className="w-56 px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm font-mono"
+            value={holidayText}
+            onChange={(e) => {
+              setHolidayText(e.target.value);
+              setCfg((p) => ({
+                ...p,
+                publicHolidays: e.target.value.split('\n').map((d) => d.trim()).filter(Boolean),
+              }));
+            }} />
+        </label>
       </div>
 
       {/* 3. Tracked people roster */}

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
 import {
-  KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL,
+  KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL, DEFAULT_KPI_TARGET, targetOf,
   KPI_SECTION_ORDER, KPI_SECTION_LABELS, type KpiSection,
 } from '@/lib/types';
 
@@ -30,15 +30,20 @@ const SECTION_SHORT: Record<KpiSection, string> = {
 
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
 
+/** How far below its target a KPI may fall before amber turns red. */
+const AMBER_SPAN = 15;
+
 /**
- * Achievement bands. Bars are painted at full strength via inline styles rather
- * than utility classes, so a stray token in the Tailwind config can never wash
- * one of them out again.
+ * Achievement bands, relative to the KPI's own target. Bars are painted at full
+ * strength via inline styles rather than utility classes, so a stray token in
+ * the Tailwind config can never wash one of them out again.
+ *
+ * At the default target of 90 the cut-offs are the familiar 90 / 75.
  */
-function band(pct: number | null): { text: string; hex: string } {
+function band(pct: number | null, target: number = DEFAULT_KPI_TARGET): { text: string; hex: string } {
   if (pct === null) return { text: 'text-ink-muted', hex: '#c2c7bf' };
-  if (pct >= 90) return { text: 'text-evs-green-dark', hex: '#78C41A' };
-  if (pct >= 75) return { text: 'text-amber-600', hex: '#f5a300' };
+  if (pct >= target) return { text: 'text-evs-green-dark', hex: '#78C41A' };
+  if (pct >= target - AMBER_SPAN) return { text: 'text-amber-600', hex: '#f5a300' };
   return { text: 'text-danger', hex: '#e53e3e' };
 }
 
@@ -97,7 +102,8 @@ function KpiRow({ cell, delta, expandable = false }: {
   expandable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const b = band(cell.pct);
+  const target = targetOf(cell.id);
+  const b = band(cell.pct, target);
   const lowVolume = cell.applicable > 0 && cell.applicable < LOW_VOLUME;
 
   return (
@@ -127,6 +133,10 @@ function KpiRow({ cell, delta, expandable = false }: {
         <span className="text-[11px] text-ink-muted tabular-nums w-14 text-right">
           {cell.compliant}/{cell.applicable}
         </span>
+        {target !== DEFAULT_KPI_TARGET && (
+          <span className="text-[11px] text-ink-muted tabular-nums shrink-0"
+            title={`This KPI is judged against ${target}%, not the general ${DEFAULT_KPI_TARGET}%`}>target {target}%</span>
+        )}
         <span className={`text-sm font-bold tabular-nums w-16 text-right ${b.text}`}>
           {cell.pct === null ? '—' : fmtPct(cell.pct)}
         </span>
