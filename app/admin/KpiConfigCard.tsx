@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   WORKSHOP_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
-  KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf,
+  KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf, Branch,
 } from '@/lib/types';
 
 interface OdooOptions {
@@ -166,6 +166,20 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   }
 
   /**
+   * Back to the default means DELETING the branch's key — a stored 0 or null
+   * would still read as "nominated" and credit every verdict to nobody.
+   */
+  function setRfqCoordinator(branch: Branch, userId: string) {
+    setCfg((p) => {
+      const next = { ...(p.rfqCoordinators ?? {}) };
+      const user = (opts?.users ?? []).find((u) => String(u.id) === userId);
+      if (user) next[branch] = { id: user.id, name: user.name };
+      else delete next[branch];
+      return { ...p, rfqCoordinators: next };
+    });
+  }
+
+  /**
    * Reads 30 days of Odoo activity into a review panel. Slow (~30s). A second run
    * replaces the whole preview, and a failure leaves both preview and roster alone.
    */
@@ -263,6 +277,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   }
 
   const allUsers = opts?.users ?? [];
+  // Read through the override rather than assumed — an admin may have moved KPI 18.
+  const kpi18Section = sectionOf(18, cfg);
   const personQuery = personSearch.trim().toLowerCase();
   const matchedUsers = allUsers.filter(
     (u) => !rosterById.has(u.id) && (personQuery === '' || u.name.toLowerCase().includes(personQuery)),
@@ -418,7 +434,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       </p>
       <div className="flex flex-col gap-1.5 mb-6">
         {([
-          ['auto', 'Automatic — stage-change stamp if available, otherwise RO creation date (recommended)'],
+          ['auto', 'Automatic — Status Since if available, then the stage-change stamp, otherwise RO creation date (recommended)'],
+          ['status_since', 'Status Since — how long the vehicle has been in its current status (most accurate on this instance)'],
           ['date_last_stage_update', 'Last stage change — most accurate, only if Odoo has the field'],
           ['create_date', 'Repair order creation date — may over-report, but never hides a stuck vehicle'],
           ['write_date', 'Last modified — ⚠ any edit resets the clock and hides overdue vehicles'],
@@ -452,6 +469,55 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
               }));
             }} />
         </label>
+      </div>
+
+      {/* 2d. Who raises the RFQs */}
+      <div className="text-sm font-bold text-ink mb-1">2d. RFQ coordinator per branch</div>
+      <p className="text-xs text-ink-muted mb-2">
+        RFQ after approval scores whoever opened the job card, which is rarely the person who raises the RFQ —
+        name that person here and the branch&rsquo;s verdicts, hits and misses alike, move onto them.
+      </p>
+      <div className="flex flex-col gap-2 mb-6">
+        {WORKSHOP_BRANCHES.map((b) => {
+          const chosen = cfg.rfqCoordinators?.[b];
+          const entry = chosen ? rosterById.get(chosen.id) : undefined;
+          // A stored person Odoo no longer lists (archived, or options failed to
+          // load) still has to appear, or the box would read as the default while
+          // the config says otherwise.
+          const missing = chosen && !allUsers.some((u) => u.id === chosen.id) ? chosen : undefined;
+          return (
+            <div key={b} className="flex flex-col gap-1">
+              <label className="text-sm text-ink-muted flex items-center gap-2 flex-wrap">
+                <span className="w-24">{b}</span>
+                <select value={chosen ? String(chosen.id) : ''}
+                  onChange={(e) => setRfqCoordinator(b, e.target.value)}
+                  className="text-sm border border-border rounded px-2 py-1 text-ink bg-white focus:border-evs-green">
+                  <option value="">— job card owner (default) —</option>
+                  {missing && <option value={String(missing.id)}>{missing.name}</option>}
+                  {allUsers.map((u) => (
+                    <option key={u.id} value={String(u.id)}>
+                      {u.roCount > 0 ? `${u.name} (${u.roCount} ROs)` : u.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {chosen && !entry && (
+                <div className="text-xs text-ink-muted ml-24">
+                  ⚠ {chosen.name} is not in Tracked people, so they get no card of their own — these
+                  evaluations will only roll into the {b} total.
+                </div>
+              )}
+              {/* Absent section means Service Advisor, so an untouched roster entry counts as one. */}
+              {chosen && entry && (entry.section ?? 'advisor') === 'advisor' && kpi18Section === 'workshop' && (
+                <div className="text-xs text-ink-muted ml-24">
+                  ⚠ {chosen.name} is listed under {KPI_SECTION_LABELS.advisor}, but RFQ after approval sits in{' '}
+                  {KPI_SECTION_LABELS.workshop} — it will not appear on their card until the person or the KPI is
+                  reassigned (section 5 below).
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* 3. Tracked people roster */}

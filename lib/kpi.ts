@@ -685,15 +685,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // flag back with the rows and drop them here. Empty where the field is absent:
   // asking for a field Odoo doesn't have fails the whole call.
   const histField = has(HISTORICAL_FIELD) ? [HISTORICAL_FIELD] : [];
-  // Which date KPIs 6 & 7 age from. `auto` prefers a true stage-change stamp and
-  // otherwise falls back to create_date — deliberately NOT write_date, which any
-  // edit resets and which therefore hides genuinely stale vehicles.
+  // Which date KPIs 6 & 7 age from. `auto` leads with status_since because these
+  // KPIs ask how long the vehicle has been stuck in its current status, which is
+  // exactly what that stamp records; create_date is only the whole RO's age and
+  // overstates every wait. Then a true stage-change stamp, then create_date —
+  // deliberately NOT write_date, which any edit resets and which therefore hides
+  // genuinely stale vehicles.
   const basis = config.ageBasis ?? 'auto';
   const ageField =
     basis === 'auto'
-      ? (has('date_last_stage_update') ? 'date_last_stage_update' : 'create_date')
+      ? (has('status_since')
+          ? 'status_since'
+          : has('date_last_stage_update') ? 'date_last_stage_update' : 'create_date')
       : (has(basis) ? basis : 'create_date');
   const AGE_LABEL: Record<string, string> = {
+    status_since: 'time in the current status',
     date_last_stage_update: 'time since the last stage change',
     create_date: 'age of the repair order',
     write_date: 'time since last modification — any edit resets this clock',
@@ -727,15 +733,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     evals.push({ kpiId, branch, userId: user.id, userName: user.name, compliant, ref });
   };
 
-  const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string) => {
+  /**
+   * `attributeTo` overrides who is scored when the record's creator is the wrong
+   * subject — KPI 18 judges repair orders but belongs to whoever raises the RFQ.
+   * The branch still comes from the record, so a Dubai order stays Dubai's.
+   */
+  const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string,
+                attributeTo?: { id: number; name: string }) => {
     const cid = m2o(rec.company_id)?.[0];
     const branch = cid != null ? idToBranch[cid] : undefined;
     if (!branch) return; // untracked company (CarDIP, …)
     const u = m2o(rec.create_uid);
     evals.push({
       kpiId, branch,
-      userId: u?.[0] ?? null,
-      userName: u?.[1] ?? 'Unknown',
+      userId: attributeTo?.id ?? u?.[0] ?? null,
+      userName: attributeTo?.name ?? u?.[1] ?? 'Unknown',
       compliant, ref,
     });
   };
@@ -1384,7 +1396,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
           // Attributed through the REPAIR ORDER: when the RFQ is the thing
           // missing there is no purchase order to hang the miss on, so the job
-          // card's owner is the only stable subject.
+          // card's owner is the only stable subject — unless the branch has
+          // nominated the person who actually raises its RFQs, who is then a
+          // better subject for both the hit and the miss.
+          /** Branches whose coordinator really took a verdict, for the note below. */
+          const creditedTo = new Map<Branch, string>();
           let noVehicle = 0;
           for (const r of ros) {
             const soId = m2o(r.sale_order_id)?.[0];
@@ -1402,9 +1418,27 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             const raised = (rfqTimes[fleet] ?? [])
               .some((t) => t <= approved + limitMs && (roCreated == null || t >= roCreated));
             const ref = (r.name as string) || '';
-            if (raised) push(18, r, true, ref);
-            else if (now - approved > limitMs) push(18, r, false, ref);
+            // Resolved per record: each branch has its own RFQ raiser, so a
+            // Dubai order must not land on Sharjah's coordinator.
+            const roBranch = (() => {
+              const cid = m2o(r.company_id)?.[0];
+              return cid != null ? idToBranch[cid] : undefined;
+            })();
+            const coordinator = roBranch ? config.rfqCoordinators?.[roBranch] : undefined;
+            const judged = raised || now - approved > limitMs;
+            if (raised) push(18, r, true, ref, coordinator);
+            else if (now - approved > limitMs) push(18, r, false, ref, coordinator);
             // still inside the window with no RFQ yet → not judged
+            if (judged && roBranch && coordinator) creditedTo.set(roBranch, coordinator.name);
+          }
+          // A silent re-attribution looks like the KPI is broken, so say whose
+          // numbers moved — and only for branches that actually scored.
+          if (creditedTo.size) {
+            const who = WORKSHOP_BRANCHES
+              .filter((b) => creditedTo.has(b))
+              .map((b) => `${b} → ${creditedTo.get(b)}`)
+              .join(', ');
+            notes.push(`RFQ after approval is credited to each branch's nominated RFQ coordinator rather than the job card's owner: ${who}.`);
           }
           if (noVehicle) {
             notes.push(`RFQ after approval ignored ${noVehicle} repair order${noVehicle === 1 ? '' : 's'} with no vehicle set — the purchase order link runs through the vehicle, so an RFQ could not be seen either way.`);

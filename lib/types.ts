@@ -353,12 +353,20 @@ export interface KpiConfig {
    */
   kpiSections?: Record<number, KpiSection>;
   /**
-   * Which date KPIs 6 & 7 measure "time in state" from.
-   *  auto        → date_last_stage_update if the field exists, else create_date
-   *  create_date → age of the RO itself (never hides a stale vehicle)
-   *  write_date  → last modified (WARNING: any edit resets the clock)
+   * Who raises RFQs for each branch. KPI 18 judges repair orders, so by default it
+   * scores whoever opened the job card rather than the person who actually raises
+   * the RFQ. Naming a coordinator moves every one of that branch's KPI 18
+   * verdicts — hits and misses alike — onto them. Unset means the old behaviour.
    */
-  ageBasis?: 'auto' | 'date_last_stage_update' | 'create_date' | 'write_date';
+  rfqCoordinators?: Partial<Record<Branch, { id: number; name: string }>>;
+  /**
+   * Which date KPIs 6 & 7 measure "time in state" from.
+   *  auto         → status_since, else date_last_stage_update, else create_date
+   *  status_since → when the record entered its current status (this instance has it)
+   *  create_date  → age of the RO itself (never hides a stale vehicle)
+   *  write_date   → last modified (WARNING: any edit resets the clock)
+   */
+  ageBasis?: 'auto' | 'status_since' | 'date_last_stage_update' | 'create_date' | 'write_date';
   /**
    * How "Awaiting parts" decides a vehicle is held up:
    *  parts → open RO with a parts line whose Done qty is below Demand
