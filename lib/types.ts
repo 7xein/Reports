@@ -377,6 +377,28 @@ export interface KpiConfig {
   updatedAt?: string;
 }
 
+/**
+ * Which date KPIs 6 & 7 age from, in order of preference under `auto`.
+ * status_since leads because those KPIs ask how long a vehicle has been stuck
+ * in its CURRENT status, which is what that stamp records; create_date is only
+ * the whole job card's age and overstates every wait. write_date is never
+ * preferred — any edit resets it and hides a genuinely stale vehicle.
+ */
+export const AGE_FIELD_PREFERENCE = ['status_since', 'date_last_stage_update', 'create_date'] as const;
+
+/**
+ * Shared by the engine and by the admin field report, so the dashboard and its
+ * own diagnostics cannot disagree about which field is in use — they did, and
+ * the report described a fallback that was no longer being taken.
+ */
+export function resolveAgeField(
+  has: (field: string) => boolean,
+  basis: KpiConfig['ageBasis'] = 'auto',
+): string {
+  if (basis && basis !== 'auto') return has(basis) ? basis : 'create_date';
+  return AGE_FIELD_PREFERENCE.find((f) => has(f)) ?? 'create_date';
+}
+
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,

@@ -9,7 +9,7 @@
  */
 
 import type { WipMetricKey, Branch } from './types';
-import { BRANCHES, WORKSHOP_BRANCHES, subKey, SUB_BRANCH_COMPANY } from './types';
+import { BRANCHES, WORKSHOP_BRANCHES, subKey, SUB_BRANCH_COMPANY, resolveAgeField } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -979,9 +979,10 @@ export interface KpiOdooOptions {
     hasStageId: boolean;
     hasState: boolean;
     hasPriorityMatrixStatus: boolean;
+    hasStatusSince: boolean;
     hasDateLastStageUpdate: boolean;
     hasSaleOrderId: boolean;
-    stageAgeField: string;   // date_last_stage_update, else write_date
+    stageAgeField: string;   // what resolveAgeField() picks under Automatic on this instance
     notes: string[];
   };
 }
@@ -1276,10 +1277,17 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   notes.push(`State options: ${stateOptions.map((o) => o.label).join(', ') || '(none)'}`);
   notes.push(`Stage options: ${stages.map((s) => s.name).join(', ') || '(none)'}`);
 
+  // The field report cannot see the saved ageBasis, so it describes the Automatic
+  // setting — resolved through the same helper the KPI engine uses, so this note
+  // cannot drift away from what the dashboard actually measures.
   const hasDateLastStageUpdate = has('date_last_stage_update');
-  if (!hasDateLastStageUpdate) {
-    notes.push('date_last_stage_update is not available — awaiting parts/labour fall back to create_date, i.e. the age of the RO itself.');
-  }
+  const stageAgeField = resolveAgeField(has);
+  const AGE_NOTE: Record<string, string> = {
+    status_since: 'Under Automatic, awaiting parts/labour age from status_since — how long the vehicle has been in its current status.',
+    date_last_stage_update: 'Under Automatic, awaiting parts/labour age from date_last_stage_update — time since the last stage change.',
+    create_date: 'Under Automatic, awaiting parts/labour fall back to create_date, i.e. the age of the RO itself, because neither status_since nor date_last_stage_update exists on this instance.',
+  };
+  notes.push(AGE_NOTE[stageAgeField] ?? `Under Automatic, awaiting parts/labour age from ${stageAgeField}.`);
 
   return {
     priorityOptions,
@@ -1292,9 +1300,10 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
       hasStageId: has('stage_id'),
       hasState: has('state'),
       hasPriorityMatrixStatus: has('priority_matrix_status'),
+      hasStatusSince: has('status_since'),
       hasDateLastStageUpdate,
       hasSaleOrderId: has('sale_order_id'),
-      stageAgeField: hasDateLastStageUpdate ? 'date_last_stage_update' : 'create_date',
+      stageAgeField,
       notes,
     },
   };

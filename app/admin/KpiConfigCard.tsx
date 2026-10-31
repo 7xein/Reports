@@ -15,7 +15,7 @@ interface OdooOptions {
   users: { id: number; name: string; roCount: number }[];
   fieldReport: {
     hasStageId: boolean; hasState: boolean; hasPriorityMatrixStatus: boolean;
-    hasDateLastStageUpdate: boolean; hasSaleOrderId: boolean;
+    hasStatusSince: boolean; hasDateLastStageUpdate: boolean; hasSaleOrderId: boolean;
     stageAgeField: string; notes: string[];
   };
 }
@@ -317,6 +317,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
               ['stage_id', opts.fieldReport.hasStageId],
               ['state', opts.fieldReport.hasState],
               ['priority_matrix_status', opts.fieldReport.hasPriorityMatrixStatus],
+              ['status_since', opts.fieldReport.hasStatusSince],
               ['date_last_stage_update', opts.fieldReport.hasDateLastStageUpdate],
               ['sale_order_id', opts.fieldReport.hasSaleOrderId],
             ] as const).map(([f, ok]) => (

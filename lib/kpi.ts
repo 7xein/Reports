@@ -11,7 +11,7 @@
 
 import {
   WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
-  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf,
+  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
@@ -685,19 +685,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // flag back with the rows and drop them here. Empty where the field is absent:
   // asking for a field Odoo doesn't have fails the whole call.
   const histField = has(HISTORICAL_FIELD) ? [HISTORICAL_FIELD] : [];
-  // Which date KPIs 6 & 7 age from. `auto` leads with status_since because these
-  // KPIs ask how long the vehicle has been stuck in its current status, which is
-  // exactly what that stamp records; create_date is only the whole RO's age and
-  // overstates every wait. Then a true stage-change stamp, then create_date —
-  // deliberately NOT write_date, which any edit resets and which therefore hides
-  // genuinely stale vehicles.
+  // Which date KPIs 6 & 7 age from. The preference order and the reasoning behind
+  // it live in resolveAgeField (lib/types.ts), shared with the admin field report
+  // so the dashboard and its own diagnostics cannot describe different fields.
+  // An explicitly chosen basis wins; one Odoo doesn't have falls back to create_date.
   const basis = config.ageBasis ?? 'auto';
-  const ageField =
-    basis === 'auto'
-      ? (has('status_since')
-          ? 'status_since'
-          : has('date_last_stage_update') ? 'date_last_stage_update' : 'create_date')
-      : (has(basis) ? basis : 'create_date');
+  const ageField = resolveAgeField(has, basis);
   const AGE_LABEL: Record<string, string> = {
     status_since: 'time in the current status',
     date_last_stage_update: 'time since the last stage change',
