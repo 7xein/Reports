@@ -135,9 +135,9 @@ export const KPI_DEFINITIONS = [
   { id: 1, name: 'Invoice on delivery',      group: 'Delivery & invoicing', section: 'advisor', rule: 'The invoice linked to the RO must be posted within the configured time of the repair being marked Repaired.' },
   { id: 11, name: 'Delivered after repair',  group: 'Delivery & invoicing', section: 'advisor', rule: 'Delivery is measured by invoicing: the linked invoice must be posted within the configured time of the repair being marked Repaired.' },
   { id: 13, name: 'Customer follow-up',     group: 'Delivery & invoicing', section: 'advisor', rule: 'Every QA-flagged vehicle that reaches Repaired must have the service advisor follow-up screenshot uploaded.' },
-  { id: 3, name: 'SO before repaired',       group: 'Quotations', section: 'advisor', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
-  { id: 12, name: 'Quote after RO',          group: 'Quotations', section: 'advisor', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
-  { id: 4, name: 'Quote before starting repair', group: 'Quotations', section: 'advisor', rule: 'A quotation must exist before repair work starts.' },
+  { id: 3, name: 'SO before repaired',       group: 'Quotations', section: 'workshop', rule: 'The quotation must be approved (confirmed into a sale order) before the RO moves into Under Repair.' },
+  { id: 12, name: 'Quote after RO',          group: 'Quotations', section: 'workshop', rule: 'A quotation must be raised within the configured time of the repair order being created.' },
+  { id: 4, name: 'Quote before starting repair', group: 'Quotations', section: 'workshop', rule: 'A quotation must exist before repair work starts.' },
   { id: 5, name: 'Tag on creation',          group: 'Tagging', section: 'advisor', rule: 'A tag must be added to every RO within the configured time of creation.' },
   { id: 8, name: 'Car in / out tag',         group: 'Tagging', section: 'advisor', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
   { id: 2, name: 'Quote approval',           group: 'Quotations', section: 'advisor', rule: 'Quotations must not sit awaiting approval beyond the configured time. Insurance jobs are excluded — approval is the insurer\'s to give.' },
@@ -154,6 +154,9 @@ export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 export type KpiSection = 'advisor' | 'workshop';
 
 export const KPI_SECTION_ORDER: readonly KpiSection[] = ['advisor', 'workshop'];
+
+/** KPIs every person is scored on, whichever section they sit in. */
+export const KPI_IDS_FOR_EVERYONE: readonly number[] = [17];
 
 export const KPI_SECTION_LABELS: Record<KpiSection, string> = {
   advisor: 'Service Advisor',

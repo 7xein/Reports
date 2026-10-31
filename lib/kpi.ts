@@ -11,7 +11,7 @@
 
 import {
   WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
-  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, sectionOf,
+  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf,
 } from './types';
 import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 
@@ -1490,12 +1490,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const serviceAdvisors: SaNode[] = roster
       .filter((r) => r.branch === b)
       .map((r) => {
+        // A person is scored only on their own section's KPIs: a technician held to
+        // quotation KPIs they never touch reads as failure rather than as
+        // not-their-job (and an advisor to workshop timings likewise). The ids in
+        // KPI_IDS_FOR_EVERYONE stay in both lists — anyone can be @mentioned.
+        // Section resolved once per person; sectionById is sectionOf(id, config)
+        // precomputed, so an admin's kpiSections override still wins.
+        const section: KpiSection = r.section ?? 'advisor';
+        const mineEnabled = enabled.filter(
+          (id) => (sectionById[id] ?? sectionOf(id, config)) === section || KPI_IDS_FOR_EVERYONE.includes(id),
+        );
         const mine = evals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, enabled, snapshotNotes, displayNames, sectionById);
+        const cells = aggregate(mine, mineEnabled, snapshotNotes, displayNames, sectionById);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
-          section: r.section ?? 'advisor',
+          section,
           achievement: overall(cells),
           sections: sectionTotals(cells, config),
           roCount: roCountByUser[r.odooUserId] ?? 0,
