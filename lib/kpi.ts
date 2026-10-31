@@ -47,7 +47,7 @@ function gulfToUtc(iso: string, endOfDay = false): string {
 }
 
 /** Parse an Odoo UTC datetime ('YYYY-MM-DD HH:MM:SS') to epoch ms. */
-function odooTime(raw: unknown): number | null {
+export function odooTime(raw: unknown): number | null {
   if (!raw || typeof raw !== 'string') return null;
   const t = Date.parse(raw.replace(' ', 'T') + 'Z');
   return Number.isNaN(t) ? null : t;
@@ -171,7 +171,7 @@ function selectorDomain(sel: StageSelector): OdooDomain {
 }
 
 /** Inverse of selectorDomain — e.g. "not closed" = every open RO. */
-function selectorDomainNot(sel: StageSelector): OdooDomain {
+export function selectorDomainNot(sel: StageSelector): OdooDomain {
   if (!sel || !sel.values?.length) return []; // nothing marked closed → everything is open
   if (sel.kind === 'state') return [['state', 'not in', sel.values]];
   if (sel.kind === 'repairState') return [['repair_state', 'not in', sel.values]];
@@ -257,7 +257,7 @@ async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
 
 // ── Engine ─────────────────────────────────────────────────────────
 type Rec = Record<string, unknown>;
-type FieldsMeta = Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
+export type FieldsMeta = Record<string, { type?: string; relation?: string; selection?: [string, string][] }>;
 
 /**
  * Partner ids in the order they actually appear in a chatter message.
@@ -299,7 +299,7 @@ type TagMatch = { field: string; ids: Set<number> };
  * fields on its comodel. Field names vary by Odoo version and customisation, so
  * everything is discovered rather than assumed.
  */
-async function resolvePartsFields(
+export async function resolvePartsFields(
   meta: FieldsMeta,
 ): Promise<{ lineField: string; model: string; demand: string; done: string } | null> {
   const candidates = ['move_ids', 'operations', 'repair_line_ids', 'move_ids_without_package', 'part_ids']
@@ -327,7 +327,7 @@ async function resolvePartsFields(
  * the Done quantity hasn't caught up with Demand, and `since` is when the part
  * was requested.
  */
-async function readPartsLines(
+export async function readPartsLines(
   parts: { model: string; demand: string; done: string },
   lineIds: number[],
 ): Promise<Record<number, { short: boolean; since: number | null }>> {
@@ -640,6 +640,19 @@ async function trackedTransitions(model: string, msgDomain: OdooDomain, field: s
   }
 }
 
+/**
+ * fields_get for a model that may not exist on this instance — null when the
+ * model is unreadable, so an uninstalled module costs its own KPIs and nothing
+ * else.
+ */
+export async function readFieldsMeta(model: string): Promise<FieldsMeta | null> {
+  try {
+    return (await call(model, 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
+  } catch {
+    return null;
+  }
+}
+
 export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): Promise<KpiTree> {
   const notes: string[] = [];
   const start = weekStartFor(weekStartIso, config.weekStartDay ?? 6);
@@ -772,12 +785,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // ── KPIs 1 & 11 — time from "Repaired" to the invoice being posted ──
   // Same measurement, two thresholds: KPI 1 is the prompt-invoicing rule, KPI 11
   // stands in for delivery (a car isn't handed over before it's invoiced).
-  if ((on(1) || on(11) || on(13) || on(20)) && has('sale_order_id')) {
+  if ((on(1) || on(11) || on(13) || on(22)) && has('sale_order_id')) {
     const roFields = ['name', 'create_uid', 'company_id', 'sale_order_id'];
     if (has('invoice_id')) roFields.push('invoice_id');   // some versions link the invoice directly
-    // KPI 20 judges the same repaired population against the date promised to the
+    // KPI 22 judges the same repaired population against the date promised to the
     // customer, so it rides along here rather than re-reading the chatter.
-    const scheduleField = on(20) && has('schedule_date') ? 'schedule_date' : undefined;
+    const scheduleField = on(22) && has('schedule_date') ? 'schedule_date' : undefined;
     if (scheduleField) roFields.push(scheduleField);
     // Follow-up is a binary field — bin_size returns its size instead of the
     // whole attachment, so we can tell "uploaded or not" without the payload.
@@ -853,12 +866,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     }
 
-    // ── KPI 20 — did the vehicle reach Repaired by the promised date? ──
+    // ── KPI 22 — did the vehicle reach Repaired by the promised date? ──
     //
     // A deadline, not a duration: the promise is a wall-clock moment the customer
     // was given, so it is compared raw. Running it through the business clock
     // would move the promise itself.
-    if (on(20) && scheduleField) {
+    if (on(22) && scheduleField) {
       // A date-only promise means "that day", so it falls due as the day closes.
       const dateOnly = meta[scheduleField]?.type === 'date';
       let unpromised = 0;
@@ -871,13 +884,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           : odooTime(raw);
         // Nothing promised, so nothing can be late.
         if (due == null || !Number.isFinite(due)) { unpromised++; continue; }
-        push(20, r, rep <= due, (r.name as string) || '');
+        push(22, r, rep <= due, (r.name as string) || '');
       }
       if (unpromised) {
         notes.push(`Ready by promised time skipped ${unpromised} repaired RO${unpromised === 1 ? '' : 's'} with no scheduled delivery date — nothing was promised, so nothing can be late.`);
       }
     }
-    if (on(20) && !scheduleField) {
+    if (on(22) && !scheduleField) {
       notes.push('Ready by promised time is inactive — repair.order carries no schedule_date to judge the promise against.');
     }
 
@@ -1079,11 +1092,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
-  // ── KPI 19 — quotation approval rate ──
+  // ── KPI 21 — quotation approval rate ──
   //
   // A rate, not a stopwatch: there is no limit and no tri-state, so every
   // quotation raised this week is counted, approved or not.
-  if (on(19)) {
+  if (on(21)) {
     const quotes = (await call('sale.order', 'search_read', [[
       ['create_date', '>=', wStart], ['create_date', '<', wEnd],
       ['company_id', 'in', trackedIds],
@@ -1099,9 +1112,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const st = String(q.state ?? 'unknown');
       byState[st] = (byState[st] ?? 0) + 1;
       // Confirmed into a sale order is what "the customer approved it" looks like.
-      push(19, q, st === 'sale' || st === 'done', (q.name as string) || '');
+      push(21, q, st === 'sale' || st === 'done', (q.name as string) || '');
     }
-    notes.push('Quotation approval rate counts the quotations CREATED this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending and the denominator is quotations created, not quotations sent.');
+    notes.push('Quotation approval rate (KPI 21) counts the quotations CREATED this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending and the denominator is quotations created, not quotations sent.');
     // Drafts stay in the denominator on purpose. The appendix says "approved over
     // sent", but this instance never uses Send by Email, so an unapproved
     // quotation sits in draft for good and dropping drafts would leave only the
@@ -1285,69 +1298,263 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
-  // ── KPI 18 — parts ordered after the quotation was approved ──
+  // ── KPIs 18, 19 & 20 — the parts-purchasing chain ──
   //
-  // Odoo records no separate "parts confirmed" moment, so the proxy is the parts
-  // lines themselves: the LAST line added is when all the parts were ordered.
-  if (on(18) && has('sale_order_id')) {
-    const limitMs = businessHours(config.thresholds.partsOrderedHours ?? 2);
-    // Approval is date_order on a confirmed quotation — the same resolution KPI 3 uses.
-    const approvedSos = (await call('sale.order', 'search_read', [[
-      ['state', 'in', ['sale', 'done']],
-      ['date_order', '>=', wStart], ['date_order', '<', wEnd],
-      ['company_id', 'in', trackedIds],
-    ]], { fields: ['date_order'], limit: 0 })) as Rec[];
+  // RFQ raised → RFQ confirmed → parts on the shelf. All three read
+  // purchase.order, so one fields_get decides what this instance can answer and
+  // an uninstalled purchasing module degrades to a note instead of throwing the
+  // whole tree away.
+  if (on(18) || on(19) || on(20)) {
+    const poMeta = await readFieldsMeta('purchase.order');
+    if (!poMeta) {
+      notes.push('purchase.order could not be read on this instance, so the RFQ and parts-placement KPIs (18, 19 & 20) were skipped.');
+    } else {
+      const poHas = (f: string) => Object.prototype.hasOwnProperty.call(poMeta, f);
+      // Not yet committed to: an RFQ anybody could still walk away from. Note the
+      // space in 'to approve' — that is the stored value, not a label.
+      const RFQ_STATES = ['draft', 'sent', 'to approve'];
+      const CONFIRMED_STATES = ['purchase', 'done'];
+      /** purchase.order dates are datetimes on some versions and plain dates on others. */
+      const poTime = (raw: unknown): number | null => {
+        if (typeof raw !== 'string' || !raw) return null;
+        if (raw.length > 10) return odooTime(raw);
+        const t = Date.parse(`${raw}T00:00:00Z`);
+        return Number.isNaN(t) ? null : t;
+      };
 
-    const approvedAt: Record<number, number> = {};
-    for (const so of approvedSos) {
-      const t = odooTime(so.date_order);
-      if (t != null) approvedAt[so.id as number] = t;
-    }
-    const soIds = Object.keys(approvedAt).map(Number);
-    const parts = soIds.length ? await resolvePartsFields(meta) : null;
-    if (soIds.length && !parts) {
-      notes.push('Parts ordered after approval is inactive — the parts lines (Demand/Done) could not be read on this instance.');
-    }
+      // ── KPI 18 — RFQ raised within N days of the quotation being approved ──
+      if (on(18)) {
+        const limitMs = (config.thresholds.rfqAfterApprovalDays ?? 1) * 86400_000;
+        if (!has('is_parts_available')) {
+          // Without the flag every approved quotation looks like it needed parts,
+          // so the KPI would charge branches for RFQs they never had to raise.
+          notes.push('repair.order has no "All Parts are available" field, so RFQ after approval (KPI 18) was skipped — judging every approved quotation would charge for RFQs that were never needed.');
+        } else if (!has('sale_order_id') || !has('fleet_id') || !poHas('fleet_id')) {
+          notes.push('RFQ after approval (KPI 18) needs sale_order_id and fleet_id on repair.order and fleet_id on purchase.order — one of them is missing on this instance.');
+        } else {
+          // Approval is the same signal KPI 3 uses: date_order is the moment Odoo
+          // confirms a quotation into a sale order.
+          let approvedSos: Rec[] = [];
+          try {
+            approvedSos = (await call('sale.order', 'search_read', [[
+              ['state', 'in', ['sale', 'done']],
+              ['date_order', '>=', wStart], ['date_order', '<', wEnd],
+              ['company_id', 'in', trackedIds],
+            ]], { fields: ['date_order'], limit: 0 })) as Rec[];
+          } catch {
+            notes.push('RFQ after approval (KPI 18) could not read the approved quotations for this week.');
+          }
+          const approvedAt: Record<number, number> = {};
+          for (const so of approvedSos) {
+            const t = odooTime(so.date_order);
+            if (t != null) approvedAt[so.id as number] = t;
+          }
+          const soIds = Object.keys(approvedAt).map(Number);
 
-    if (parts && soIds.length) {
-      const ros: Rec[] = [];
-      for (let i = 0; i < soIds.length; i += 2000) {
-        try {
-          ros.push(...(await call('repair.order', 'search_read', [[
-            ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
-            ['company_id', 'in', trackedIds],
-            ...notHist,
-          ]], { fields: ['name', 'create_uid', 'company_id', 'sale_order_id', parts.lineField], limit: 0 })) as Rec[]);
-        } catch { /* skip the chunk rather than dropping the KPI */ }
-      }
+          // Only orders still short of parts are in scope — the rest never needed
+          // an RFQ, so holding them to one measures nothing.
+          const ros: Rec[] = [];
+          for (let i = 0; i < soIds.length; i += 2000) {
+            try {
+              ros.push(...(await call('repair.order', 'search_read', [[
+                ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
+                ['is_parts_available', '=', false],
+                ['company_id', 'in', trackedIds],
+                ...notHist,
+              ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'sale_order_id', 'fleet_id'], limit: 0 })) as Rec[]);
+            } catch { /* a failed chunk leaves its orders unjudged rather than failing the KPI */ }
+          }
 
-      const lineIds = [...new Set(ros.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];
-      const lineInfo = await readPartsLines(parts, lineIds);
+          // When each vehicle had a purchase order raised against it. Every state
+          // counts: a draft — or even a later cancelled — RFQ was still raised.
+          const fleetIds = [...new Set(ros.map((r) => m2o(r.fleet_id)?.[0]).filter((x): x is number => x != null))];
+          const rfqTimes: Record<number, number[]> = {};
+          for (let i = 0; i < fleetIds.length; i += 2000) {
+            try {
+              const pos = (await call('purchase.order', 'search_read', [[
+                ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
+              ]], { fields: ['fleet_id', 'create_date'], limit: 0 })) as Rec[];
+              for (const po of pos) {
+                const fleet = m2o(po.fleet_id)?.[0];
+                const t = poTime(po.create_date);
+                if (fleet != null && t != null) (rfqTimes[fleet] ??= []).push(t);
+              }
+            } catch { /* this chunk's vehicles simply have no RFQ times */ }
+          }
 
-      let noParts = 0;
-      for (const r of ros) {
-        const soId = m2o(r.sale_order_id)?.[0];
-        const from = soId != null ? approvedAt[soId] : undefined;
-        if (from == null) continue;                  // approved outside this week
-        // All parts are ordered once the last line exists; lines added before
-        // approval elapse nothing, so they are compliant.
-        let lastAt: number | null = null;
-        for (const id of (r[parts.lineField] as number[] | undefined) ?? []) {
-          const t = lineInfo[id]?.since;
-          if (t != null && (lastAt == null || t > lastAt)) lastAt = t;
+          // Attributed through the REPAIR ORDER: when the RFQ is the thing
+          // missing there is no purchase order to hang the miss on, so the job
+          // card's owner is the only stable subject.
+          let noVehicle = 0;
+          for (const r of ros) {
+            const soId = m2o(r.sale_order_id)?.[0];
+            const approved = soId != null ? approvedAt[soId] : undefined;
+            if (approved == null) continue;
+            const fleet = m2o(r.fleet_id)?.[0];
+            // The vehicle is the only link back to a purchase order, so without
+            // one an RFQ is unobservable rather than missing — judging it would
+            // score a data gap.
+            if (fleet == null) { noVehicle++; continue; }
+            const roCreated = odooTime(r.create_date);
+            // A vehicle collects purchase orders over the years, so an RFQ counts
+            // for THIS job only if it came after the job card existed — and one
+            // raised before approval is early, not late.
+            const raised = (rfqTimes[fleet] ?? [])
+              .some((t) => t <= approved + limitMs && (roCreated == null || t >= roCreated));
+            const ref = (r.name as string) || '';
+            if (raised) push(18, r, true, ref);
+            else if (now - approved > limitMs) push(18, r, false, ref);
+            // still inside the window with no RFQ yet → not judged
+          }
+          if (noVehicle) {
+            notes.push(`RFQ after approval ignored ${noVehicle} repair order${noVehicle === 1 ? '' : 's'} with no vehicle set — the purchase order link runs through the vehicle, so an RFQ could not be seen either way.`);
+          }
         }
-        // No parts line at all: Odoo cannot tell a job that needed no parts from
-        // one whose parts were never ordered, and failing the first would be
-        // wrong — so the RO is skipped rather than guessed at.
-        if (lastAt == null) { noParts++; continue; }
-        push(18, r, elapsed(from, lastAt) <= limitMs, (r.name as string) || '');
       }
-      if (noParts) {
-        notes.push(`Parts ordered after approval skipped ${noParts} repair order${noParts === 1 ? '' : 's'} with no parts lines — Odoo cannot tell a job that needed no parts from one whose parts were never ordered.`);
+
+      // ── KPI 19 — the RFQ must be confirmed within N days of being raised ──
+      if (on(19)) {
+        if (!poHas('date_approve')) {
+          notes.push('purchase.order has no Confirmation Date (date_approve), so RFQ confirmed (KPI 19) was skipped.');
+        } else {
+          const limitMs = (config.thresholds.rfqConfirmDays ?? 1) * 86400_000;
+          let raised: Rec[] = [];
+          try {
+            // Cancelled RFQs are out of the population: a withdrawn request was
+            // never waiting on a confirmation, so counting it would read as a
+            // failure to confirm something nobody wanted any more.
+            raised = (await call('purchase.order', 'search_read', [[
+              ['create_date', '>=', wStart], ['create_date', '<', wEnd],
+              ['state', '!=', 'cancel'],
+              ['company_id', 'in', trackedIds],
+            ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'state', 'date_approve'], limit: 0 })) as Rec[];
+          } catch {
+            notes.push('RFQ confirmed (KPI 19) could not read the purchase orders raised this week.');
+          }
+
+          let undated = 0;
+          for (const po of raised) {
+            const created = poTime(po.create_date);
+            if (created == null) continue;
+            const ref = (po.name as string) || '';
+            const confirmed = poTime(po.date_approve);
+            if (confirmed != null) push(19, po, confirmed - created <= limitMs, ref);
+            else if (RFQ_STATES.includes(String(po.state))) {
+              if (now - created > limitMs) push(19, po, false, ref);   // still an RFQ, window gone
+            } else {
+              // Confirmed but undated: there is no moment to measure to, and
+              // guessing one would invent either a pass or a fail.
+              undated++;
+            }
+          }
+          if (undated) {
+            notes.push(`RFQ confirmed left ${undated} confirmed purchase order${undated === 1 ? '' : 's'} unjudged — they carry no confirmation date, so there is nothing to time.`);
+          }
+        }
+      }
+
+      // ── KPI 20 — the parts must land within N days of confirmation ──
+      if (on(20)) {
+        const parts = await resolvePartsFields(meta);
+        if (!poHas('date_approve') || !poHas('fleet_id') || !has('fleet_id')) {
+          notes.push('Parts placed (KPI 20) needs the Confirmation Date and fleet_id on purchase.order and fleet_id on repair.order — one of them is missing on this instance.');
+        } else if (!parts) {
+          notes.push('Parts placed (KPI 20) could not read the parts lines (Demand/Done), so receipt could not be judged.');
+        } else {
+          const limitMs = (config.thresholds.partsPlacedDays ?? 21) * 86400_000;
+          const poFields = ['name', 'create_uid', 'company_id', 'fleet_id', 'date_approve'];
+          if (poHas('effective_date')) poFields.push('effective_date');
+          let confirmedPos: Rec[] = [];
+          try {
+            confirmedPos = (await call('purchase.order', 'search_read', [[
+              ['date_approve', '>=', wStart], ['date_approve', '<', wEnd],
+              ['state', 'in', CONFIRMED_STATES],
+              ['company_id', 'in', trackedIds],
+            ]], { fields: poFields, limit: 0 })) as Rec[];
+          } catch {
+            notes.push('Parts placed (KPI 20) could not read the purchase orders confirmed this week.');
+          }
+
+          // Every live repair order for the vehicles involved, oldest first. The
+          // job is chosen per purchase order below, not per vehicle.
+          const fleetIds = [...new Set(confirmedPos.map((po) => m2o(po.fleet_id)?.[0]).filter((x): x is number => x != null))];
+          type Job = { id: number; created: number; lines: number[] };
+          const jobsByFleet: Record<number, Job[]> = {};
+          for (let i = 0; i < fleetIds.length; i += 2000) {
+            try {
+              const ros = (await call('repair.order', 'search_read', [[
+                ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
+                ['create_date', '<', wEnd],
+                ...notHist,
+              ]], { fields: ['fleet_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
+              for (const r of ros) {
+                const fleet = m2o(r.fleet_id)?.[0];
+                const created = odooTime(r.create_date);
+                if (fleet == null || created == null) continue;
+                (jobsByFleet[fleet] ??= []).push({
+                  id: r.id as number,
+                  created,
+                  lines: (r[parts.lineField] as number[] | undefined) ?? [],
+                });
+              }
+            } catch { /* this chunk's vehicles stay unlinked rather than dropping the KPI */ }
+          }
+          for (const list of Object.values(jobsByFleet)) list.sort((a, b) => a.created - b.created);
+
+          /**
+           * The job this purchase order was bought for: the newest live repair
+           * order already open when it was confirmed. Matching on the vehicle
+           * alone would just as happily pick a visit from two years ago and judge
+           * today's parts against a job that closed long before them.
+           */
+          const jobFor = (fleet: number | null, at: number): Job | null => {
+            if (fleet == null) return null;
+            let best: Job | null = null;
+            for (const job of jobsByFleet[fleet] ?? []) {
+              if (job.created > at) break;   // ascending, so nothing later can qualify
+              best = job;
+            }
+            return best;
+          };
+
+          const placements: { po: Rec; at: number; lines: number[] }[] = [];
+          let unlinked = 0;
+          for (const po of confirmedPos) {
+            const at = poTime(po.date_approve);
+            if (at == null) continue;
+            const job = jobFor(m2o(po.fleet_id)?.[0] ?? null, at);
+            if (!job) { unlinked++; continue; }   // no job card to receive against
+            placements.push({ po, at, lines: job.lines });
+          }
+
+          const lineInfo = await readPartsLines(parts, [...new Set(placements.flatMap((p) => p.lines))]);
+
+          let noArrival = 0;
+          for (const p of placements) {
+            const ref = (p.po.name as string) || '';
+            // Judged on the whole job card, not this order's own lines: one job's
+            // parts routinely arrive across several purchase orders, and the
+            // vehicle is only unblocked when the last of them is in.
+            const complete = p.lines.every((id) => !lineInfo[id]?.short);
+            if (complete) {
+              const landed = poTime(p.po.effective_date);
+              if (landed != null) push(20, p.po, landed - p.at <= limitMs, ref);
+              else { noArrival++; push(20, p.po, true, ref); }   // generous, and counted below
+            } else if (now - p.at > limitMs) {
+              push(20, p.po, false, ref);   // still short, window gone
+            }
+            // still short but inside the window → not judged
+          }
+          if (noArrival) {
+            notes.push(`Parts placed accepted ${noArrival} purchase order${noArrival === 1 ? '' : 's'} as on time whose parts are complete but which carry no Arrival date, so the receipt itself could not be timed.`);
+          }
+          if (unlinked) {
+            notes.push(`Parts placed skipped ${unlinked} confirmed purchase order${unlinked === 1 ? '' : 's'} with no live repair order open for that vehicle at the moment of confirmation.`);
+          }
+        }
       }
     }
   }
-
 
   // ── KPI 17 — answering an @mention in the chatter ──
   //

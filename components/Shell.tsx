@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
-import { HeroBanner } from './HeroBanner';
+import { HeroBanner, HeroBannerSkeleton } from './HeroBanner';
 
 interface SubTab {
   href: string;
@@ -16,21 +16,27 @@ interface HeroStat {
   sub?: string;
 }
 
-interface ShellProps {
-  breadcrumbSection: string;
-  breadcrumbPage: string;
-  subTabs: SubTab[];
-  hero: {
-    eyebrow: string;
-    title: string;
-    titleEm: string;
-    sub?: string;
-    stats?: HeroStat[];
-  };
-  children: React.ReactNode;
+interface HeroProps {
+  eyebrow: string;
+  title: string;
+  titleEm: string;
+  sub?: string;
+  stats?: HeroStat[];
 }
 
-export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, children }: ShellProps) {
+type ShellProps = {
+  breadcrumbSection: string;
+  subTabs: SubTab[];
+  children: React.ReactNode;
+} & (
+  | { loading?: false; breadcrumbPage: string; hero: HeroProps }
+  // Loading skeleton: same frame, hero shows placeholder bars; the page label
+  // falls back to a placeholder bar when unknown.
+  | { loading: true; breadcrumbPage?: string; hero?: undefined }
+);
+
+export function Shell(props: ShellProps) {
+  const { breadcrumbSection, breadcrumbPage, subTabs, children } = props;
   const pathname = usePathname();
 
   return (
@@ -42,7 +48,11 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
           <div className="flex items-center gap-4">
             <span className="text-sm text-ink-muted">
               {breadcrumbSection} /{' '}
-              <span className="font-semibold text-ink">{breadcrumbPage}</span>
+              {breadcrumbPage !== undefined ? (
+                <span className="font-semibold text-ink">{breadcrumbPage}</span>
+              ) : (
+                <span className="inline-block align-middle h-3 w-20 rounded-full bg-ink/10 animate-pulse" />
+              )}
             </span>
             {/* Sub-tabs */}
             <div className="flex gap-1">
@@ -66,7 +76,7 @@ export function Shell({ breadcrumbSection, breadcrumbPage, subTabs, hero, childr
           </div>
         </header>
 
-        <HeroBanner {...hero} />
+        {props.loading ? <HeroBannerSkeleton /> : <HeroBanner {...props.hero} />}
 
         <main className="shell-content">
           {children}

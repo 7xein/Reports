@@ -9,7 +9,7 @@
  */
 
 import type { WipMetricKey, Branch } from './types';
-import { BRANCHES, WORKSHOP_BRANCHES, subKey } from './types';
+import { BRANCHES, WORKSHOP_BRANCHES, subKey, SUB_BRANCH_COMPANY } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -26,7 +26,7 @@ const ODOO_API_KEY = () => requireEnv('ODOO_API_KEY');
 // ── Branch consolidation rules ─────────────────────────────────────
 // Order matches BRANCHES constant: Dubai, Ajman, Sharjah, Abu Dhabi, Al Ain, Qatar
 export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
-  'Dubai':     ['EVS Dubai', 'Emarat - Altwar', 'Emarat - Albarsha'],
+  'Dubai':     ['EVS ELECTRIC VEHICLE SERVICE DXB', 'Emarat - Altwar', 'Emarat - Albarsha'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
   'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
   'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Almushrif'],
@@ -37,24 +37,6 @@ export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
 
 const ALL_TRACKED_COMPANIES = Object.values(BRANCH_CLUSTERS).flat();
 
-// ── Sub-branch → Odoo company mapping ──────────────────────────────
-// Each dashboard sub-branch corresponds to exactly one Odoo company.
-// Keys/labels mirror SUB_BRANCHES in lib/types.ts.
-const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
-  'Dubai': {
-    'Main branch':        'EVS Dubai',
-    'Emarat - Albarsha':  'Emarat - Albarsha',
-    'Emarat - Altwar':    'Emarat - Altwar',
-  },
-  'Sharjah': {
-    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE SHARJAH',
-    'Emarat - Muwafja':   'Emarat - Muwafja',
-  },
-  'Abu Dhabi': {
-    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE ABU DHABI',
-    'Almushrif':          'Almushrif',
-  },
-};
 
 // ── Types ──────────────────────────────────────────────────────────
 export type OdooDomain = (string | [string, string, unknown])[];
@@ -130,7 +112,7 @@ export async function getCompanyIds(): Promise<Record<string, number>> {
  * silent zero rather than an error. The relaxed pass costs nothing and removes
  * a whole class of invisible breakage.
  */
-function companyIdFor(map: Record<string, number>, name: string): number | undefined {
+export function companyIdFor(map: Record<string, number>, name: string): number | undefined {
   const exact = map[name];
   if (exact) return exact;
   const want = name.trim().toLowerCase();
@@ -451,7 +433,7 @@ function gulfDayWindowUtc(dateStr: string): { start: string; end: string } {
 
 
 /** Odoo UTC datetime 'YYYY-MM-DD HH:MM:SS' → 'DD/MM/YYYY' in Gulf time. */
-function fmtGulfDate(raw: unknown): string {
+export function fmtGulfDate(raw: unknown): string {
   if (!raw || typeof raw !== 'string') return '';
   const d = new Date(raw.replace(' ', 'T') + 'Z');
   return new Intl.DateTimeFormat('en-GB', {
@@ -783,8 +765,8 @@ export interface OdooSalesSnapshot {
  * customer when one company invoices another. Matching on ids rather than on a
  * name is what makes this survive a rename — the old `not ilike 'EVS Electric'`
  * only ever caught the five companies whose names happen to contain that
- * string, so invoices to EVS Dubai, the Emarat stations, Almushrif and EV HUB
- * were all counted as outside revenue.
+ * string, so invoices to the Dubai main company, the Emarat stations, Almushrif
+ * and EV HUB were all counted as outside revenue.
  */
 export async function internalPartnerIds(): Promise<number[]> {
   const map = await getCompanyIds();
@@ -1175,6 +1157,34 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
       : 'Every invoicing company in Odoo is claimed by a branch.');
   } catch (e) {
     notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Purchasing chain: the three new workshop KPIs run from quotation approval →
+  // RFQ → purchase order → parts received, and every one of those needs a field
+  // name this instance actually uses. Discover rather than assume.
+  try {
+    const pm = (await call('purchase.order', 'fields_get', [], {
+      attributes: ['string', 'type', 'relation', 'selection'],
+    })) as Record<string, { string?: string; type?: string; relation?: string; selection?: [string, string][] }>;
+
+    const vehicleFields = Object.entries(pm)
+      .filter(([n, m]) => m.relation === 'fleet.vehicle' || /vehicle|fleet/i.test(n) || /vehicle/i.test(m.string ?? ''))
+      .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''} [${m.type}${m.relation ? ` → ${m.relation}` : ''}]`);
+    notes.push(`purchase.order vehicle-ish fields: ${vehicleFields.join(' · ') || '(none)'}`);
+
+    notes.push(`purchase.order state values: ${(pm.state?.selection ?? []).map(([v, l]) => `${v}=${l}`).join(', ') || '(none)'}`);
+
+    const poDates = Object.entries(pm)
+      .filter(([, m]) => m.type === 'date' || m.type === 'datetime')
+      .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''}`)
+      .sort();
+    notes.push(`purchase.order date fields: ${poDates.join(', ') || '(none)'}`);
+
+    const since30po = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+    const poCount = (await call('purchase.order', 'search_count', [[['create_date', '>=', since30po]]])) as number;
+    notes.push(`purchase orders created in the last 30 days: ${poCount}`);
+  } catch (e) {
+    notes.push(`⚠ purchase.order could not be read — the purchasing KPIs cannot work: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // What marks a repair order as "historical"? Orders moved to that tab must

@@ -363,7 +363,6 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['inspectionHours', 'Inspection duration (business hrs)'],
           ['quoteSentHours', 'Quote sent after inspection (business hrs)'],
           ['quoteApprovalHours', 'Quote approval (business hrs)'],
-          ['partsOrderedHours', 'Parts ordered after approval (business hrs)'],
           ['qaHours', 'QA duration (business hrs)'],
           ['invoiceHours', 'Invoice posted after Repaired (business hrs)'],
           ['deliveryHours', 'Delivered after Repaired (business hrs)'],
@@ -379,6 +378,9 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       <p className="text-xs text-ink-muted mb-2">Counted in calendar time, including Fridays and holidays.</p>
       <div className="flex flex-wrap gap-5 mb-6">
         {([
+          ['rfqAfterApprovalDays', 'RFQ raised within (days of approval)'],
+          ['rfqConfirmDays', 'RFQ confirmed within (days)'],
+          ['partsPlacedDays', 'Parts placed within (days of PO)'],
           ['tagMinutes', 'Tag deadline (minutes)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],

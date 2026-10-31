@@ -1,4 +1,5 @@
 import { Shell } from '@/components/Shell';
+import { SALES_SUB_TABS } from '@/lib/nav';
 import { SalesDashboardClient } from '@/components/SalesDashboardClient';
 import { WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
@@ -8,12 +9,6 @@ import { formatCurrency } from '@/lib/format';
 import { sumSalesFor, sumNonWarrantyFor, latestLogDate, getMonthStart } from '@/lib/sales-utils';
 
 export const dynamic = 'force-dynamic';
-
-const SALES_SUB_TABS = [
-  { href: '/sales/daily',   label: 'Daily'   },
-  { href: '/sales/weekly',  label: 'Weekly'  },
-  { href: '/sales/monthly', label: 'Monthly' },
-];
 
 export default async function SalesMonthlyPage() {
   const data = await readData();
