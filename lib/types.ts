@@ -146,6 +146,7 @@ export const KPI_DEFINITIONS = [
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', section: 'workshop', rule: 'A vehicle cannot await labour beyond the configured time.' },
   { id: 17, name: 'Chatter response',        group: 'Throughput & backlog', section: 'workshop', target: 95, rule: 'An @mention on a repair order must be answered in the chatter within the configured time. Tagging several people is one request — any of them may answer it; unanswered, it falls to the one tagged first.' },
   { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', section: 'advisor', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
+  { id: 15, name: 'Inspection duration',     group: 'Workshop stages', section: 'workshop', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
   { id: 16, name: 'QA duration',             group: 'Workshop stages', section: 'workshop', rule: 'A repair order must not sit in QA longer than the configured time.' },
   { id: 18, name: 'Parts ordered after approval', group: 'Workshop stages', section: 'workshop', rule: 'Parts must be ordered within the configured time of the quotation being approved — measured from approval to when the repair order\'s parts lines were added, since Odoo records no separate "parts confirmed" moment.' },
   { id: 19, name: 'Quotation approval rate', group: 'Quotations', section: 'advisor', target: 70, rule: 'Of the quotations sent, the share the customer approves.' },
@@ -212,6 +213,7 @@ export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thres
     case 11: return `Delivered within ${hrs(t.deliveryHours ?? 48)}`;
     case 12: return `Quote sent within ${hrs(t.quoteSentHours ?? 4)}`;
     case 14: return `Check-in within ${hrs(t.checkInHours ?? 3)}`;
+    case 15: return `Inspection ≤ ${hrs(t.inspectionHours ?? 27)}`;
     case 16: return `QA ≤ ${hrs(t.qaHours ?? 9)}`;
     case 17: return `Reply to a mention ≤ ${hrs(t.mentionResponseHours ?? 1)}`;
     case 18: return `Parts ordered ≤ ${hrs(t.partsOrderedHours ?? 2)} of approval`;
@@ -271,6 +273,8 @@ export interface KpiConfig {
     deliveryHours?: number;
     /** Business hours to reply after being @mentioned in a repair order's chatter (KPI 17). */
     mentionResponseHours?: number;
+    /** Business hours inspection may run before a quotation exists (KPI 15). */
+    inspectionHours?: number;
     /** Business hours a repair order may sit in QA (KPI 16). */
     qaHours?: number;
 
@@ -303,7 +307,7 @@ export interface KpiConfig {
     insuranceTags: StageSelector;
     /** States that count as CLOSED. Anything else is an open RO (KPI 9). */
     closed: StageSelector;
-    /** Reaching this state means check-in is done and inspection has begun (KPIs 12 and 14). */
+    /** Reaching this state means check-in is done and inspection has begun (KPIs 12, 14, 15). */
     inspection: StageSelector;
     /** The quality-check state whose dwell time KPI 16 measures. */
     qa: StageSelector;
@@ -338,7 +342,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
   thresholds: {
     // Business hours — see lib/business-hours.ts
     checkInHours: 3, quoteSentHours: 4, quoteApprovalHours: 48, partsOrderedHours: 2,
-    invoiceHours: 1, deliveryHours: 48, mentionResponseHours: 1, qaHours: 9,
+    invoiceHours: 1, deliveryHours: 48, mentionResponseHours: 1, inspectionHours: 27, qaHours: 9,
     // Calendar time
     tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, snapshotBaselineDays: 90, lowVolumeMin: 5,
   },
@@ -356,7 +360,7 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     qa:             { kind: 'repairState', values: [] },             // pick the QA value in Admin
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 16, 18, 19, 20],
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 18, 19, 20],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };
