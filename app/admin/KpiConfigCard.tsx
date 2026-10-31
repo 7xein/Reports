@@ -360,7 +360,6 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       <div className="flex flex-wrap gap-5 mb-5">
         {([
           ['checkInHours', 'Check-in within (business hrs)'],
-          ['inspectionHours', 'Inspection duration (business hrs)'],
           ['quoteSentHours', 'Quote sent after inspection (business hrs)'],
           ['quoteApprovalHours', 'Quote approval (business hrs)'],
           ['partsOrderedHours', 'Parts ordered after approval (business hrs)'],

@@ -1103,13 +1103,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
     notes.push('Quotation approval rate counts the quotations CREATED this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending and the denominator is quotations created, not quotations sent.');
     // Drafts stay in the denominator on purpose. The appendix says "approved over
-    // sent", but if this instance never uses Send by Email then every unapproved
-    // quotation sits in draft for good, and dropping drafts would leave only the
-    // approved ones — a silent 100%. The breakdown below is printed so that bias
-    // is visible rather than guessed at: a large "draft" share means the week's
-    // newest quotations are still undecided and the rate reads low for that
-    // reason alone, while a large "sent" share means Send is in real use and the
-    // denominator could fairly be narrowed to it.
+    // sent", but this instance never uses Send by Email, so an unapproved
+    // quotation sits in draft for good and dropping drafts would leave only the
+    // approved ones — a silent 100%. The breakdown below is printed so the shape
+    // of the week is visible: in a week still running, its newest quotations are
+    // simply undecided and the rate reads low for that reason alone, which is why
+    // the figure settles upward as the week closes.
     if (Object.keys(byState).length) {
       const order = ['draft', 'sent', 'sale', 'done', 'cancel'];
       const parts = Object.entries(byState)
@@ -1156,8 +1155,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const tfInspection = trackedField(config.stageMap.inspection, meta, stageNames);
   const tfQa = trackedField(config.stageMap.qa, meta, stageNames);
 
-  if ((on(12) || on(14) || on(15)) && !tfInspection) {
-    notes.push('Check-in, inspection and quote-after-inspection need the Inspection state mapped in Admin → KPI Configuration.');
+  if ((on(12) || on(14)) && !tfInspection) {
+    notes.push('Check-in and quote-after-check-in both need the Inspection state mapped in Admin → KPI Configuration — reaching Inspection is what marks check-in as done.');
   }
   if (on(16) && !tfQa) {
     notes.push('QA duration needs the QA state mapped in Admin → KPI Configuration.');
@@ -1206,14 +1205,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
   }
 
-  // KPIs 15 & 12 — inspection start → quotation created. Same measurement, two
-  // business-hour windows: 15 is how long inspection itself may run, 12 is the
-  // tighter promise on getting the quote out.
-  if ((on(12) || on(15)) && tfInspection && has('sale_order_id')) {
+  // KPI 12 — inspection start → quotation created. The appendix chains the
+  // stages, so the quote's 4-hour promise starts when check-in finishes.
+  if (on(12) && tfInspection && has('sale_order_id')) {
     const entered = await roIdsEnteringStateInWindow(tfInspection.field, tfInspection.labels, wStart, wEnd);
     const ids = Object.keys(entered).map(Number);
     if (!ids.length) {
-      notes.push(`No repair order entered "${tfInspection.labels.join('/')}" during this week according to the chatter — inspection and quote-after-inspection have nothing to measure.`);
+      notes.push(`No repair order entered "${tfInspection.labels.join('/')}" during this week according to the chatter — the quote-after-check-in clock has nothing to measure.`);
     }
 
     if (ids.length) {
@@ -1248,8 +1246,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       };
 
-      if (on(15)) judgeQuoteTiming(15, businessHours(config.thresholds.inspectionHours ?? 27));
-      if (on(12)) judgeQuoteTiming(12, businessHours(config.thresholds.quoteSentHours ?? 4));
+      judgeQuoteTiming(12, businessHours(config.thresholds.quoteSentHours ?? 4));
     }
   }
 
