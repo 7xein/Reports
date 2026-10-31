@@ -1,13 +1,9 @@
 import { Shell } from '@/components/Shell';
+import { WIP_SUB_TABS } from '@/lib/nav';
 import { WipWeeklyClient } from './WipWeeklyClient';
 import { readData } from '@/lib/data-store';
 
 export const dynamic = 'force-dynamic';
-
-const WIP_SUB_TABS = [
-  { href: '/wip/daily',  label: 'Accumulative' },
-  { href: '/wip/weekly', label: 'Weekly Snapshot' },
-];
 
 export default async function WipWeeklyPage() {
   const data = await readData();

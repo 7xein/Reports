@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx-js-style';
 import { fetchMetricRecords, fetchRepairOrdersForExport, fetchInvoiceSalesForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
+import { autoWidth, boldHeaderRow } from '@/lib/xlsx';
 import { WIP_METRICS, WipMetricKey, BRANCHES, Branch } from '@/lib/types';
 
 export const maxDuration = 60;
@@ -33,30 +34,6 @@ function rowToArr(r: RepairOrderExportRow, withAge: boolean): (string | number)[
     ...(withAge ? [r.ageDays] : []),
     r.customerName, r.customerMobile, r.vehicle, r.repairStatus, r.priorityMatrixStatus,
   ];
-}
-
-function autoWidth(aoa: (string | number)[][]): { wch: number }[] {
-  const widths: number[] = [];
-  for (const row of aoa) {
-    row.forEach((c, i) => {
-      const len = c == null ? 0 : String(c).length;
-      widths[i] = Math.max(widths[i] || 10, Math.min(len + 2, 60));
-    });
-  }
-  return widths.map((w) => ({ wch: w }));
-}
-
-const HEADER_STYLE = { font: { bold: true }, fill: { fgColor: { rgb: 'EEEEEE' } } };
-
-/** Bold + shade the first (header) row of a worksheet. */
-function boldHeaderRow(ws: XLSX.WorkSheet) {
-  const ref = ws['!ref'];
-  if (!ref) return;
-  const range = XLSX.utils.decode_range(ref);
-  for (let c = range.s.c; c <= range.e.c; c++) {
-    const addr = XLSX.utils.encode_cell({ r: 0, c });
-    if (ws[addr]) ws[addr].s = HEADER_STYLE;
-  }
 }
 
 function branchSheet(rows: RepairOrderExportRow[], type: 'wip' | 'received', invoiceSales?: number, withAge = false) {

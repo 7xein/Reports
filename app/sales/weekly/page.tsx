@@ -1,15 +1,10 @@
 import { Shell } from '@/components/Shell';
+import { SALES_SUB_TABS } from '@/lib/nav';
 import { SalesWeeklyClient } from './SalesWeeklyClient';
 import { readData } from '@/lib/data-store';
 import { BRANCHES } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
-
-const SALES_SUB_TABS = [
-  { href: '/sales/daily',   label: 'Daily'   },
-  { href: '/sales/weekly',  label: 'Weekly'  },
-  { href: '/sales/monthly', label: 'Monthly' },
-];
 
 export default async function SalesWeeklyPage() {
   const data = await readData();

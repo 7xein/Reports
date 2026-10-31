@@ -20,6 +20,30 @@ export const getSubBranches = (b: string): string[] => SUB_BRANCHES[b] ?? [];
 export const hasSubBranches = (b: string): boolean => (SUB_BRANCHES[b]?.length ?? 0) > 0;
 export const subKey = (branch: string, sub: string): string => `${branch}__${sub}`;
 
+// Each dashboard sub-branch corresponds to exactly one Odoo company (the
+// BRANCH_CLUSTERS spelling in lib/odoo.ts). Keys/labels mirror SUB_BRANCHES.
+// Lives here, not in lib/odoo.ts, because the report pages filter by station
+// in the browser and must agree with the WIP page about what a station is.
+export const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
+  'Dubai': {
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE DXB',
+    'Emarat - Albarsha':  'Emarat - Albarsha',
+    'Emarat - Altwar':    'Emarat - Altwar',
+  },
+  'Sharjah': {
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE SHARJAH',
+    'Emarat - Muwafja':   'Emarat - Muwafja',
+  },
+  'Abu Dhabi': {
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE ABU DHABI',
+    'Almushrif':          'Almushrif',
+  },
+};
+
+/** The Odoo company behind a station, or null when the branch has no such station. */
+export const stationCompany = (branch: string, station: string): string | null =>
+  SUB_BRANCH_COMPANY[branch]?.[station] ?? null;
+
 /** Split a WIP scope into its branch and, when present, its sub-branch. */
 export function parseScope(scope: string): { branch: string | null; sub: string | null } {
   if (scope === 'all') return { branch: null, sub: null };
@@ -148,6 +172,9 @@ export const KPI_DEFINITIONS = [
   { id: 14, name: 'Check-in after RO',       group: 'Workshop stages', section: 'advisor', rule: 'Check-in must be completed within the configured time of the RO being created — measured by the RO reaching Inspection.' },
   { id: 15, name: 'Inspection duration',     group: 'Workshop stages', section: 'workshop', rule: 'Inspection must not run longer than the configured time — measured from the RO entering Inspection to its quotation being created.' },
   { id: 16, name: 'QA duration',             group: 'Workshop stages', section: 'workshop', rule: 'A repair order must not sit in QA longer than the configured time.' },
+  { id: 18, name: 'RFQ after approval',      group: 'Workshop stages', section: 'workshop', rule: 'An RFQ must be raised within the configured time of the quotation being approved, counted only for repair orders whose parts are not all available.' },
+  { id: 19, name: 'RFQ confirmed',           group: 'Workshop stages', section: 'workshop', rule: 'An RFQ must be confirmed into a purchase order within the configured time of being raised.' },
+  { id: 20, name: 'Parts placed',            group: 'Workshop stages', section: 'workshop', rule: 'Once a purchase order is confirmed, the repair order\'s parts must be received (Done quantity reaching Demand) within the configured time.' },
 ] as const;
 export type KpiId = typeof KPI_DEFINITIONS[number]['id'];
 
@@ -194,6 +221,9 @@ export function kpiDisplayName(id: number, fallback: string, t: KpiConfig['thres
     case 15: return `Inspection ≤ ${days(t.inspectionDays ?? 3)}`;
     case 16: return `QA ≤ ${days(t.qaDays ?? 1)}`;
     case 17: return `Reply to a mention ≤ ${days(t.mentionResponseDays ?? 1)}`;
+    case 18: return `RFQ within ${days(t.rfqAfterApprovalDays ?? 1)} of approval`;
+    case 19: return `RFQ confirmed within ${days(t.rfqConfirmDays ?? 1)}`;
+    case 20: return `Parts placed within ${days(t.partsPlacedDays ?? 21)}`;
     default: return fallback;
   }
 }
@@ -256,6 +286,12 @@ export interface KpiConfig {
     qaDays?: number;
     /** Max days to reply after being @mentioned in a repair order's chatter (KPI 17). */
     mentionResponseDays?: number;
+    /** Max days from a quotation being approved to an RFQ being raised (KPI 18). */
+    rfqAfterApprovalDays?: number;
+    /** Max days from an RFQ being raised to it being confirmed into a purchase order (KPI 19). */
+    rfqConfirmDays?: number;
+    /** Max days from a purchase order being confirmed to the parts being received (KPI 20). */
+    partsPlacedDays?: number;
     /** Grace after delivery before the follow-up KPI judges an RO. */
     followUpGraceDays?: number;
     /** Below this many applicable records a KPI is flagged as low-volume (n=X). */
@@ -306,7 +342,7 @@ export interface KpiConfig {
 /** Safe defaults, using the priority-matrix codes this instance actually uses. */
 export const DEFAULT_KPI_CONFIG: KpiConfig = {
   weekStartDay: 6,
-  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, mentionResponseDays: 1, lowVolumeMin: 5 },
+  thresholds: { quoteApprovalDays: 2, tagMinutes: 60, awaitingPartsDays: 21, awaitingLabourDays: 2, invoiceGraceMinutes: 60, snapshotBaselineDays: 90, repairedToDeliveredDays: 2, quoteAfterInspectionDays: 5, checkInDays: 1, inspectionDays: 3, qaDays: 1, mentionResponseDays: 1, rfqAfterApprovalDays: 1, rfqConfirmDays: 1, partsPlacedDays: 21, lowVolumeMin: 5 },
   stageMap: {
     repaired:       { kind: 'priority', values: ['C', 'G', 'D'] },  // Labour Complete / QC Complete / Vehicle Ready
     underRepair:    { kind: 'state',    values: ['under_repair'] }, // repair.order state
@@ -321,7 +357,10 @@ export const DEFAULT_KPI_CONFIG: KpiConfig = {
     qa:             { kind: 'repairState', values: [] },             // pick the QA value in Admin
   },
   saRoster: [],
-  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16],
+  // Every KPI that ships on. mergeEnabledKpis() auto-enables ids above a stored
+  // config's maximum, but a fresh install reads this list verbatim — leaving one
+  // out here ships it silently switched off.
+  enabledKpis: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
   ageBasis: 'auto',
   awaitingPartsSource: 'parts',
 };

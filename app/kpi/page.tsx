@@ -1,10 +1,9 @@
 import { Shell } from '@/components/Shell';
+import { KPI_SUB_TABS } from '@/lib/nav';
 import { KpiClient } from './KpiClient';
 import { isAdminAuthenticated } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
-
-const KPI_SUB_TABS = [{ href: '/kpi', label: 'Weekly KPIs' }];
 
 export default function KpiPage() {
   return (

@@ -1,15 +1,11 @@
 import { Shell } from '@/components/Shell';
+import { WIP_SUB_TABS } from '@/lib/nav';
 import { WipDailyClient } from './WipDailyClient';
 import { readData } from '@/lib/data-store';
 import { WORKSHOP_BRANCHES, WIP_METRICS, WipMetricKey } from '@/lib/types';
 import { formatNumber } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
-
-const WIP_SUB_TABS = [
-  { href: '/wip/daily',  label: 'Accumulative' },
-  { href: '/wip/weekly', label: 'Weekly Snapshot' },
-];
 
 function emptyWipTotals(): Record<WipMetricKey, number> {
   return Object.fromEntries(WIP_METRICS.map((m) => [m.key, 0])) as Record<WipMetricKey, number>;
