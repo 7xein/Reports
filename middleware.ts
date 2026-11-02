@@ -36,6 +36,33 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  // The EV Hub section requires a second password too. Both halves are gated:
+  // the report pages fetch their rows from /api/evhub/[report], so gating the
+  // pages alone would leave the data one request away for anyone who holds the
+  // site password.
+  const isEvhubPage = pathname === '/evhub' || pathname.startsWith('/evhub/');
+  const isEvhubApi = pathname === '/api/evhub' || pathname.startsWith('/api/evhub/');
+
+  // IMPORTANT: /evhub/login is deliberately NOT in the public-paths list above —
+  // it sits behind the site password so the second password has no guessing
+  // surface on the open internet. That means it reaches this gate, so it MUST be
+  // skipped here; without this check the login page would redirect to itself
+  // forever.
+  if ((isEvhubPage || isEvhubApi) && pathname !== '/evhub/login') {
+    const isEvhubAuth = request.cookies.get('evs_evhub_auth')?.value === 'authenticated';
+    if (!isEvhubAuth) {
+      // The data route answers with 401 rather than a redirect: a fetch that
+      // follows a redirect to an HTML login page fails with a confusing JSON
+      // parse error at the caller.
+      if (isEvhubApi) {
+        return NextResponse.json({ error: 'EVHUB authentication required' }, { status: 401 });
+      }
+      const evhubLoginUrl = new URL('/evhub/login', request.url);
+      evhubLoginUrl.searchParams.set('from', pathname);
+      return NextResponse.redirect(evhubLoginUrl);
+    }
+  }
+
   return NextResponse.next();
 }
 

@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getSitePassword,
   getAdminPassword,
+  getEvhubPassword,
   setAuthCookie,
   setAdminAuthCookie,
+  setEvhubAuthCookie,
   clearAuthCookies,
 } from '@/lib/auth';
 
@@ -13,6 +15,14 @@ export async function POST(req: NextRequest) {
   if (type === 'admin') {
     if (password === getAdminPassword()) {
       setAdminAuthCookie();
+      return NextResponse.json({ success: true });
+    }
+    return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
+  }
+
+  if (type === 'evhub') {
+    if (password === getEvhubPassword()) {
+      setEvhubAuthCookie();
       return NextResponse.json({ success: true });
     }
     return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });

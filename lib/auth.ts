@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 
 const SITE_COOKIE  = 'evs_auth';
 const ADMIN_COOKIE = 'evs_admin_auth';
+const EVHUB_COOKIE = 'evs_evhub_auth';
 const COOKIE_VALUE = 'authenticated';
 
 export function getSitePassword(): string {
@@ -16,6 +17,12 @@ export function getAdminPassword(): string {
   return pw;
 }
 
+export function getEvhubPassword(): string {
+  const pw = process.env.EVHUB_PASSWORD;
+  if (!pw) throw new Error('EVHUB_PASSWORD environment variable is not set');
+  return pw;
+}
+
 export function isAuthenticated(): boolean {
   const cookieStore = cookies();
   return cookieStore.get(SITE_COOKIE)?.value === COOKIE_VALUE;
@@ -24,6 +31,11 @@ export function isAuthenticated(): boolean {
 export function isAdminAuthenticated(): boolean {
   const cookieStore = cookies();
   return cookieStore.get(ADMIN_COOKIE)?.value === COOKIE_VALUE;
+}
+
+export function isEvhubAuthenticated(): boolean {
+  const cookieStore = cookies();
+  return cookieStore.get(EVHUB_COOKIE)?.value === COOKIE_VALUE;
 }
 
 export function setAuthCookie(): void {
@@ -46,7 +58,18 @@ export function setAdminAuthCookie(): void {
   });
 }
 
+export function setEvhubAuthCookie(): void {
+  cookies().set(EVHUB_COOKIE, COOKIE_VALUE, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 30,
+    path: '/',
+  });
+}
+
 export function clearAuthCookies(): void {
   cookies().delete(SITE_COOKIE);
   cookies().delete(ADMIN_COOKIE);
+  cookies().delete(EVHUB_COOKIE);
 }
