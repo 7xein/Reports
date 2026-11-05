@@ -33,7 +33,8 @@ export const TILE_BORDER_TONE: Record<Tone, string> = {
 };
 
 export const NUMERIC_KINDS: ReadonlySet<ColumnKind> = new Set(['number', 'days', 'currency', 'percent']);
-export const SEARCHABLE_KINDS: ReadonlySet<ColumnKind> = new Set(['text', 'badge', 'date']);
+// 'link' is searchable (its text is a record number, which is what people type) but not numeric.
+export const SEARCHABLE_KINDS: ReadonlySet<ColumnKind> = new Set(['text', 'badge', 'date', 'link']);
 
 const numberFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 
@@ -49,14 +50,33 @@ function toNumber(v: CellValue): number | null {
 
 const Dash = () => <span className="text-ink-muted">—</span>;
 
+/** Marks a link as leaving the page. Inline so it costs no request. */
+const ExternalGlyph = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="10"
+    height="10"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    className="inline-block ml-1 opacity-60 align-baseline"
+    aria-hidden="true"
+  >
+    <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+  </svg>
+);
+
 export function Cell({
   col,
   value,
   tones,
+  href,
 }: {
   col: ReportColumn;
   value: CellValue | undefined;
   tones?: Record<string, Tone>;
+  /** `link` columns only: the row's URL, from the column's hrefKey. Null renders the text plainly. */
+  href?: string | null;
 }) {
   if (isEmpty(value)) return <Dash />;
 
@@ -87,6 +107,17 @@ export function Cell({
         cls = bad ? 'text-danger' : 'text-evs-green-dark';
       }
       return <span className={cls}>{text}</span>;
+    }
+    case 'link': {
+      const text = String(value);
+      // No URL means a dead anchor, so the text stands on its own instead.
+      if (!href) return <>{text}</>;
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="text-evs-green-dark font-medium hover:underline">
+          {text}
+          <ExternalGlyph />
+        </a>
+      );
     }
     case 'badge': {
       const label = String(value);

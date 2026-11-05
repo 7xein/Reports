@@ -9,7 +9,9 @@
 import type { OdooDomain } from '../odoo';
 import { parseScope, stationCompany } from '../types';
 
-export type ReportSlug = 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts' | 'cost';
+export type ReportSlug =
+  | 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts' | 'cost'
+  | 'attention' | 'open-jobs' | 'not-invoiced' | 'unposted';
 
 /**
  * How a column's values are typed and displayed.
@@ -20,8 +22,12 @@ export type ReportSlug = 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts'
  *  currency AED amount, two decimals (the label carries the unit)
  *  percent  a change or share in percent points, may be negative
  *  badge    short status label, coloured via `badgeTones`
+ *  link     the value is the display text; the absolute URL lives under a
+ *           different row key, named by the column's `hrefKey`. A row missing
+ *           that key renders as plain text, so a link that cannot be built
+ *           costs a hyperlink, not a cell.
  */
-export type ColumnKind = 'text' | 'number' | 'days' | 'date' | 'currency' | 'percent' | 'badge';
+export type ColumnKind = 'text' | 'number' | 'days' | 'date' | 'currency' | 'percent' | 'badge' | 'link';
 
 export interface ReportColumn {
   key: string;
@@ -29,6 +35,8 @@ export interface ReportColumn {
   kind: ColumnKind;
   /** For number/percent columns that read as better or worse: colours positive values. */
   trend?: 'up-good' | 'up-bad';
+  /** `link` columns only: the row key holding the URL. Not a column itself, so it never renders as its own cell. */
+  hrefKey?: string;
 }
 
 export type Tone = 'good' | 'warn' | 'bad' | 'neutral';
@@ -124,8 +132,12 @@ export interface ReportModule {
   summarise(rows: ReportRow[], params: ReportParams): ReportSummaryItem[];
 }
 
+export type ReportSection = 'evhub' | 'ceo';
+
 export interface ReportMeta {
   slug: ReportSlug;
+  /** Which password-gated section owns the report: its page, its API prefix, and who may read it. */
+  section: ReportSection;
   /** Sub-tab label. */
   label: string;
   /** True when the report honours `days` and the UI should offer WINDOW_OPTIONS. */
@@ -138,24 +150,44 @@ export interface ReportMeta {
 /** Display order, which is also the sub-tab order. */
 export const REPORTS: readonly ReportMeta[] = [
   {
-    slug: 'no-rfq', label: 'Parts without RFQ', windowed: false, branchSet: 'workshop',
+    slug: 'no-rfq', section: 'evhub', label: 'Parts without RFQ', windowed: false, branchSet: 'workshop',
     hero: { title: 'Parts', titleEm: 'without an RFQ', sub: 'Open repair orders that are short of parts while no RFQ has been raised for the vehicle.' },
   },
   {
-    slug: 'rfq-to-po', label: 'RFQ → PO', windowed: true, branchSet: 'all',
+    slug: 'rfq-to-po', section: 'evhub', label: 'RFQ → PO', windowed: true, branchSet: 'all',
     hero: { title: 'RFQ to', titleEm: 'purchase order', sub: 'How long each RFQ took to be confirmed into a purchase order, and which are still waiting.' },
   },
   {
-    slug: 'po-to-receipt', label: 'PO → Received', windowed: true, branchSet: 'all',
+    slug: 'po-to-receipt', section: 'evhub', label: 'PO → Received', windowed: true, branchSet: 'all',
     hero: { title: 'Purchase order to', titleEm: 'parts received', sub: 'How long confirmed purchase orders took to arrive in the branch stock, and which are still on the way.' },
   },
   {
-    slug: 'open-parts', label: 'Open parts', windowed: false, branchSet: 'workshop',
+    slug: 'open-parts', section: 'evhub', label: 'Open parts', windowed: false, branchSet: 'workshop',
     hero: { title: 'Open parts', titleEm: 'and why', sub: 'Every part still short on an open repair order, with where it is stuck in the purchasing chain.' },
   },
   {
-    slug: 'cost', label: 'Cost analysis', windowed: false, branchSet: 'all',
+    slug: 'cost', section: 'evhub', label: 'Cost analysis', windowed: false, branchSet: 'all',
     hero: { title: 'EV Hub', titleEm: 'parts cost', sub: 'What EV Hub paid per unit for each part, month by month over the last 12 months.' },
+  },
+  {
+    // 'all', not 'workshop': the page carries unposted invoices as well as
+    // jobs, and EV Hub raises customer invoices even though it has no workshop.
+    // Under 'workshop' its rows would show only under "All Branches" and be
+    // unreachable by the picker, so its money would belong to no branch at all.
+    slug: 'attention', section: 'ceo', label: 'Needs attention', windowed: false, branchSet: 'all',
+    hero: { title: 'Needs', titleEm: 'your attention', sub: 'Every open exception across the branches, worst first, with the money at risk.' },
+  },
+  {
+    slug: 'open-jobs', section: 'ceo', label: 'Oldest open jobs', windowed: false, branchSet: 'workshop',
+    hero: { title: 'Oldest', titleEm: 'open jobs', sub: 'Every open repair order by age, with how long it has sat in its current status.' },
+  },
+  {
+    slug: 'not-invoiced', section: 'ceo', label: 'Not invoiced', windowed: false, branchSet: 'workshop',
+    hero: { title: 'Repaired,', titleEm: 'not invoiced', sub: 'Work finished and not billed — the value sitting on the workshop floor.' },
+  },
+  {
+    slug: 'unposted', section: 'ceo', label: 'Unposted invoices', windowed: false, branchSet: 'all',
+    hero: { title: 'Invoices', titleEm: 'never posted', sub: 'Customer invoices raised but left in draft, so the revenue is never booked.' },
   },
 ];
 
@@ -164,3 +196,9 @@ export const DEFAULT_WINDOW_DAYS = 30;
 
 export const isReportSlug = (s: string): s is ReportSlug => REPORTS.some((r) => r.slug === s);
 export const reportMeta = (slug: ReportSlug): ReportMeta => REPORTS.find((r) => r.slug === slug)!;
+
+/** One section's reports, in display order — its sub-tabs and the only slugs it may prefetch. */
+export const reportsFor = (section: ReportSection): readonly ReportMeta[] =>
+  REPORTS.filter((r) => r.section === section);
+
+export const reportSection = (slug: ReportSlug): ReportSection => reportMeta(slug).section;

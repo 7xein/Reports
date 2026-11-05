@@ -19,6 +19,10 @@ import { report as rfqToPo } from './rfq-to-po';
 import { report as poToReceipt } from './po-to-receipt';
 import { report as openParts } from './open-parts';
 import { report as cost } from './cost';
+import { report as attention } from './attention';
+import { report as openJobs } from './open-jobs';
+import { report as notInvoiced } from './not-invoiced';
+import { report as unposted } from './unposted';
 
 export const REPORT_MODULES: Record<ReportSlug, ReportModule> = {
   'no-rfq': noRfq,
@@ -26,6 +30,12 @@ export const REPORT_MODULES: Record<ReportSlug, ReportModule> = {
   'po-to-receipt': poToReceipt,
   'open-parts': openParts,
   cost,
+  // The CEO section. All four read one shared population (ceo-core.ts), so a
+  // visit that opens every tab costs a single Odoo read.
+  attention,
+  'open-jobs': openJobs,
+  'not-invoiced': notInvoiced,
+  unposted,
 };
 
 // In memory, not Redis: a report can exceed a stored value's size limit, and

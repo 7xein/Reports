@@ -248,7 +248,7 @@ const DOM_QUOTATIONS_NOT_APPROVED: OdooDomain = [['state', '=', 'draft']];
 const DOM_ROS_WITHOUT_INVOICES: OdooDomain    = [['state', '!=', 'cancel'], ['priority_matrix_status', '!=', 'X'], ['tag_ids', 'not ilike', 'cancel']];
 const DOM_WARRANTIES_ACTIVATED: OdooDomain    = [['state', '=', 'activated']];
 // Work finished but not billed: Repaired, yet not "Invoiced & Closed".
-const DOM_REPAIRED_NOT_INVOICED: OdooDomain   = [['state', '=', 'done'], ['priority_matrix_status', '!=', 'X']];
+export const DOM_REPAIRED_NOT_INVOICED: OdooDomain   = [['state', '=', 'done'], ['priority_matrix_status', '!=', 'X']];
 
 /** A: "WIP daily not invoiced" — sale.order */
 const qSaleOrdersToInvoice = (extra: OdooDomain = []) =>
@@ -339,6 +339,52 @@ export async function notHistorical(): Promise<OdooDomain> {
  */
 async function liveRepairDomain(base: OdooDomain, extra: OdooDomain = []): Promise<OdooDomain> {
   return [...base, ...extra, ...(await notHistorical())];
+}
+
+/**
+ * How many repair orders each branch has parked in "Historical Orders".
+ *
+ * Every other read excludes them, so a page that shows open work can say how
+ * much it is not showing. That makes it a caveat line, never the report itself:
+ * an empty notHistorical() means the field does not exist on this instance, and
+ * any failure reads as zero, because no count of parked orders is worth failing
+ * a report over.
+ */
+export async function historicalRepairCounts(): Promise<Record<Branch, number>> {
+  const zeros = () => {
+    const out = {} as Record<Branch, number>;
+    for (const branch of BRANCHES) out[branch] = 0;
+    return out;
+  };
+
+  try {
+    if (!(await notHistorical()).length) return zeros();
+
+    const trackedIds = await allTrackedCompanyIds();
+    const groups: ReadGroupResult[] = await call('repair.order', 'read_group', [[
+      [HISTORICAL_FIELD, '=', true],
+      ['company_id', 'in', trackedIds],
+    ] as OdooDomain], {
+      fields: ['company_id'],
+      groupby: ['company_id'],
+      lazy: true,
+    });
+
+    const perCompanyId: Record<number, number> = {};
+    for (const g of groups) {
+      const cid = g.company_id?.[0];
+      if (cid) perCompanyId[cid] = (g.company_id_count ?? g.__count ?? 0) as number;
+    }
+
+    const out = zeros();
+    for (const branch of BRANCHES) {
+      const ids = await branchCompanyIds(branch);
+      out[branch] = ids.reduce((sum, id) => sum + (perCompanyId[id] ?? 0), 0);
+    }
+    return out;
+  } catch {
+    return zeros();
+  }
 }
 
 // ── Record export (live CSV) ───────────────────────────────────────
@@ -809,7 +855,7 @@ async function movePartnerField(): Promise<string> {
  * Expressed as "company is EV Hub OR the customer is not one of ours", which
  * keeps the whole thing to one query.
  */
-async function excludeInternalSales(): Promise<OdooDomain> {
+export async function excludeInternalSales(): Promise<OdooDomain> {
   const [evHubIds, internal, field] = await Promise.all([
     branchCompanyIds('EV Hub'),
     internalPartnerIds(),

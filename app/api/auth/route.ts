@@ -3,9 +3,11 @@ import {
   getSitePassword,
   getAdminPassword,
   getEvhubPassword,
+  getCeoPassword,
   setAuthCookie,
   setAdminAuthCookie,
   setEvhubAuthCookie,
+  setCeoAuthCookie,
   clearAuthCookies,
 } from '@/lib/auth';
 
@@ -23,6 +25,14 @@ export async function POST(req: NextRequest) {
   if (type === 'evhub') {
     if (password === getEvhubPassword()) {
       setEvhubAuthCookie();
+      return NextResponse.json({ success: true });
+    }
+    return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
+  }
+
+  if (type === 'ceo') {
+    if (password === getCeoPassword()) {
+      setCeoAuthCookie();
       return NextResponse.json({ success: true });
     }
     return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });

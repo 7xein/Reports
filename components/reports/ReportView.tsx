@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_WINDOW_DAYS,
-  REPORTS,
   WINDOW_OPTIONS,
+  reportsFor,
   rowInScope,
   type ReportResult,
+  type ReportSection,
   type ReportSlug,
 } from '@/lib/reports/types';
 import { getSubBranches, subKey } from '@/lib/types';
@@ -15,7 +16,8 @@ import { Spinner } from '@/components/Spinner';
 import { BADGE_TONE, CHIP_ACTIVE_TONE, SEARCHABLE_KINDS, TILE_BORDER_TONE, VALUE_TONE, isEmpty } from './cells';
 import { ReportTable } from './ReportTable';
 
-const SCOPE_STORAGE_KEY = 'evhub.scope';
+/** Per section, so the two remember their own branch. 'evhub.scope' is the key EVHUB has always used — renaming it would discard a stored choice. */
+const scopeStorageKey = (section: ReportSection) => `${section}.scope`;
 /** A cached report older than this is shown at once and re-read in the background. */
 const STALE_MS = 10 * 60 * 1000;
 
@@ -29,17 +31,17 @@ let prefetching = false;
 
 const cacheKey = (slug: string, windowed: boolean, days: number) => `${slug}:${windowed ? days : '-'}`;
 
-function readStoredScope(): string {
+function readStoredScope(section: ReportSection): string {
   try {
-    return window.localStorage.getItem(SCOPE_STORAGE_KEY) ?? 'all';
+    return window.localStorage.getItem(scopeStorageKey(section)) ?? 'all';
   } catch {
     return 'all';
   }
 }
 
-function writeStoredScope(scope: string) {
+function writeStoredScope(section: ReportSection, scope: string) {
   try {
-    window.localStorage.setItem(SCOPE_STORAGE_KEY, scope);
+    window.localStorage.setItem(scopeStorageKey(section), scope);
   } catch {
     /* storage unavailable — the choice just won't be remembered */
   }
@@ -56,27 +58,32 @@ async function errorMessage(res: Response): Promise<string> {
   return message;
 }
 
-async function fetchReport(slug: string, days: number | null, refresh: boolean): Promise<ReportResult> {
+async function fetchReport(apiBase: string, slug: string, days: number | null, refresh: boolean): Promise<ReportResult> {
   const q = new URLSearchParams();
   if (days !== null) q.set('days', String(days));
   if (refresh) q.set('refresh', '1');
   const qs = q.toString();
-  const res = await fetch(`/api/evhub/${slug}${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
+  const res = await fetch(`${apiBase}/${slug}${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(await errorMessage(res));
   return (await res.json()) as ReportResult;
 }
 
-/** After the visible report loads, read the other sub-tabs at their default window, one at a time. */
-async function prefetchOthers(current: string) {
+/**
+ * After the visible report loads, read the other sub-tabs at their default window, one at a time.
+ *
+ * Only this section's reports: the other section's are behind a different
+ * password, so prefetching them would spend the requests on 401s.
+ */
+async function prefetchOthers(apiBase: string, section: ReportSection, current: string) {
   if (prefetching) return;
   prefetching = true;
   try {
-    for (const r of REPORTS) {
+    for (const r of reportsFor(section)) {
       if (r.slug === current) continue;
       const key = cacheKey(r.slug, r.windowed, DEFAULT_WINDOW_DAYS);
       if (reportCache.has(key)) continue;
       try {
-        reportCache.set(key, await fetchReport(r.slug, r.windowed ? DEFAULT_WINDOW_DAYS : null, false));
+        reportCache.set(key, await fetchReport(apiBase, r.slug, r.windowed ? DEFAULT_WINDOW_DAYS : null, false));
       } catch {
         /* prefetch is best effort */
       }
@@ -114,7 +121,18 @@ function gulfTime(iso: string): string {
 const INDETERMINATE_CSS =
   '@keyframes evhub-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}';
 
-export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boolean }) {
+export function ReportView({
+  slug,
+  windowed,
+  section,
+  apiBase,
+}: {
+  slug: ReportSlug;
+  windowed: boolean;
+  section: ReportSection;
+  /** The section's API prefix, e.g. '/api/evhub'. */
+  apiBase: string;
+}) {
   const [days, setDays] = useState<number>(DEFAULT_WINDOW_DAYS);
   const [scope, setScope] = useState('all');
   const [data, setData] = useState<ReportResult | null>(
@@ -140,13 +158,13 @@ export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boo
       setRevalidating(!!opts.background);
       if (!opts.background) setError(null);
       try {
-        const json = await fetchReport(slug, windowed ? days : null, !!opts.refresh);
+        const json = await fetchReport(apiBase, slug, windowed ? days : null, !!opts.refresh);
         reportCache.set(cacheKey(slug, windowed, days), json);
         if (id !== requestId.current) return;
         setData(json);
         setError(null);
         if (!opts.background) setChip(null);
-        void prefetchOthers(slug);
+        void prefetchOthers(apiBase, section, slug);
       } catch (e) {
         if (id !== requestId.current) return;
         setError(e instanceof Error ? e.message : 'Could not load the report.');
@@ -159,13 +177,13 @@ export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boo
         }
       }
     },
-    [slug, windowed, days],
+    [slug, windowed, days, apiBase, section],
   );
 
   // Restore the remembered scope; it is checked against the report below.
   useEffect(() => {
-    setScope(readStoredScope());
-  }, []);
+    setScope(readStoredScope(section));
+  }, [section]);
 
   // Show a cached copy at once (re-reading it in the background when stale), else fetch.
   useEffect(() => {
@@ -181,13 +199,13 @@ export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boo
         setRefreshing(false);
         setRevalidating(false);
         setPendingDays(null);
-        void prefetchOthers(slug);
+        void prefetchOthers(apiBase, section, slug);
       }
     } else {
       setData((d) => (d && d.slug === slug ? d : null));
       void load();
     }
-  }, [slug, windowed, days, load]);
+  }, [slug, windowed, days, load, apiBase, section]);
 
   // Every scope the picker can reach for this report; a remembered scope outside it reads as 'all'.
   const validScopes = useMemo(() => {
@@ -203,7 +221,7 @@ export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boo
   function onScopeChange(value: string) {
     setScope(value);
     setChip(null);
-    writeStoredScope(value);
+    writeStoredScope(section, value);
   }
 
   function onWindowChange(opt: number) {
@@ -219,10 +237,11 @@ export function ReportView({ slug, windowed }: { slug: ReportSlug; windowed: boo
       if (windowed) q.set('days', String(days));
       q.set('format', 'xlsx');
       q.set('scope', activeScope);
-      const res = await fetch(`/api/evhub/${slug}?${q.toString()}`, { cache: 'no-store' });
+      const res = await fetch(`${apiBase}/${slug}?${q.toString()}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(await errorMessage(res));
       const blob = await res.blob();
-      const name = filenameFrom(res.headers.get('Content-Disposition')) ?? `EVHUB-${slug}.xlsx`;
+      // Same prefix the handler sends, for the rare browser that drops Content-Disposition.
+      const name = filenameFrom(res.headers.get('Content-Disposition')) ?? `${section.toUpperCase()}-${slug}.xlsx`;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

@@ -137,6 +137,12 @@ export function fmtDays(n: number | null): string {
   return r === 1 ? '1 day' : `${r} days`;
 }
 
+/** AED amount for a tile or a note — thousands separated, no decimals. The label carries the unit. */
+export function fmtAed(n: number | null): string {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return Math.round(n).toLocaleString('en-US');
+}
+
 /** Whole-number share, '—' when the base is empty so 0/0 never reads as 0%. */
 export function fmtPct(part: number, whole: number): string {
   if (!whole || !Number.isFinite(part / whole)) return '—';

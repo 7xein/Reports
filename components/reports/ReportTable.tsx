@@ -108,6 +108,7 @@ export function ReportTable({
                       const nowrap = numeric || col.kind === 'date' ? 'whitespace-nowrap' : '';
                       // The sticky first column needs an opaque fill (surface/60 over white).
                       const sticky = ci === 0 ? `px-4 sticky left-0 ${odd ? 'bg-[#fafbfa]' : 'bg-white'}` : 'px-3';
+                      const hrefRaw = col.hrefKey ? row[col.hrefKey] : null;
                       return (
                         <td
                           key={col.key}
@@ -115,7 +116,12 @@ export function ReportTable({
                             numeric ? 'text-right tabular-nums' : 'text-left'
                           }`}
                         >
-                          <Cell col={col} value={row[col.key]} tones={badgeTones?.[col.key]} />
+                          <Cell
+                            col={col}
+                            value={row[col.key]}
+                            tones={badgeTones?.[col.key]}
+                            href={isEmpty(hrefRaw) ? null : String(hrefRaw)}
+                          />
                         </td>
                       );
                     })}

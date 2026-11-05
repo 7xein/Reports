@@ -1,14 +1,17 @@
 import { notFound } from 'next/navigation';
 import { Shell } from '@/components/Shell';
 import { ReportView } from '@/components/reports/ReportView';
-import { REPORTS, isReportSlug, reportMeta } from '@/lib/reports/types';
+import { isReportSlug, reportMeta, reportSection, reportsFor } from '@/lib/reports/types';
 
 export const dynamic = 'force-dynamic';
 
-const SUB_TABS = REPORTS.map((r) => ({ href: `/evhub/${r.slug}`, label: r.label }));
+const SUB_TABS = reportsFor('evhub').map((r) => ({ href: `/evhub/${r.slug}`, label: r.label }));
 
 export default function EvhubReportPage({ params }: { params: { report: string } }) {
-  if (!isReportSlug(params.report)) notFound();
+  // A slug now only counts here if it belongs to this section — another
+  // section's report would otherwise render under the EVHUB heading and then
+  // fail its fetch. The 404 that actually protects the data is in the handler.
+  if (!isReportSlug(params.report) || reportSection(params.report) !== 'evhub') notFound();
   const slug = params.report;
   const meta = reportMeta(slug);
 
@@ -25,7 +28,7 @@ export default function EvhubReportPage({ params }: { params: { report: string }
       }}
     >
       {/* Keyed so switching sub-tab starts clean instead of showing the last report's rows under the new heading. */}
-      <ReportView key={slug} slug={slug} windowed={meta.windowed} />
+      <ReportView key={slug} slug={slug} windowed={meta.windowed} section="evhub" apiBase="/api/evhub" />
     </Shell>
   );
 }

@@ -63,9 +63,40 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  // The CEO section requires a second password too, pages and data alike, for
+  // the same reason as EV Hub: the pages fetch their rows from /api/ceo/[report],
+  // so gating the pages alone would leave the data one request away for anyone
+  // who holds the site password.
+  const isCeoPage = pathname === '/ceo' || pathname.startsWith('/ceo/');
+  const isCeoApi = pathname === '/api/ceo' || pathname.startsWith('/api/ceo/');
+
+  // IMPORTANT: /ceo/login is deliberately NOT in the public-paths list above —
+  // it sits behind the site password so the second password has no guessing
+  // surface on the open internet. That means it reaches this gate, so it MUST be
+  // skipped here; without this check the login page would redirect to itself
+  // forever.
+  if ((isCeoPage || isCeoApi) && pathname !== '/ceo/login') {
+    const isCeoAuth = request.cookies.get('evs_ceo_auth')?.value === 'authenticated';
+    if (!isCeoAuth) {
+      // The data route answers with 401 rather than a redirect: a fetch that
+      // follows a redirect to an HTML login page fails with a confusing JSON
+      // parse error at the caller.
+      if (isCeoApi) {
+        return NextResponse.json({ error: 'CEO authentication required' }, { status: 401 });
+      }
+      const ceoLoginUrl = new URL('/ceo/login', request.url);
+      ceoLoginUrl.searchParams.set('from', pathname);
+      return NextResponse.redirect(ceoLoginUrl);
+    }
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|evs-logo.png).*)'],
+  // icon.png is app/icon.png, the browser-tab icon Next serves for every page.
+  // Without it here the gate redirects the favicon request to /login, so the
+  // browser is handed HTML where it asked for an image and the login page shows
+  // the default globe — the one place the icon has to work before signing in.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.png|evs-logo.png).*)'],
 };
