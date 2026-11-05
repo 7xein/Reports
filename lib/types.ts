@@ -44,17 +44,57 @@ export const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
 export const stationCompany = (branch: string, station: string): string | null =>
   SUB_BRANCH_COMPANY[branch]?.[station] ?? null;
 
+/**
+ * The sub-branch every branch files its own site under. It is already a key in
+ * both maps above; naming it keeps a third copy of the literal from drifting
+ * away from them.
+ */
+export const MAIN_STATION = 'Main branch';
+
+/**
+ * The Odoo companies that are stations rather than main sites. Derived from
+ * SUB_BRANCH_COMPANY, so adding a station there is the only edit a new station
+ * needs — and 'Main branch' is itself a sub-branch, so it cannot be "every
+ * company in that map".
+ */
+export const STATION_COMPANIES: ReadonlySet<string> = new Set(
+  Object.values(SUB_BRANCH_COMPANY).flatMap((stations) =>
+    Object.entries(stations)
+      .filter(([station]) => station !== MAIN_STATION)
+      .map(([, company]) => company),
+  ),
+);
+
+/**
+ * Whether an Odoo company is a station. Everything else is a main branch: each
+ * branch's own site, and every company of a branch that has no stations at all.
+ */
+export const isStationCompany = (company: string): boolean => STATION_COMPANIES.has(company);
+
+/**
+ * Scopes that span the branches instead of naming one. Plain tokens by
+ * necessity: parseScope reads anything carrying a '__' as `branch__station`.
+ */
+export const GROUP_SCOPES = ['branches', 'stations'] as const;
+export type GroupScope = typeof GROUP_SCOPES[number];
+export const isGroupScope = (scope: string): scope is GroupScope =>
+  (GROUP_SCOPES as readonly string[]).includes(scope);
+
 /** Split a WIP scope into its branch and, when present, its sub-branch. */
 export function parseScope(scope: string): { branch: string | null; sub: string | null } {
-  if (scope === 'all') return { branch: null, sub: null };
+  // A group scope names no branch, and carries no separator — left to the
+  // fall-through below it would be read as a branch called 'branches'.
+  if (scope === 'all' || isGroupScope(scope)) return { branch: null, sub: null };
   // Split on the FIRST separator only — branch and sub names carry spaces, hyphens and dots.
   const i = scope.indexOf('__');
   if (i === -1) return { branch: scope, sub: null };
   return { branch: scope.slice(0, i), sub: scope.slice(i + 2) || null };
 }
 
-/** The label a scope should show: 'All Branches', the branch, or the station. */
+/** The label a scope should show: 'All Branches', a group, the branch, or the station. */
 export function scopeLabel(scope: string): string {
+  if (scope === 'branches') return 'Branches';
+  if (scope === 'stations') return 'Stations';
   const { branch, sub } = parseScope(scope);
   return sub ?? branch ?? 'All Branches';
 }

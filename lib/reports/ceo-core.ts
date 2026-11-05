@@ -110,6 +110,26 @@ export interface CeoJob {
    */
   invoiceState: 'none' | 'draft' | 'posted' | 'unknown';
   /**
+   * The untaxed total of this order's posted invoices, and of its draft ones.
+   *
+   * Whether a bill exists says nothing about whether the work has been paid
+   * for: a job billed for part of its value and never billed for the rest is
+   * indistinguishable from a settled one by `invoiceState` alone, and the
+   * matrix status is not reliably set to Closed and Invoiced here, so neither
+   * can stand in for "has been billed". The amounts can.
+   *
+   * These are the *order's* figures, not the job's. One sale order can carry
+   * several repair orders — the KPI engine's `deadQuotations` exists for
+   * exactly that — so a job's own share of either total is not separable, and
+   * two jobs on one order read the same pair of numbers.
+   *
+   * null is the chain unread, exactly as 'unknown' is on `invoiceState` above:
+   * not checked, which is a different fact from checked and nothing found. Zero
+   * is the second one.
+   */
+  postedValue: number | null;
+  draftValue: number | null;
+  /**
    * Warranty work: tagged for it, or with the warranty button set on one of its
    * lines. EVS never bills the customer for it, so its value is not money at
    * risk — but the job card is still open and still has to be closed, so the
@@ -170,6 +190,47 @@ export interface CeoData {
     serviceNoteJournal: boolean; // at least one journal behind the unposted invoices is named or coded for service notes
   };
   notes: string[];
+}
+
+// ── What the invoiced amounts mean ─────────────────────────────────
+// Derived here rather than on each tab, because "Needs attention" and
+// "Repaired, not invoiced" have to agree about which job is settled and how
+// much of it is still owed: two copies of this arithmetic would drift, and the
+// headline tile on one page would stop reconciling with the list on the other.
+
+/** Untaxed value of the order still not on any invoice, posted or draft. */
+export function uninvoicedValue(job: CeoJob): number | null {
+  // Any unknown and nothing can be concluded. A missing total treated as zero
+  // would print the whole order as money owed on a job that may well be paid.
+  if (job.value == null || job.postedValue == null || job.draftValue == null) return null;
+  // Floored at zero: over-invoicing an order is somebody else's problem, and a
+  // negative here would subtract from the money at risk on the other rows.
+  return Math.max(0, job.value - job.postedValue - job.draftValue);
+}
+
+/**
+ * What a job is treated as owing — the uninvoiced part, or the whole quotation
+ * where that could not be worked out.
+ *
+ * An unread invoice chain is not evidence of payment. Letting it fall to zero
+ * would quietly shrink the money at risk on exactly the jobs this read failed
+ * on, which is the one direction the figure must never move by accident: a
+ * number that drops because a query broke looks identical to a number that
+ * drops because the branches did their job. Over-stating is visible and
+ * correctable; under-stating is neither.
+ */
+export function moneyAtRisk(job: CeoJob): number {
+  return uninvoicedValue(job) ?? job.value ?? 0;
+}
+
+/** Posted invoices cover the order: finished and billed, whatever the matrix status says. */
+export function fullyBilled(job: CeoJob): boolean {
+  if (job.value == null || job.postedValue == null) return false;
+  // One AED of tolerance, because both sides are floating-point sums of line
+  // amounts and a settled order lands a fraction of a fils either side of its
+  // own total. Unknown is false above, never "billed": a chain this read could
+  // not follow must keep its row, or a job vanishes on missing data.
+  return job.value - job.postedValue < 1;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -346,6 +407,8 @@ async function load(params: ReportParams): Promise<CeoData> {
       saleOrderName: saleOrder?.[1] ?? '',
       value: null,
       invoiceState: 'unknown',
+      postedValue: null,
+      draftValue: null,
       warranty: tagged,
       warrantyVia: tagged ? 'tag' : '',
     };
@@ -367,8 +430,17 @@ async function load(params: ReportParams): Promise<CeoData> {
   const saleOrderIds = [...new Set(allJobs.map((j) => j.saleOrderId).filter((x): x is number => x != null))];
   /** Sale order id → name, value and the invoices raised from it. */
   const orders = new Map<number, { name: string; value: number | null; invoiceIds: number[] }>();
-  const invoiceStates = new Map<number, string>();
+  /** Invoice id → its state and untaxed amount. Absent is an invoice this read could not see, which is not the same as one that is not there. */
+  const invoices = new Map<number, { state: string; amount: number }>();
   const orderNames = new Set<string>();
+
+  // account.move's fields are needed for the unposted-invoice list further down
+  // in any case; read here because the invoice amounts below depend on one of
+  // them. Asking for a field this instance has not got costs the whole read
+  // rather than one column, and that read is also where every job's value comes
+  // from — so losing it would leave the jobs without even their quotation value.
+  const moveMeta = await readFieldsMeta('account.move');
+  const hasInvoiceAmount = moveMeta != null && hasOwn(moveMeta, 'amount_untaxed');
 
   if (has.saleOrderId && saleOrderIds.length) {
     try {
@@ -388,14 +460,19 @@ async function load(params: ReportParams): Promise<CeoData> {
       }
       const invoiceIds = [...new Set([...orders.values()].flatMap((o) => o.invoiceIds))];
       for (const part of idChunks(invoiceIds, CHUNK)) {
-        for (const inv of (await call('account.move', 'read', [part], { fields: ['state'] })) as Rec[]) {
-          invoiceStates.set(inv.id as number, String(inv.state ?? ''));
+        // amount_untaxed rides along on the state read rather than costing a
+        // second query: how much of an order has actually been billed is the
+        // only way to tell a part-invoiced job from a settled one, and the
+        // state on its own cannot say.
+        const fields = hasInvoiceAmount ? ['state', 'amount_untaxed'] : ['state'];
+        for (const inv of (await call('account.move', 'read', [part], { fields })) as Rec[]) {
+          invoices.set(inv.id as number, { state: String(inv.state ?? ''), amount: Number(inv.amount_untaxed ?? 0) });
         }
       }
     } catch {
       has.invoiceState = false;
       orders.clear();
-      invoiceStates.clear();
+      invoices.clear();
       orderNames.clear();
       notes.push('The sale orders behind these jobs could not be read, so no job carries a value and its invoicing reads as unchecked rather than as not invoiced.');
     }
@@ -406,7 +483,7 @@ async function load(params: ReportParams): Promise<CeoData> {
     if (!order) continue;   // no quotation, or the chain went unread — stays value null / 'unknown'
     job.saleOrderName = order.name || job.saleOrderName;
     job.value = order.value;
-    const states = order.invoiceIds.map((id) => invoiceStates.get(id));
+    const states = order.invoiceIds.map((id) => invoices.get(id)?.state);
     if (states.some((s) => s === 'posted')) job.invoiceState = 'posted';
     else if (states.some((s) => s === 'draft')) job.invoiceState = 'draft';
     else if (states.some((s) => s == null)) job.invoiceState = 'unknown';   // an invoice we could not read is not an invoice we know about
@@ -414,6 +491,32 @@ async function load(params: ReportParams): Promise<CeoData> {
     // job as unbilled as one that never had one, and 'unknown' stays reserved
     // for what could not be read.
     else job.invoiceState = 'none';
+
+    // Totalled per state, so how much of the order is billed can be subtracted
+    // from what it is worth. Both totals go null the moment one of the order's
+    // invoices went unread, or the amount could not be asked for at all: a sum
+    // missing an invoice reads as money still owed, and a job that is in fact
+    // settled would be left on the page as an exception against a bill that
+    // exists. An order with no invoices at all sums to zero, which is the
+    // honest answer — nothing has been billed.
+    const unread = !hasInvoiceAmount || order.invoiceIds.some((id) => !invoices.has(id));
+    const billed = (state: string): number => order.invoiceIds.reduce((total, id) => {
+      const inv = invoices.get(id);
+      return inv?.state === state ? total + inv.amount : total;
+    }, 0);
+    job.postedValue = unread ? null : billed('posted');
+    job.draftValue = unread ? null : billed('draft');
+  }
+
+  if (has.saleOrderId && saleOrderIds.length && !hasInvoiceAmount) {
+    // Said plainly, because the consequence is a page that looks complete: with
+    // no amount to compare against, no finished job can be identified as
+    // already billed and every one keeps its whole quotation value.
+    // Which of the two it was, named: a field this instance has not got is a
+    // configuration somebody can fix, and a model that would not read at all is
+    // not — and the second also costs the unposted-invoice list below.
+    const why = moveMeta ? 'account.move carries no untaxed amount here' : 'account.move could not be read here';
+    notes.push(`${why}, so how much of each quotation has actually been invoiced could not be worked out: no job was identified as already billed, and every finished job carries the full value of its quotation rather than only the part still unbilled.`);
   }
 
   // ── Warranty work ──
@@ -569,7 +672,6 @@ async function load(params: ReportParams): Promise<CeoData> {
    * trip per row on a list that runs to hundreds.
    */
   const draftJournals = new Map<number, number>();
-  const moveMeta = await readFieldsMeta('account.move');
   if (!moveMeta) {
     notes.push('account.move could not be read on this instance, so no unposted invoice could be listed.');
   } else {
@@ -748,9 +850,12 @@ let memo: Entry | null = null;
  * the window today, and a key on a subset would quietly serve one caller's
  * figures to another the day something does.
  */
-export function loadCeoData(params: ReportParams): Promise<CeoData> {
+export function loadCeoData(params: ReportParams, refresh = false): Promise<CeoData> {
   const key = JSON.stringify([params.openRoDomain, params.days, params.thresholds]);
-  if (memo && memo.key === key && (memo.at == null || Date.now() - memo.at < TTL_MS)) return memo.promise;
+  // `refresh` is the Refresh button. Without it the registry rebuilds the report
+  // off this memo and the page re-renders the same Odoo read, so a record the
+  // user has just fixed in Odoo is still on screen and the button looks broken.
+  if (!refresh && memo && memo.key === key && (memo.at == null || Date.now() - memo.at < TTL_MS)) return memo.promise;
 
   const entry: Entry = { key, promise: load(params) };
   entry.promise.then(

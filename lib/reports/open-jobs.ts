@@ -51,8 +51,8 @@ function desc(a: CellValue, b: CellValue): number {
 }
 
 export const report: ReportModule = {
-  async build(params) {
-    const data = await loadCeoData(params);
+  async build(params, opts) {
+    const data = await loadCeoData(params, opts?.refresh);
     const now = Date.now();
 
     const rows: ReportRow[] = data.openJobs.map((job) => {

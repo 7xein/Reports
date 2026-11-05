@@ -411,9 +411,12 @@ let memo: Entry | null = null;
  * read; a rejected load is dropped so the next request retries instead of
  * replaying the failure.
  */
-export function loadPartsChain(params: ReportParams): Promise<PartsChain> {
+export function loadPartsChain(params: ReportParams, refresh = false): Promise<PartsChain> {
   const key = JSON.stringify(params.openRoDomain);
-  if (memo && memo.key === key && (memo.at == null || Date.now() - memo.at < TTL_MS)) return memo.promise;
+  // `refresh` is the Refresh button. Without it the registry rebuilds the report
+  // off this memo and the page re-renders the same Odoo read, so a record the
+  // user has just fixed in Odoo is still on screen and the button looks broken.
+  if (!refresh && memo && memo.key === key && (memo.at == null || Date.now() - memo.at < TTL_MS)) return memo.promise;
 
   const entry: Entry = { key, promise: load(params) };
   entry.promise.then(

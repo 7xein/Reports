@@ -8,7 +8,7 @@
  * once per build and kept with it.
  */
 
-import { BRANCHES, WORKSHOP_BRANCHES, getSubBranches, subKey } from '../types';
+import { BRANCHES, WORKSHOP_BRANCHES, GROUP_SCOPES, getSubBranches, subKey } from '../types';
 import {
   reportMeta, rowInScope,
   type ReportBuild, type ReportModule, type ReportParams, type ReportResult, type ReportSlug,
@@ -76,9 +76,12 @@ function cachedBuild(key: string, run: () => Promise<ReportBuild>, refresh: bool
   return entry.promise;
 }
 
-/** Every scope the picker can reach for a report: 'all', each branch, each station of those branches. */
+/** Every scope the picker can reach for a report: 'all', the groups, each branch, each station of those branches. */
 function validScopes(branches: readonly string[]): string[] {
   const out = ['all'];
+  // Group scopes only on a branch-scoped report — getReport falls back to 'all'
+  // for a scope it does not list, which would silently undo the user's choice.
+  if (branches.length > 0) out.push(...GROUP_SCOPES);
   for (const b of branches) {
     out.push(b);
     for (const s of getSubBranches(b)) out.push(subKey(b, s));
@@ -97,7 +100,7 @@ export async function getReport(
   // thresholds and the open-RO rule are in the key so an Admin change shows at
   // once instead of after the TTL.
   const key = `${slug}:${meta.windowed ? params.days : '-'}:${JSON.stringify([params.thresholds, params.openRoDomain])}`;
-  const built = await cachedBuild(key, () => mod.build(params), opts.refresh);
+  const built = await cachedBuild(key, () => mod.build(params, { refresh: opts.refresh }), opts.refresh);
   const { build, at } = built;
 
   // Every branch the report covers, rows or not, so the picker's pills stay put.

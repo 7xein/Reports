@@ -117,8 +117,8 @@ function reasonFor(ro: OpenRo, part: ShortLine, lines: PoLines, match: Match | n
 }
 
 export const report: ReportModule = {
-  async build(params) {
-    const chain = await loadPartsChain(params);
+  async build(params, opts) {
+    const chain = await loadPartsChain(params, opts?.refresh);
     const lines = await chain.poLines();
     const now = Date.now();
 

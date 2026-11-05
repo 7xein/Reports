@@ -11,7 +11,7 @@
  * showing it here would bury the fortnight-old ones in ordinary traffic.
  */
 
-import { loadCeoData, type CeoInvoice, type CeoJob } from './ceo-core';
+import { fullyBilled, loadCeoData, moneyAtRisk, uninvoicedValue, type CeoInvoice, type CeoJob } from './ceo-core';
 import { CEO_LIMITS, SEVERITY_ORDER, SEVERITY_TONES, severityFor, type Severity } from './ceo-severity';
 import { daysBetween, fmtAed, fmtDays } from './common';
 import {
@@ -71,12 +71,22 @@ interface Item {
 /**
  * What a job's own row is allowed to carry.
  *
- * The headline tile is the sum of this column, so no riyal may appear twice. A
- * job whose bill is in draft is already being counted by the unposted list, and
- * a posted one is revenue in the books — what is left on either is housekeeping,
- * not money. `invoiceState` alone decides it, rather than matching invoices back
- * to jobs through invoice_origin: a wrong match would cancel a real exception
- * and inflate another, and this way the three sources are disjoint by
+ * The headline tile is the sum of this column, so no riyal may appear twice: a
+ * job carries the part of its order no invoice covers yet. What is already on a
+ * draft invoice is counted on that invoice by source C below, and what is on a
+ * posted one is revenue in the books — so subtracting both leaves exactly the
+ * money nobody has billed, once.
+ *
+ * A subtraction rather than the set of cases this used to be. "A draft bill
+ * exists, so carry nothing" was a stand-in for "the bill covers the order", and
+ * it was wrong by the whole remainder on a job billed for part of its value —
+ * which is the money the branch is least likely to chase. The amounts answer
+ * the question the cases were approximating, and a fully covered order now
+ * falls out at zero arithmetically instead of by a rule.
+ *
+ * The amounts come off the order, never from matching invoices back to jobs
+ * through invoice_origin: a wrong match would cancel a real exception and
+ * inflate another, and this way the three sources stay disjoint by
  * construction. A job with no quotation has no value to carry in any case.
  *
  * Warranty work carries nothing at all: EVS will never bill the customer for
@@ -84,8 +94,7 @@ interface Item {
  */
 function jobAed(job: CeoJob): number {
   if (job.warranty) return 0;
-  if (job.invoiceState === 'draft' || job.invoiceState === 'posted') return 0;
-  return job.value ?? 0;
+  return moneyAtRisk(job);
 }
 
 /**
@@ -94,13 +103,15 @@ function jobAed(job: CeoJob): number {
  *
  * The headline is dropping for two reasons at once — parked job cards and now
  * warranty — and a drop nobody can attribute to one of them is a drop nobody
- * can trust. A warranty job whose bill is in draft or posted was already
- * carrying nothing, so counting its value here would overstate what warranty
- * removed and leave the two figures unable to reconcile against the tile.
+ * can trust. So this is exactly what the row would have carried without the
+ * warranty rule: its uninvoiced part, the same figure jobAed above would have
+ * returned. Counting the whole order instead would overstate what warranty
+ * removed by whatever has already been billed, and the note would stop
+ * reconciling against the change in the tile.
  */
 function warrantyAed(job: CeoJob): number {
-  if (!job.warranty || job.invoiceState === 'draft' || job.invoiceState === 'posted') return 0;
-  return job.value ?? 0;
+  if (!job.warranty) return 0;
+  return moneyAtRisk(job);
 }
 
 /** Warranty work is still a job card to close, so the row stays; the clause is what stops the reader asking where its value went. */
@@ -159,8 +170,16 @@ function unbilledReason(job: CeoJob): string {
       return 'no bill raised';
     case 'draft':
       return 'the bill is still in draft — counted on the unposted invoices tab, not here';
-    case 'posted':
-      return 'invoiced and posted, only the job card is still open';
+    case 'posted': {
+      // No row reaches this fully billed — source B drops those — so a posted
+      // bill here is one that does not cover the order. The remainder is named
+      // rather than left to the AED column, because "invoiced and posted" on
+      // its own reads as settled and would have the CEO skip the row.
+      const left = uninvoicedValue(job);
+      return left == null
+        ? 'invoiced and posted in part, and how much of it is still unbilled could not be worked out'
+        : `invoiced and posted in part, AED ${fmtAed(left)} of the quotation still unbilled`;
+    }
     default:
       return 'the invoicing could not be checked';
   }
@@ -219,8 +238,8 @@ const toRow = (i: Item): ReportRow => ({
 });
 
 export const report: ReportModule = {
-  async build(params) {
-    const data = await loadCeoData(params);
+  async build(params, opts) {
+    const data = await loadCeoData(params, opts?.refresh);
     const now = Date.now();
     const items: Item[] = [];
 
@@ -233,6 +252,12 @@ export const report: ReportModule = {
     // emits a single row, under "Not invoiced", graded by whichever of the two
     // failures is worse; two rows would also make the headline count rows
     // rather than vehicles, and charge one vehicle's value twice.
+    //
+    // The set is every repaired job, including the ones source B drops as
+    // already billed: a finished, billed job card is not work taking too long
+    // in the workshop either, so it leaves this page altogether rather than
+    // reappearing under "Job too old" — which is where the finished-and-billed
+    // job cards nobody ever marked Closed and Invoiced would all pile up.
     const unbilledIds = new Set(data.repairedNotInvoiced.map((j) => j.id));
     const openIds = new Set(data.openJobs.map((j) => j.id));
 
@@ -269,14 +294,26 @@ export const report: ReportModule = {
 
     // ── B: repaired, not invoiced ──
     for (const job of data.repairedNotInvoiced) {
+      // Finished and billed: the posted invoices cover the quotation, whatever
+      // the matrix status says — and the status is not reliably set here, so a
+      // job card can be fully invoiced and never marked. There is nothing for
+      // anybody to chase, and this is the exceptions page. Dropped before the
+      // row is built so neither the count nor the money can reach a tile by
+      // another path; the full list is on the "Repaired, not invoiced" tab,
+      // which says how many it left out for the same reason.
+      if (fullyBilled(job)) continue;
       // Odoo stamps no "repaired on" date here, so Status Since is the closest
       // thing to one; creation is the last resort and overstates the wait.
       const from = job.statusSince ?? job.created;
       const unbilledAge = from != null ? daysBetween(from, now) : null;
+      // No cap for a posted bill any more. It used to read "posted money is
+      // booked, so only the job card is open" — but the jobs that were true of
+      // are the ones dropped above, and what is left under a posted bill is an
+      // order billed in part, where the unbilled remainder is a bill somebody
+      // still has to raise. Capping it would park real money at Watch, and the
+      // "Repaired, not invoiced" tab, which no longer caps it either, would
+      // grade the same job differently.
       let severity = severityFor(unbilledAge, CEO_LIMITS.notInvoiced);
-      // Posted money is booked and only the job card is open. Grading that above
-      // Watch would let housekeeping outrank a vehicle nobody has billed at all.
-      if (job.invoiceState === 'posted' && SEVERITY_ORDER[severity] < SEVERITY_ORDER.Watch) severity = 'Watch';
 
       // The open-list grading of the same job, for the overlap described above.
       // Uncapped, unlike the unbilled grading: a job card left open ninety days
@@ -362,7 +399,7 @@ export const report: ReportModule = {
     const notes = [
       'Every open exception across the branches in one list, worst first. The three tabs behind this one — oldest open jobs, repaired and not invoiced, unposted invoices — carry the full lists, including the rows this page leaves out as ordinary.',
       `An open repair order appears here only once it has been open longer than ${watch} day${plural(watch)}, so this is the exceptions and not a work list.`,
-      'AED at risk counts each amount once: a job whose invoice has already been raised is counted on that invoice rather than on the job, a job whose invoice is posted carries nothing because that revenue is already booked, a warranty job carries nothing because the customer will never be billed for it, an unposted service note carries nothing because a service note is warranty raised in its own journal and is never billed to a customer either, and a job that is both open too long and unbilled is listed once, as unbilled, graded by whichever of the two is worse.',
+      'AED at risk counts each amount once: a job carries the part of its quotation that no invoice covers yet, so whatever is already on a draft invoice is counted on that invoice instead and whatever is on a posted one is revenue already booked. A finished job whose posted invoices cover the whole quotation is not an exception at all and is not listed. A warranty job carries nothing because the customer will never be billed for it, an unposted service note carries nothing because a service note is warranty raised in its own journal and is never billed to a customer either, and a job that is both open too long and unbilled is listed once, as unbilled, graded by whichever of the two is worse.',
     ];
     // Next to the rule they explain: the money at risk is falling for warranty,
     // for service notes and for parked job cards all at once, and a drop that

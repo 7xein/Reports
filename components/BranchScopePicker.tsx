@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { getSubBranches, subKey, parseScope } from '@/lib/types';
+import { getSubBranches, subKey, parseScope, scopeLabel, isGroupScope } from '@/lib/types';
 
 export const BRANCH_COLORS: Record<string, string> = {
   'All Branches': '#78C41A',
@@ -14,6 +14,13 @@ export const BRANCH_COLORS: Record<string, string> = {
   'EV Hub': '#EC4899',
 };
 
+/** The "All Branches" pill's menu, offered only when `groupScopes` is on. */
+const GROUP_OPTIONS: readonly { scope: string; label: string }[] = [
+  { scope: 'all',      label: 'All branches and stations' },
+  { scope: 'branches', label: 'Branches only' },
+  { scope: 'stations', label: 'Stations only' },
+];
+
 /**
  * "Branch:" pill row. One scope: 'all', a branch name, or a `${branch}__${station}` key.
  * Branches with stations split into pill + chevron that opens a station menu.
@@ -23,12 +30,19 @@ export function BranchScopePicker({
   scope,
   onChange,
   className = 'mb-4',
+  groupScopes = false,
 }: {
   branches: readonly string[];
   scope: string;
   onChange: (scope: string) => void;
   /** Outer spacing; the WIP page keeps its mb-4, stacked layouts pass ''. */
   className?: string;
+  /**
+   * Offer 'branches' / 'stations' on the "All Branches" pill. Off by default:
+   * the WIP page resolves a scope against its own per-branch values and has no
+   * reading for a scope that names no branch.
+   */
+  groupScopes?: boolean;
 }) {
   // Branch whose station menu is open — a single slot, so only one menu is ever open.
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -58,19 +72,23 @@ export function BranchScopePicker({
       <span className="text-sm font-semibold text-ink-muted mr-1">Branch:</span>
       {['all', ...branches].map((b) => {
         const isAll    = b === 'all';
-        // A branch stays "active" while any of its stations is the scope.
-        const active   = isAll ? scope === 'all' : scopeBranch === b;
+        // A branch stays "active" while any of its stations is the scope, and the
+        // "All Branches" pill while either group is.
+        const active   = isAll ? scope === 'all' || isGroupScope(scope) : scopeBranch === b;
         const color    = BRANCH_COLORS[isAll ? 'All Branches' : b] ?? '#78C41A';
         const stations = isAll ? [] : getSubBranches(b);
+        const hasMenu  = isAll ? groupScopes : stations.length > 0;
         const menuOpen = openMenu === b;
-        // The pill names the live scope, so a drilled-in station replaces the branch name on it.
-        const pillLabel = isAll ? 'All Branches' : (active && scopeSub ? scopeSub : b);
+        // The pill names the live scope, so a drilled-in station or group replaces the branch name on it.
+        const pillLabel = isAll
+          ? (isGroupScope(scope) ? scopeLabel(scope) : 'All Branches')
+          : (active && scopeSub ? scopeSub : b);
 
         return (
           <div key={b} className="relative inline-flex">
             <button
               onClick={() => { onChange(b); setOpenMenu(null); }}
-              className={`text-sm font-semibold px-4 py-1.5 ${stations.length > 0 ? 'rounded-l-full pr-3' : 'rounded-full'} border transition-all ${
+              className={`text-sm font-semibold px-4 py-1.5 ${hasMenu ? 'rounded-l-full pr-3' : 'rounded-full'} border transition-all ${
                 active
                   ? 'text-white border-transparent shadow-sm'
                   : 'bg-white text-ink-muted border-border hover:border-gray-400'
@@ -80,12 +98,12 @@ export function BranchScopePicker({
               {pillLabel}
             </button>
 
-            {stations.length > 0 && (
+            {hasMenu && (
               <button
                 onClick={() => setOpenMenu(menuOpen ? null : b)}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
-                aria-label={`Choose a station in ${b}`}
+                aria-label={isAll ? 'Choose which branches to include' : `Choose a station in ${b}`}
                 className={`rounded-r-full pl-1.5 pr-2.5 py-1.5 border border-l-0 transition-all ${
                   active
                     ? 'text-white border-transparent shadow-sm'
@@ -104,32 +122,48 @@ export function BranchScopePicker({
 
             {menuOpen && (
               <div className="absolute z-20 top-full mt-1 left-0 min-w-[210px] bg-white border border-border rounded-lg shadow-lg py-1">
-                {/* Header keeps the branch name, which the pill gives up while a station is scoped */}
-                <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-muted border-b border-border">
-                  {b}
-                </div>
-                <button
-                  onClick={() => { onChange(b); setOpenMenu(null); }}
-                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
-                    scope === b ? 'font-semibold text-evs-green-dark' : ''
-                  }`}
-                >
-                  Whole branch
-                </button>
-                {stations.map((s) => {
-                  const stationScope = subKey(b, s);
-                  return (
+                {isAll ? (
+                  GROUP_OPTIONS.map((opt) => (
                     <button
-                      key={s}
-                      onClick={() => { onChange(stationScope); setOpenMenu(null); }}
-                      className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
-                        scope === stationScope ? 'font-semibold text-evs-green-dark' : ''
+                      key={opt.scope}
+                      onClick={() => { onChange(opt.scope); setOpenMenu(null); }}
+                      className={`w-full text-left px-3 py-1.5 text-sm whitespace-nowrap hover:bg-surface cursor-pointer ${
+                        scope === opt.scope ? 'font-semibold text-evs-green-dark' : ''
                       }`}
                     >
-                      {s}
+                      {opt.label}
                     </button>
-                  );
-                })}
+                  ))
+                ) : (
+                  <>
+                    {/* Header keeps the branch name, which the pill gives up while a station is scoped */}
+                    <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-ink-muted border-b border-border">
+                      {b}
+                    </div>
+                    <button
+                      onClick={() => { onChange(b); setOpenMenu(null); }}
+                      className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
+                        scope === b ? 'font-semibold text-evs-green-dark' : ''
+                      }`}
+                    >
+                      Whole branch
+                    </button>
+                    {stations.map((s) => {
+                      const stationScope = subKey(b, s);
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => { onChange(stationScope); setOpenMenu(null); }}
+                          className={`w-full text-left px-3 py-1.5 text-sm hover:bg-surface cursor-pointer ${
+                            scope === stationScope ? 'font-semibold text-evs-green-dark' : ''
+                          }`}
+                        >
+                          {s}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
               </div>
             )}
           </div>

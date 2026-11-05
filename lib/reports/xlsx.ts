@@ -12,9 +12,13 @@ import { autoWidth, boldHeaderRow } from '../xlsx';
 import { parseScope, scopeLabel } from '../types';
 import type { CellValue, ReportResult } from './types';
 
-/** 'All branches', the branch, or the station with its branch: 'Emarat - Altwar (Dubai)'. */
+/** 'All branches', a group, the branch, or the station with its branch: 'Emarat - Altwar (Dubai)'. */
 function scopeText(scope: string): string {
   if (scope === 'all') return 'All branches';
+  // scopeLabel's bare 'Branches' / 'Stations' are pill labels; a sheet read
+  // without the page around it has to say that something was left out.
+  if (scope === 'branches') return 'Branches only';
+  if (scope === 'stations') return 'Stations only';
   const { branch, sub } = parseScope(scope);
   return sub && branch ? `${scopeLabel(scope)} (${branch})` : scopeLabel(scope);
 }

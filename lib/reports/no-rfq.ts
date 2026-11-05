@@ -49,8 +49,8 @@ function partsList(ro: OpenRo): string | null {
 }
 
 export const report: ReportModule = {
-  async build(params) {
-    const chain = await loadPartsChain(params);
+  async build(params, opts) {
+    const chain = await loadPartsChain(params, opts?.refresh);
     const now = Date.now();
     const limitDays = params.thresholds.rfqAfterApprovalDays;
 

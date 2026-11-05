@@ -303,7 +303,7 @@ export function ReportView({
       <style>{INDETERMINATE_CSS}</style>
 
       {data?.branchScoped && (
-        <BranchScopePicker branches={data.branches} scope={activeScope} onChange={onScopeChange} className="" />
+        <BranchScopePicker branches={data.branches} scope={activeScope} onChange={onScopeChange} className="" groupScopes />
       )}
 
       {/* Toolbar */}

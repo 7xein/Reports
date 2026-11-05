@@ -7,7 +7,7 @@
  */
 
 import type { OdooDomain } from '../odoo';
-import { parseScope, stationCompany } from '../types';
+import { isGroupScope, isStationCompany, parseScope, stationCompany } from '../types';
 
 export type ReportSlug =
   | 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts' | 'cost'
@@ -102,6 +102,12 @@ export const SITE_KEY = 'site';
  */
 export function rowInScope(row: ReportRow, scope: string): boolean {
   if (scope === 'all') return true;
+  // The group scopes cut across the branches, so they are settled by the row's
+  // company alone — before the branch comparison below rejects every row.
+  if (isGroupScope(scope)) {
+    const station = isStationCompany(String(row[SITE_KEY] ?? ''));
+    return scope === 'stations' ? station : !station;
+  }
   const { branch, sub } = parseScope(scope);
   if (row[BRANCH_KEY] !== branch) return false;
   if (!sub) return true;
@@ -125,9 +131,19 @@ export interface ReportParams {
   openRoDomain: OdooDomain;
 }
 
+/** Per-call options the registry passes a module, as against the params that define the report. */
+export interface ReportBuildOpts {
+  /**
+   * Re-read Odoo rather than serve a shared loader's memo. The registry's own
+   * cache honours the Refresh button by itself; this is what carries the same
+   * intent down into ceo-core and parts-chain, which hold memos of their own.
+   */
+  refresh?: boolean;
+}
+
 export interface ReportModule {
   /** Reads Odoo and returns every row for every branch. Degrades to a note rather than throwing for a missing field. */
-  build(params: ReportParams): Promise<ReportBuild>;
+  build(params: ReportParams, opts?: ReportBuildOpts): Promise<ReportBuild>;
   /** Summary tiles for a set of rows — called on the full rows and again on a branch's rows. */
   summarise(rows: ReportRow[], params: ReportParams): ReportSummaryItem[];
 }
