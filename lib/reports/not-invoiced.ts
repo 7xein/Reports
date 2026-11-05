@@ -21,6 +21,12 @@ import type { CellValue, ReportColumn, ReportModule, ReportRow, ReportSummaryIte
  * with no sale order has nothing to bill from, which is a different thing to
  * ask a branch about than a quotation that was never invoiced, and both are
  * different again from a chain this read could not follow.
+ *
+ * `warranty` answers over all of them: EVS will never bill the customer for
+ * warranty work, so where its bill stands is not the question this column asks.
+ * Nothing goes unseen by covering a state with it — an invoice actually raised
+ * against the job is still listed on the unposted invoices tab, which warranty
+ * does not filter.
  */
 const INVOICE = {
   noQuote: 'No quotation',
@@ -28,6 +34,7 @@ const INVOICE = {
   draft: 'Draft, unposted',
   posted: 'Posted, not closed',
   unchecked: 'Unchecked',
+  warranty: 'Warranty',
 } as const;
 
 const INVOICE_TONES: Record<string, Tone> = {
@@ -36,6 +43,9 @@ const INVOICE_TONES: Record<string, Tone> = {
   [INVOICE.draft]: 'warn',
   [INVOICE.posted]: 'neutral',
   [INVOICE.unchecked]: 'neutral',
+  // Not a failure to chase: the work is unbillable by agreement, and only the
+  // job card is still open.
+  [INVOICE.warranty]: 'neutral',
 };
 
 const COLUMNS: ReportColumn[] = [
@@ -81,18 +91,23 @@ export const report: ReportModule = {
       else if (job.created != null) fromCreated++;
       const waiting = since != null ? daysBetween(since, now) : null;
 
-      const invoice = job.saleOrderId == null
-        ? INVOICE.noQuote
+      const invoice = job.warranty
+        ? INVOICE.warranty
+        : job.saleOrderId == null ? INVOICE.noQuote
         : job.invoiceState === 'none' ? INVOICE.none
         : job.invoiceState === 'draft' ? INVOICE.draft
         : job.invoiceState === 'posted' ? INVOICE.posted
         : INVOICE.unchecked;
 
       let severity = severityFor(waiting, CEO_LIMITS.notInvoiced);
-      // A posted invoice means the money is booked; what is left is closing the
-      // job card, which is housekeeping. Letting that age into Critical would
-      // put paperwork above a vehicle nobody has billed at all.
-      if (invoice === INVOICE.posted && SEVERITY_ORDER[severity] < SEVERITY_ORDER.Watch) severity = 'Watch';
+      // A posted invoice means the money is booked; warranty work will never be
+      // billed at all. Either way what is left is closing the job card, which is
+      // housekeeping, and letting that age into Critical would put paperwork
+      // above a vehicle nobody has billed. This column grades how urgently
+      // somebody should raise a bill, and for both of these the answer is never.
+      // Read off the state and not the badge, because a warranty job now shows
+      // the warranty badge over its posted one and would otherwise lose the cap.
+      if ((job.invoiceState === 'posted' || job.warranty) && SEVERITY_ORDER[severity] < SEVERITY_ORDER.Watch) severity = 'Watch';
 
       return {
         ro: job.name,
@@ -144,10 +159,11 @@ export const report: ReportModule = {
   summarise(rows): ReportSummaryItem[] {
     const waits = rows.map((r) => r.waiting).filter((w): w is number => typeof w === 'number');
     const noQuote = rows.filter((r) => r.invoice === INVOICE.noQuote).length;
-    // A posted invoice is money already booked, so counting it here would
-    // inflate what the branches still have to bill.
+    // A posted invoice is money already booked, and warranty work is money the
+    // customer will never be billed, so counting either here would inflate what
+    // the branches still have to bill.
     const unbilled = rows
-      .filter((r) => r.invoice !== INVOICE.posted)
+      .filter((r) => r.invoice !== INVOICE.posted && r.invoice !== INVOICE.warranty)
       .reduce((sum, r) => sum + (typeof r.value === 'number' ? r.value : 0), 0);
     return [
       {
@@ -158,7 +174,7 @@ export const report: ReportModule = {
       {
         label: 'AED not billed',
         value: fmtAed(unbilled),
-        hint: 'excludes jobs already invoiced but not closed',
+        hint: 'excludes jobs already invoiced but not closed, and warranty work the customer is never billed for',
       },
       { label: 'Longest wait', value: fmtDays(waits.length ? Math.max(...waits) : null) },
       {

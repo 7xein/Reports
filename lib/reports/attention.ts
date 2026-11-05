@@ -78,10 +78,54 @@ interface Item {
  * to jobs through invoice_origin: a wrong match would cancel a real exception
  * and inflate another, and this way the three sources are disjoint by
  * construction. A job with no quotation has no value to carry in any case.
+ *
+ * Warranty work carries nothing at all: EVS will never bill the customer for
+ * it, so its value was never money anybody is waiting for.
  */
 function jobAed(job: CeoJob): number {
+  if (job.warranty) return 0;
   if (job.invoiceState === 'draft' || job.invoiceState === 'posted') return 0;
   return job.value ?? 0;
+}
+
+/**
+ * What the warranty rule took off a row, as against what the invoice rule had
+ * already taken off it.
+ *
+ * The headline is dropping for two reasons at once — parked job cards and now
+ * warranty — and a drop nobody can attribute to one of them is a drop nobody
+ * can trust. A warranty job whose bill is in draft or posted was already
+ * carrying nothing, so counting its value here would overstate what warranty
+ * removed and leave the two figures unable to reconcile against the tile.
+ */
+function warrantyAed(job: CeoJob): number {
+  if (!job.warranty || job.invoiceState === 'draft' || job.invoiceState === 'posted') return 0;
+  return job.value ?? 0;
+}
+
+/** Warranty work is still a job card to close, so the row stays; the clause is what stops the reader asking where its value went. */
+function withWarranty(detail: string, job: CeoJob): string {
+  if (!job.warranty) return detail;
+  const via = job.warrantyVia ? ` (${job.warrantyVia})` : '';
+  return `${detail}; warranty work${via}, so not money at risk`;
+}
+
+/**
+ * What an unposted invoice is allowed to carry.
+ *
+ * A service note is warranty under another name — raised in its own journal,
+ * never billed to the customer — so the amount on it was never money anybody is
+ * waiting for. Zeroed exactly as a warranty job is, and for the same reason.
+ */
+function invoiceAed(inv: CeoInvoice): number {
+  if (inv.serviceNote) return 0;
+  return inv.amount;
+}
+
+/** A service note still has to be posted, so the row stays; the clause is what stops the reader asking where its amount went. */
+function withServiceNote(detail: string, inv: CeoInvoice): string {
+  if (!inv.serviceNote) return detail;
+  return `${detail}; service note (warranty), so not money at risk`;
 }
 
 /** The vehicle is what the branch calls the job; the customer is the fallback, never both. */
@@ -192,6 +236,10 @@ export const report: ReportModule = {
     const unbilledIds = new Set(data.repairedNotInvoiced.map((j) => j.id));
     const openIds = new Set(data.openJobs.map((j) => j.id));
 
+    /** What the warranty rule removed, counted on the rows it removed it from — the overlap above means once per vehicle. */
+    let warrantyJobs = 0;
+    let warrantyRemoved = 0;
+
     // ── A: open too long ──
     for (const job of data.openJobs) {
       if (unbilledIds.has(job.id)) continue;   // claimed by source B below
@@ -209,10 +257,14 @@ export const report: ReportModule = {
         site: job.site,
         subject: subjectOf(job),
         owner: job.createdBy,
-        detail: jobDetail(job, days, now),
+        detail: withWarranty(jobDetail(job, days, now), job),
         days,
         aed: jobAed(job),
       });
+      if (job.warranty) {
+        warrantyJobs++;
+        warrantyRemoved += warrantyAed(job);
+      }
     }
 
     // ── B: repaired, not invoiced ──
@@ -255,13 +307,21 @@ export const report: ReportModule = {
         owner: job.createdBy,
         // The wait clause keeps the unbilled age whichever grading won: the
         // repaired date is what the branch has to answer for, not the row's sort key.
-        detail: notInvoicedDetail(job, unbilledAge, lead),
+        detail: withWarranty(notInvoicedDetail(job, unbilledAge, lead), job),
         days,
         aed: jobAed(job),
       });
+      if (job.warranty) {
+        warrantyJobs++;
+        warrantyRemoved += warrantyAed(job);
+      }
     }
 
     // ── C: invoices never posted ──
+    /** What the service-note rule removed, counted on the rows it removed it from. */
+    let serviceNotes = 0;
+    let serviceNoteRemoved = 0;
+
     for (const inv of data.draftInvoices) {
       const days = inv.created != null ? daysBetween(inv.created, now) : null;
       items.push({
@@ -275,10 +335,18 @@ export const report: ReportModule = {
         // Nothing on a customer invoice names a person here, and a guessed owner
         // would send the chase to the wrong desk.
         owner: '',
-        detail: invoiceDetail(inv, days),
+        detail: withServiceNote(invoiceDetail(inv, days), inv),
         days,
-        aed: inv.amount,
+        aed: invoiceAed(inv),
       });
+      if (inv.serviceNote) {
+        serviceNotes++;
+        // What it would have contributed under the money rule above — the full
+        // amount, since an unposted invoice carries its own money and nothing
+        // else was already taking it off. Anything broader would not reconcile
+        // against the change in the headline tile.
+        serviceNoteRemoved += inv.amount;
+      }
     }
 
     // Severity before money, deliberately: a critical row is a critical row
@@ -294,8 +362,17 @@ export const report: ReportModule = {
     const notes = [
       'Every open exception across the branches in one list, worst first. The three tabs behind this one — oldest open jobs, repaired and not invoiced, unposted invoices — carry the full lists, including the rows this page leaves out as ordinary.',
       `An open repair order appears here only once it has been open longer than ${watch} day${plural(watch)}, so this is the exceptions and not a work list.`,
-      'AED at risk counts each amount once: a job whose invoice has already been raised is counted on that invoice rather than on the job, a job whose invoice is posted carries nothing because that revenue is already booked, and a job that is both open too long and unbilled is listed once, as unbilled, graded by whichever of the two is worse.',
+      'AED at risk counts each amount once: a job whose invoice has already been raised is counted on that invoice rather than on the job, a job whose invoice is posted carries nothing because that revenue is already booked, a warranty job carries nothing because the customer will never be billed for it, an unposted service note carries nothing because a service note is warranty raised in its own journal and is never billed to a customer either, and a job that is both open too long and unbilled is listed once, as unbilled, graded by whichever of the two is worse.',
     ];
+    // Next to the rule they explain: the money at risk is falling for warranty,
+    // for service notes and for parked job cards all at once, and a drop that
+    // cannot be attributed to one of them is a drop nobody can trust.
+    if (warrantyJobs) {
+      notes.push(`Warranty work is listed but carries no money at risk: ${fmtCount(warrantyJobs)} job${plural(warrantyJobs)} worth AED ${fmtAed(warrantyRemoved)} that would otherwise have counted.`);
+    }
+    if (serviceNotes) {
+      notes.push(`Service notes are listed but carry no money at risk: ${fmtCount(serviceNotes)} unposted service note${plural(serviceNotes)} worth AED ${fmtAed(serviceNoteRemoved)} that would otherwise have counted.`);
+    }
     if (!data.has.invoiceState) {
       // A clean-looking total over an unverified basis is worse than no total:
       // the CEO would act on a figure that silently counts the same money twice.

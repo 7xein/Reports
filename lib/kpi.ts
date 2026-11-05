@@ -289,7 +289,7 @@ const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 const INSURANCE_TAG_RE = /insur/i;
 
 /** Every many2many tag field on repair.order, in the order we search them. */
-const TAG_FIELDS = ['tag_ids', 'x_studio_stages_tags'] as const;
+export const TAG_FIELDS = ['tag_ids', 'x_studio_stages_tags'] as const;
 
 /** One entry per tag field that exists, holding the ids matching in ITS comodel. */
 type TagMatch = { field: string; ids: Set<number> };
@@ -361,7 +361,7 @@ export async function readPartsLines(
  * comodel and override name matching there; any other comodel still matches by
  * name, since the admin has no way to pick from it.
  */
-async function resolveTagMatches(
+export async function resolveTagMatches(
   configured: (string | number)[],
   meta: FieldsMeta,
   re: RegExp,
@@ -393,7 +393,7 @@ async function resolveTagMatches(
 }
 
 /** An Odoo domain matching a record that carries any of these tags, in any field. */
-function anyTagDomain(matches: TagMatch[]): OdooDomain {
+export function anyTagDomain(matches: TagMatch[]): OdooDomain {
   const live = matches.filter((m) => m.ids.size);
   if (!live.length) return [['id', '=', 0]];
   const clauses: OdooDomain = live.map((m) => [m.field, 'in', [...m.ids]] as [string, string, unknown]);
@@ -402,7 +402,7 @@ function anyTagDomain(matches: TagMatch[]): OdooDomain {
 }
 
 /** Does this record carry one of the matched tags in any of its tag fields? */
-function hasAnyTag(rec: Rec, matches: TagMatch[]): boolean {
+export function hasAnyTag(rec: Rec, matches: TagMatch[]): boolean {
   return matches.some((m) => ((rec[m.field] as number[] | undefined) ?? []).some((id) => m.ids.has(id)));
 }
 const m2o = (v: unknown): [number, string] | null => (Array.isArray(v) ? (v as [number, string]) : null);

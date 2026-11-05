@@ -11,7 +11,15 @@
 import { loadCeoData } from './ceo-core';
 import { CEO_LIMITS, SEVERITY_ORDER, SEVERITY_TONES, severityFor, type Severity } from './ceo-severity';
 import { daysBetween, fmtDays, gulfDate, median } from './common';
-import type { CellValue, ReportColumn, ReportModule, ReportRow, ReportSummaryItem } from './types';
+import type { CellValue, ReportColumn, ReportModule, ReportRow, ReportSummaryItem, Tone } from './types';
+
+/**
+ * Warranty work gets its own column here because this tab has no invoice column
+ * to carry it, as the not-invoiced tab's does. Neutral, not bad: the job card is
+ * still open and still has to be closed, but the value beside it was never
+ * money the company is waiting for — EVS will not bill the customer for it.
+ */
+const WARRANTY_TONES: Record<string, Tone> = { Yes: 'neutral' };
 
 const COLUMNS: ReportColumn[] = [
   { key: 'ro', label: 'Repair order', kind: 'link', hrefKey: 'url' },
@@ -25,6 +33,8 @@ const COLUMNS: ReportColumn[] = [
   { key: 'age', label: 'Age', kind: 'days' },
   { key: 'inStatus', label: 'In status', kind: 'days' },
   { key: 'value', label: 'Value (AED)', kind: 'currency' },
+  // Next to the value it qualifies, so the figure is never read as money owed.
+  { key: 'warranty', label: 'Warranty', kind: 'badge' },
   { key: 'severity', label: 'Severity', kind: 'badge' },
 ];
 
@@ -60,6 +70,7 @@ export const report: ReportModule = {
         age,
         inStatus: job.statusSince != null ? daysBetween(job.statusSince, now) : null,
         value: job.value,
+        warranty: job.warranty ? 'Yes' : null,
         severity: severityFor(age, CEO_LIMITS.openJob),
       };
     });
@@ -86,7 +97,7 @@ export const report: ReportModule = {
       columns: COLUMNS,
       rows,
       branchScoped: true,
-      badgeTones: { severity: SEVERITY_TONES },
+      badgeTones: { severity: SEVERITY_TONES, warranty: WARRANTY_TONES },
       notes,
     };
   },
