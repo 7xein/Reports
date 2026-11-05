@@ -1,10 +1,9 @@
 'use client';
 
 import { Suspense, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 
 function CeoLoginForm() {
-  const router = useRouter();
   const params = useSearchParams();
   // Only an in-section path is honoured, so `from` cannot bounce anyone to an
   // arbitrary URL. The sidebar's CEO tab points at /ceo/attention, so that is
@@ -29,8 +28,11 @@ function CeoLoginForm() {
     });
 
     if (res.ok) {
-      router.push(from);
-      router.refresh();
+      // A document navigation, not router.push: this page is reached BY a
+      // middleware redirect, so the router's cached entry for the target IS
+      // that redirect — pushing to it lands straight back here and the cookie
+      // just set goes unused. A full load re-runs the middleware with it.
+      window.location.assign(from);
     } else {
       setError('Incorrect CEO password');
       setLoading(false);

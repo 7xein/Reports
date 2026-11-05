@@ -1,11 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 
 export default function AdminLoginPage() {
-  const router = useRouter();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -22,8 +20,11 @@ export default function AdminLoginPage() {
     });
 
     if (res.ok) {
-      router.push('/admin');
-      router.refresh();
+      // A document navigation, not router.push: this page is reached BY a
+      // middleware redirect, so the router's cached entry for the target IS
+      // that redirect — pushing to it lands straight back here and the cookie
+      // just set goes unused. A full load re-runs the middleware with it.
+      window.location.assign('/admin');
     } else {
       setError('Incorrect admin password');
       setLoading(false);

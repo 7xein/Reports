@@ -1,10 +1,9 @@
 'use client';
 
 import { Suspense, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 
 function LoginForm() {
-  const router = useRouter();
   const params = useSearchParams();
   const from = params.get('from') || '/';
   const [password, setPassword] = useState('');
@@ -23,8 +22,11 @@ function LoginForm() {
     });
 
     if (res.ok) {
-      router.push(from);
-      router.refresh();
+      // A document navigation, not router.push: this page is reached BY a
+      // middleware redirect, so the router's cached entry for the target IS
+      // that redirect — pushing to it lands straight back here and the cookie
+      // just set goes unused. A full load re-runs the middleware with it.
+      window.location.assign(from);
     } else {
       setError('Incorrect password');
       setLoading(false);
