@@ -278,8 +278,22 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
     setLoading(true); setError(''); setTree(null);
     try {
       const res = await fetch(`/api/kpi?week=${w}${refresh ? '&refresh=1' : ''}`, { credentials: 'include' });
-      const body = await res.json();
-      if (!res.ok) { setError(body?.detail || body?.error || res.statusText); return; }
+      // Parsed defensively: a route that times out answers with Vercel's own
+      // plain-text error page, and res.json() on that throws "Unexpected token
+      // 'A'…" — which the catch below then showed to the user in place of the
+      // actual reason. A failure has to be able to explain itself.
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        const timedOut = res.status === 504 || res.status === 503;
+        setError(
+          body?.detail || body?.error ||
+          (timedOut
+            ? 'The KPI report took too long to build and the request timed out. Try again — the first load after a quiet spell is the slow one, and the rest are served from the cache.'
+            : res.statusText || `Request failed (${res.status})`)
+        );
+        return;
+      }
+      if (!body) { setError('The server answered with something that was not a report.'); return; }
       setTree(body as TreeWithHistory);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

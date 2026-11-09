@@ -15,7 +15,13 @@ import { readData, writeData } from '@/lib/data-store';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { withKpiDefaults, KpiWeekSummary } from '@/lib/types';
 
-export const maxDuration = 60;
+// 300, not 60: computing all 21 KPIs for every branch is the heaviest read in
+// the app, and it outgrew a minute — production timed out on 9 Nov 2026. The
+// EVHUB and CEO routes already run at 300 for the same reason. A timeout here is
+// worse than merely slow: the result never reaches the Redis cache below, so
+// every later visitor repeats the same doomed minute and the page stays broken
+// for everyone rather than being slow once.
+export const maxDuration = 300;
 
 const TTL_SECONDS = 15 * 60;
 const useRedis = !!process.env.UPSTASH_REDIS_REST_URL;

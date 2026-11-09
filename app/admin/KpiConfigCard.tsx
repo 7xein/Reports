@@ -116,8 +116,12 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   useEffect(() => {
     fetch('/api/kpi/odoo-options', { credentials: 'include' })
       .then(async (r) => {
-        const body = await r.json();
-        if (!r.ok) throw new Error(body?.detail || body?.error || r.statusText);
+        // Defensive parse, for the same reason as the KPI page: a timed-out
+        // route answers with plain text, and parsing that throws a JSON error
+        // that tells the reader nothing about what actually went wrong.
+        const body = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(body?.detail || body?.error || r.statusText || `Request failed (${r.status})`);
+        if (!body) throw new Error('The server answered with something that was not a list of options.');
         setOpts(body as OdooOptions);
       })
       .catch((e) => setOptsError(e instanceof Error ? e.message : String(e)))
