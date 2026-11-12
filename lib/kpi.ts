@@ -6,12 +6,23 @@
  * up at any level, so SA / branch / company numbers all come from the same source
  * and can never disagree.
  *
+ * That holds because every level is a filter of the same list and each one is a
+ * subset of the level above it: the company figure is every evaluation, a branch
+ * is the evaluations booked to that company, and a person's card under that
+ * branch is their share of exactly those — not their work elsewhere. Until the
+ * attribution fix a person's cells were all of their work in any branch, so the
+ * sentence above was false of the SA level and the two could differ by the
+ * entire population of a KPI. Work booked to a branch the person is not
+ * rostered in therefore reaches no card, which is disclosed in a note rather
+ * than dropped in silence.
+ *
  * Weekly window: Saturday 00:00 → Friday 23:59 Gulf time (UTC+4).
  */
 
 import {
   KPI_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
   KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField, DEFAULT_KPI_CONFIG,
+  ROLE_KPIS, rosterBranches, rosterRoles, rolesForKpi, SaRosterEntry, KpiRole, KPI_ROLE_ORDER,
 } from './types';
 import { call, kpiCompanyIds, mainCompanyIdFor, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
@@ -69,10 +80,23 @@ export interface KpiCell {
 export interface SaNode {
   odooUserId: number;
   name: string;
-  /** Which section this person belongs to; roster entries saved without one are advisors. */
+  /**
+   * Legacy, and no longer a grouping: the page lays rows and people out by role
+   * now. Kept because it still feeds `sections` below, and through it the 14
+   * weeks of stored history, whose per-week averages are filed under the two
+   * section keys. Roster entries saved without a section still read as advisors.
+   */
   section: KpiSection;
+  /**
+   * What this person is scored as — the roster entry's roles, or its legacy
+   * section mapped through ROLES_FROM_SECTION. Shown beside the name, because a
+   * flat people list is the only honest one once a person can hold several roles
+   * and grouping by role would list them twice.
+   */
+  roles: KpiRole[];
   achievement: number | null;
   sections: Record<KpiSection, number | null>;
+  roleAverages: Record<KpiRole, number | null>;
   roCount: number;
   kpis: KpiCell[];
 }
@@ -81,6 +105,7 @@ export interface BranchNode {
   name: string;
   achievement: number | null;
   sections: Record<KpiSection, number | null>;
+  roleAverages: Record<KpiRole, number | null>;
   applicableTotal: number;
   kpis: KpiCell[];
   serviceAdvisors: SaNode[];
@@ -89,7 +114,12 @@ export interface BranchNode {
 export interface KpiTree {
   week: { start: string; end: string };
   generatedAt: string;
-  company: { achievement: number | null; sections: Record<KpiSection, number | null>; kpis: KpiCell[] };
+  company: {
+    achievement: number | null;
+    sections: Record<KpiSection, number | null>;
+    roleAverages: Record<KpiRole, number | null>;
+    kpis: KpiCell[];
+  };
   branches: BranchNode[];
   notes: string[];
 }
@@ -151,13 +181,48 @@ function overall(cells: KpiCell[]): number | null {
 
 /** Per-section achievement, using the same inclusion rule as the overall. */
 function sectionTotals(cells: KpiCell[], config: KpiConfig): Record<KpiSection, number | null> {
-  const scored = cells.filter(countsTowardOverall);
+  // KPI_IDS_FOR_EVERYONE is kept out of the section averages and stays in the
+  // overall, where it belongs. 17 (Chatter response) is the only one, it sits in
+  // the workshop section by default, and on a card whose other cells are all
+  // advisor KPIs it was the whole workshop average — so one missed @mention
+  // rendered a full "WORKSHOP 0%" header off a single KPI no section owns.
+  // A KPI every role answers for is the card's, not a section's.
+  const scored = cells.filter((c) => countsTowardOverall(c) && !KPI_IDS_FOR_EVERYONE.includes(c.id));
   // Deliberately NOT what `overall` averages: the overall is the mean of every
   // scored KPI, not the mean of these two — sections with unequal KPI counts
   // would otherwise reweight the headline figure.
   return Object.fromEntries(
     KPI_SECTION_ORDER.map((s) => [s, meanPct(scored.filter((c) => sectionOf(c.id, config) === s))]),
   ) as Record<KpiSection, number | null>;
+}
+
+/**
+ * Per-role achievement — the figure each role heading on the page carries.
+ *
+ * Deliberately a mirror of sectionTotals: same inclusion rule, same exclusion of
+ * KPI_IDS_FOR_EVERYONE, same per-level call sites. The two must agree about what
+ * counts, because they are the same arithmetic over a different partition of the
+ * same cells, and a reader comparing a role figure against the overall above it
+ * is entitled to one rule rather than two.
+ *
+ * Computed live and never stored: a stored week files its averages under the two
+ * section keys, and KpiWeekSummary is not being changed for this, so 14 weeks of
+ * week-on-week comparisons keep working. The per-role figure therefore has no
+ * history until new weeks accumulate, which is the trade the owner accepted.
+ *
+ * `config` is taken for symmetry with sectionTotals and is deliberately unused:
+ * role ownership comes from ROLE_KPIS, which Admin does not override the way it
+ * overrides a KPI's section. Taking it keeps every call site reading alike, so
+ * the day a role override does exist there is one signature to change.
+ */
+function roleTotals(cells: KpiCell[], _config?: KpiConfig): Record<KpiRole, number | null> {
+  // Same two filters as sectionTotals, for the same reasons: an unmeasured KPI
+  // and KPI 9 are out of every average, and a KPI everybody answers for (17)
+  // forms no group average of its own — it is the card's, not a role's.
+  const scored = cells.filter((c) => countsTowardOverall(c) && !KPI_IDS_FOR_EVERYONE.includes(c.id));
+  return Object.fromEntries(
+    KPI_ROLE_ORDER.map((r) => [r, meanPct(scored.filter((c) => rolesForKpi(c.id).includes(r)))]),
+  ) as Record<KpiRole, number | null>;
 }
 
 // ── Odoo domain from a configured selector ─────────────────────────
@@ -2920,16 +2985,55 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // ── Roll up ────────────────────────────────────────────────────────
   const roster = config.saRoster ?? [];
 
+  // Excluded entries build no card at any level while their evaluations stay in
+  // the branch and company figures: OdooBot, which is automation and must never
+  // be scored, the Administrator account, and central staff whose work is not
+  // any one branch's — the live map has a central pair raising RFQs in all five.
+  // Named out loud, because an absent name otherwise reads as a broken report,
+  // and because the figures above still contain the work.
+  const scoredRoster = roster.filter((r) => !r.excluded);
+  const excludedFromScoring = roster.filter((r) => r.excluded);
+  if (excludedFromScoring.length) {
+    const who = excludedFromScoring.map((r) => r.name || `User ${r.odooUserId}`).join(', ');
+    notes.push(`Not scored individually, by configuration: ${who}. Each builds no card at all, while every evaluation of theirs still counts in the branch and company figures on this page — it is the scoring that is switched off, not the record. This is where automation (OdooBot, the Administrator account) and central staff whose work belongs to no single branch are put. Clear "exclude from scoring" on the roster entry in Admin → KPI Configuration to put someone back on a card.`);
+  }
+
   // Anyone rostered outside the KPI scope now gets no card at any level: their
   // branch builds no node, so there is nowhere for them to appear. The Admin
   // roster still offers every workshop branch, so an ordinary config edit can
   // put someone here — and a person silently missing from the page reads as a
   // broken report, or worse goes unnoticed while they are unscored.
-  const offScope = roster.filter((r) => !(KPI_BRANCHES as readonly string[]).includes(r.branch));
+  //
+  // Read across every branch the entry covers rather than the primary one alone:
+  // someone whose `branches` names Dubai and EV Hub is scored under Dubai, so
+  // naming them here would be false. An off-scope branch carries no evaluations
+  // either way — the engine only ever books work to the five — so it costs them
+  // nothing beyond a node that does not exist.
+  const offScope = scoredRoster.filter(
+    (r) => !rosterBranches(r).some((b) => (KPI_BRANCHES as readonly string[]).includes(b)),
+  );
   if (offScope.length) {
-    const who = offScope.map((r) => `${r.name || `User ${r.odooUserId}`} (${r.branch})`).join(', ');
+    const who = offScope
+      .map((r) => `${r.name || `User ${r.odooUserId}`} (${rosterBranches(r).join(', ') || 'no branch set'})`)
+      .join(', ');
     notes.push(`Not scored here: ${who}. The KPI section covers the five UAE main branches only — Dubai, Ajman, Sharjah, Abu Dhabi and Al Ain — so anyone rostered to a station, to Qatar or to EV Hub has no card on this page. Move them to one of the five in Admin → KPI Configuration if they should be scored. The WIP and sales reports still count their branch.`);
   }
+
+  /**
+   * The enabled KPIs a roster entry answers for: the union of their roles' KPIs
+   * plus the ones everybody is scored on.
+   *
+   * One definition, used by the cards below and by the stranded-work note after
+   * them, so the note can never count work that would not have been on the card
+   * even in a branch the person is rostered in.
+   */
+  const scoredKpisFor = (r: SaRosterEntry): number[] => {
+    const owned = new Set<number>([
+      ...rosterRoles(r).flatMap((role) => ROLE_KPIS[role]),
+      ...KPI_IDS_FOR_EVERYONE,              // 17 — anyone can be @mentioned
+    ]);
+    return enabled.filter((id) => owned.has(id));
+  };
 
   // Five nodes, not seven: the KPI section scores main branches only, so Qatar
   // and EV Hub build no node at all and no station figure is folded into one.
@@ -2937,30 +3041,56 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const branchEvals = evals.filter((e) => e.branch === b);
     const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames, sectionById);
 
-    // Advisors are placed by the branch assigned to them in the roster — never by
-    // the company on their ROs — so each one appears exactly once, under their own
-    // branch. Their scores cover all of their work, wherever it was booked.
-    const serviceAdvisors: SaNode[] = roster
-      .filter((r) => r.branch === b)
+    // A person appears under every branch they cover, not only a primary one: one
+    // user opens job cards and writes quotations in all five branches, and
+    // pinning him to one left four fifths of his work scoring a branch while
+    // appearing on nobody's card. The same person can therefore hold several
+    // cards — one per branch, each carrying that branch's share of their work.
+    const serviceAdvisors: SaNode[] = scoredRoster
+      .filter((r) => rosterBranches(r).includes(b))
       .map((r) => {
-        // A person is scored only on their own section's KPIs: a technician held to
-        // quotation KPIs they never touch reads as failure rather than as
-        // not-their-job (and an advisor to workshop timings likewise). The ids in
-        // KPI_IDS_FOR_EVERYONE stay in both lists — anyone can be @mentioned.
-        // Section resolved once per person; sectionById is sectionOf(id, config)
-        // precomputed, so an admin's kpiSections override still wins.
+        // Scored on the KPIs their roles own, not on their section's. Eight KPIs
+        // — 3, 4, 6, 7, 9, 12, 15 and 16 — are charged to whoever created the
+        // repair order, which is the advisor, while all eight are tagged
+        // workshop; scoring a person only on their own section therefore sent
+        // those violations to no individual card at all. Roles are what people
+        // actually do, read from Odoo: an advisor answers for the quotation and
+        // invoicing KPIs, a controller for the stage timings, a parts man for the
+        // RFQ chain, and someone who does two of those jobs holds two roles and
+        // answers for both.
+        //
+        // A KPI no role owns (7 Awaiting labour, 9 Weekly closure rate — branch
+        // readings nobody performs) reaches no card by having no cell at all,
+        // never by having one that reads zero: aggregate() gives pct null for
+        // zero applicable and null is excluded from every average, but an absent
+        // cell is also an absent row, which is the honest rendering of "not this
+        // person's KPI".
+        const mineEnabled = scoredKpisFor(r);
+        // Unchanged, and no longer a grouping: `section` still comes from the
+        // legacy field because `sections` below — and through it the stored
+        // weekly history — is still filed under the two section keys. What the
+        // page groups by is `roles`, which is the same list scoredKpisFor() just
+        // read, so what a person is shown as and what they are scored on cannot
+        // drift apart.
         const section: KpiSection = r.section ?? 'advisor';
-        const mineEnabled = enabled.filter(
-          (id) => (sectionById[id] ?? sectionOf(id, config)) === section || KPI_IDS_FOR_EVERYONE.includes(id),
-        );
-        const mine = evals.filter((e) => e.userId === r.odooUserId);
+        // Scoped to the branch this card sits under — `branchEvals`, not `evals`.
+        // A branch figure is then the sum of the work booked there and a person's
+        // figure is their share of it, so the two levels reconcile. Taking all of
+        // their work in any branch drew the two cells from different populations,
+        // and they could differ by the entire population of a KPI.
+        const mine = branchEvals.filter((e) => e.userId === r.odooUserId);
         const cells = aggregate(mine, mineEnabled, snapshotNotes, displayNames, sectionById);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
           section,
+          roles: rosterRoles(r),
           achievement: overall(cells),
           sections: sectionTotals(cells, config),
+          roleAverages: roleTotals(cells, config),
+          // Still every RO this person created company-wide: the count is not
+          // kept per branch, so a cross-branch person shows the same total on
+          // each of their cards. A workload counter, not a KPI figure.
           roCount: roCountByUser[r.odooUserId] ?? 0,
           kpis: cells,
         };
@@ -2971,6 +3101,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       name: b,
       achievement: overall(kpis),
       sections: sectionTotals(kpis, config),
+      roleAverages: roleTotals(kpis, config),
       applicableTotal: kpis.reduce((s, c) => s + c.applicable, 0),
       kpis,
       serviceAdvisors,
@@ -2981,12 +3112,99 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     notes.push('No service advisors configured yet — set up the SA roster in Admin → KPI Configuration to enable the SA level.');
   }
 
+  // Scoping a card to its branch is a deliberate behaviour change, and it has
+  // one cost: work booked to a branch the person is not rostered in used to
+  // appear under their single rostered branch, and now appears on no card at
+  // all. Counted and named rather than dropped quietly — the ownership map says
+  // this is real (one user spans five branches, another three, two more span
+  // two), and the remedy is one roster edit.
+  //
+  // Only rostered, non-excluded people are counted. Work by someone absent from
+  // the roster reached no card before this change either, and an excluded
+  // person's work is already reported by the exclusion note above.
+  const entryById = new Map(scoredRoster.map((r) => [r.odooUserId, r]));
+  const ownKpis = new Map<number, Set<number>>();
+  const strandedByUser = new Map<number, Map<string, number>>();
+  for (const e of evals) {
+    if (e.userId == null) continue;
+    const entry = entryById.get(e.userId);
+    if (!entry || rosterBranches(entry).includes(e.branch)) continue;
+    // Counted against the KPIs this person answers for, and no others: a KPI no
+    // role owns reaches no card in any branch, so counting it here would report
+    // a gap the roster cannot close and overstate the one it can.
+    let own = ownKpis.get(e.userId);
+    if (!own) {
+      own = new Set(scoredKpisFor(entry));
+      ownKpis.set(e.userId, own);
+    }
+    if (!own.has(e.kpiId)) continue;
+    const perBranch = strandedByUser.get(e.userId) ?? new Map<string, number>();
+    perBranch.set(e.branch, (perBranch.get(e.branch) ?? 0) + 1);
+    strandedByUser.set(e.userId, perBranch);
+  }
+  if (strandedByUser.size) {
+    const who = [...strandedByUser].map(([uid, perBranch]) => {
+      const where = [...perBranch].map(([br, n]) => `${br}: ${n}`).join(', ');
+      return `${entryById.get(uid)?.name || `User ${uid}`} (${where})`;
+    }).join('; ');
+    const n = strandedByUser.size;
+    notes.push(`${n} rostered ${n === 1 ? 'person has' : 'people have'} work booked to a branch they are not rostered in, so that work counts for the branch and reaches no individual card — with the number of evaluations on their own KPIs per branch: ${who}. A card covers only the branch it appears under, which is what makes a branch's figure the sum of its people's work; until now this work was shown under the person's single rostered branch while counting against a different branch's figure. Add the branch to their roster entry in Admin → KPI Configuration to score it there.`);
+  }
+
+  /**
+   * The mirror of the gap above, and the one that bites hardest.
+   *
+   * There the branch was wrong; here the branch is right but the KPI is not one
+   * this person's roles answer for, so the verdict still reaches no card. The
+   * way that happens in practice is a re-attribution: KPI 18 is charged by name
+   * to a branch's nominated RFQ coordinator, and if their roles do not include
+   * `parts`, every RFQ verdict for that branch lands on nobody. The role list
+   * and the coordinator list are edited in different places, so they drift
+   * silently — which is exactly the shape of the bug this whole batch exists to
+   * remove.
+   *
+   * KPIs no role owns at all (7, 9) are skipped: they are branch readings by
+   * design, and reporting them here would be noise rather than a gap.
+   */
+  const roleGapByUser = new Map<number, Map<number, number>>();
+  for (const e of evals) {
+    if (e.userId == null) continue;
+    const entry = entryById.get(e.userId);
+    if (!entry || entry.excluded) continue;
+    if (!rosterBranches(entry).includes(e.branch)) continue;   // the note above owns that case
+    if (!rolesForKpi(e.kpiId).length) continue;                // nobody's KPI by design
+    let own = ownKpis.get(e.userId);
+    if (!own) {
+      own = new Set(scoredKpisFor(entry));
+      ownKpis.set(e.userId, own);
+    }
+    if (own.has(e.kpiId)) continue;
+    const perKpi = roleGapByUser.get(e.userId) ?? new Map<number, number>();
+    perKpi.set(e.kpiId, (perKpi.get(e.kpiId) ?? 0) + 1);
+    roleGapByUser.set(e.userId, perKpi);
+  }
+  if (roleGapByUser.size) {
+    const who = [...roleGapByUser].map(([uid, perKpi]) => {
+      const what = [...perKpi]
+        .map(([id, n]) => `${displayNames[id] ?? `KPI ${id}`}: ${n}`)
+        .join(', ');
+      return `${entryById.get(uid)?.name || `User ${uid}`} (${what})`;
+    }).join('; ');
+    const n = roleGapByUser.size;
+    notes.push(`${n} rostered ${n === 1 ? 'person is' : 'people are'} charged with work on a KPI their role does not answer for, so it counts for the branch and reaches no individual card: ${who}. This is usually a nominated RFQ coordinator whose roles do not include Parts & Purchasing — the name is set in one place and the role in another. Add the missing role on their roster entry in Admin → KPI Configuration, or clear the nomination, so the verdict lands somewhere.`);
+  }
+
   const companyKpis = aggregate(evals, enabled, snapshotNotes, displayNames, sectionById);
 
   return {
     week: { start, end },
     generatedAt: new Date().toISOString(),
-    company: { achievement: overall(companyKpis), sections: sectionTotals(companyKpis, config), kpis: companyKpis },
+    company: {
+      achievement: overall(companyKpis),
+      sections: sectionTotals(companyKpis, config),
+      roleAverages: roleTotals(companyKpis, config),
+      kpis: companyKpis,
+    },
     branches,
     notes,
   };

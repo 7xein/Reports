@@ -8,8 +8,11 @@
  *   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_API_KEY
  */
 
-import type { WipMetricKey, Branch } from './types';
-import { BRANCHES, WORKSHOP_BRANCHES, KPI_BRANCHES, MAIN_STATION, subKey, SUB_BRANCH_COMPANY, resolveAgeField } from './types';
+import type { WipMetricKey, Branch, KpiConfig, StageSelector, KpiRole, SaRosterEntry } from './types';
+import {
+  BRANCHES, WORKSHOP_BRANCHES, KPI_BRANCHES, MAIN_STATION, subKey, SUB_BRANCH_COMPANY, resolveAgeField,
+  KPI_ROLE_ORDER, KPI_ROLE_LABELS, rosterBranches, rosterRoles,
+} from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -1110,6 +1113,12 @@ async function chatterTrackingCounts(fields: string[]): Promise<Record<string, n
   return out;
 }
 
+/**
+ * Takes no config, deliberately. The one part of this report that needed the
+ * saved stage mapping was the ownership map, and that has moved to its own route
+ * — so the Admin page no longer reads the config store just to render its
+ * dropdowns, and this call costs exactly what it did before the map existed.
+ */
 export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   cachedUid = null;
   companyIdCache = null;
@@ -1422,6 +1431,13 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     create_date: 'Under Automatic, awaiting parts/labour fall back to create_date, i.e. the age of the RO itself, because neither status_since nor date_last_stage_update exists on this instance.',
   };
   notes.push(AGE_NOTE[stageAgeField] ?? `Under Automatic, awaiting parts/labour age from ${stageAgeField}.`);
+
+  // NOT the ownership map. It used to run here and cost this request 28-36 extra
+  // Odoo calls against a 60-second limit, on EVERY Admin page load — the page the
+  // owner configures everything from, including the thresholds the KPI engine
+  // reads. It now lives behind its own button on its own 300-second route
+  // (app/api/kpi/role-proposal), so it is paid for when it is asked for and a
+  // slow Odoo can no longer take the Admin page down with it.
 
   return {
     priorityOptions,
@@ -1789,4 +1805,1542 @@ export async function fetchRosterSuggestion(): Promise<{ people: RosterSuggestio
     + `${unplaced ? `; ${unplaced} could not be placed in a branch` : ''}.`);
 
   return { people, notes };
+}
+
+// ── KPI ownership: who actually performs each KPI-bearing action ───
+/**
+ * The owner's question is not "which of two buckets does this KPI sit in" but
+ * "whose hands do this work": Mohammed Ansari raises Dubai's RFQs, so KPI 18 is
+ * his — and if anyone else raises one, it is theirs too. That makes ownership
+ * SET-valued, per branch and per action, which neither `section` (two buckets,
+ * advisor/workshop) nor `rfqCoordinators` (exactly one person per branch) can
+ * express.
+ *
+ * What follows measures that from Odoo. It reads only, and it changes no
+ * threshold, no stage mapping and no verdict — nothing in the KPI engine
+ * consults it. Two things are built on top: the role proposal the owner approves
+ * (fetchKpiRoleProposal, at the bottom of this file) and the plain-text
+ * diagnostic that travels with it as its evidence.
+ *
+ * It does NOT run on the Admin page load. It used to, inside
+ * fetchKpiOdooOptions, and 28-36 Odoo calls against that route's 60-second limit
+ * is why this was never deployed — a slow Odoo would have taken down the page
+ * the owner configures everything from. It has its own route and its own
+ * 300-second limit: app/api/kpi/role-proposal.
+ */
+
+/** Create-stamped evidence (create_uid) is aggregated by Odoo, so it can afford a long window. */
+const OWNERSHIP_DIRECT_DAYS = 90;
+/** Chatter-derived evidence is the expensive kind — a shorter window by design. */
+const OWNERSHIP_CHATTER_DAYS = 30;
+/** Used where a model has too many touched records for the window above to be affordable. */
+const OWNERSHIP_CHATTER_DAYS_NARROW = 7;
+/** Most records whose branch we will resolve per model. Beyond this the window narrows, then the bucket is dropped with a note. */
+const OWNERSHIP_RECORD_CAP = 12_000;
+/** Hard ceiling on rows read per transition. Hitting it is reported, never swallowed. */
+const OWNERSHIP_MSG_CAP = 20_000;
+/** Names printed per bucket before the remainder becomes "+N more". */
+const OWNERSHIP_NAME_CAP = 8;
+/**
+ * Default wall-clock budget for the whole ownership map, for a caller that does
+ * not state its own: deliberately short, because a caller that has not thought
+ * about the budget is a caller sharing a request with something else.
+ *
+ * The map stops early and SAYS it stopped, naming the buckets it never reached,
+ * rather than letting the request die with nothing in it. The dedicated route
+ * passes ROLE_PROPOSAL_BUDGET_MS instead.
+ */
+const OWNERSHIP_BUDGET_MS = 25_000;
+
+/** The fields_get shape this section passes around — the same one fetchKpiOdooOptions reads. */
+type OwnershipFieldMeta = Record<string, {
+  string?: string; type?: string; relation?: string; selection?: [string, string][]; store?: boolean; readonly?: boolean;
+}>;
+
+/** actor id → their display name and the per-branch split of their activity. */
+export type OwnershipActors = Map<number, { name: string; byBranch: Map<string, number> }>;
+
+/**
+ * One activity bucket: the action, the KPIs it owns, and the evidence behind it.
+ *
+ * `unavailable` is the whole point of the shape. A bucket nobody performed and a
+ * bucket we could not measure look identical once both are empty, and this
+ * codebase's rule is that they must never read the same — so an unmeasurable
+ * bucket carries its reason and is printed as a warning rather than as silence.
+ */
+export interface OwnershipBucket {
+  label: string;
+  kpis: number[];
+  /** 'user' → keyed by res.users id; 'partner' → a chatter author, keyed by res.partner id. */
+  actorKind: 'user' | 'partner';
+  /** Days of history this bucket covers — printed on every line, because they differ. */
+  days: number;
+  /** Exactly what was queried and how it was attributed. */
+  method: string;
+  /** Non-null when the bucket could not be populated at all, holding the reason. */
+  unavailable: string | null;
+  actors: OwnershipActors;
+  /** Matched activity on a record belonging to no KPI branch. */
+  outOfScope: number;
+  /** Matched activity whose author resolves to no Odoo user. */
+  nonUser: number;
+  /** True when a read hit OWNERSHIP_MSG_CAP, i.e. the counts are floors. */
+  truncated: boolean;
+}
+
+/**
+ * Thrown to jump from "there is no chatter route here" to the stamp fallback
+ * without inventing an error message for a read that was never attempted.
+ */
+class OwnershipSkip extends Error {}
+
+/** "KPIs 2, 3, 4" / "KPI 18". */
+function kpiTag(ids: number[]): string {
+  return `${ids.length === 1 ? 'KPI' : 'KPIs'} ${ids.join(', ')}`;
+}
+
+/**
+ * A stage selector → the (field, labels) pair Odoo's change log records.
+ *
+ * This is lib/kpi.ts's `trackedField`, re-stated rather than imported: kpi.ts
+ * imports THIS module, so the dependency runs one way only, and exporting it
+ * from there would mean editing the scoring engine for a diagnostic. The two
+ * must stay in step — the chatter stores the human LABEL of what changed, so a
+ * selection field resolves through its selection list and stage_id through stage
+ * names, which is why stageNames has to be resolved before this is called.
+ */
+function ownershipTrackedField(
+  sel: StageSelector | undefined,
+  meta: OwnershipFieldMeta,
+  stageNames: Record<number, string>,
+): { field: string; labels: string[] } | null {
+  if (!sel || !sel.values?.length) return null;
+  if (sel.kind === 'stage') {
+    if (!meta.stage_id) return null;
+    const labels = sel.values.map((v) => stageNames[Number(v)]).filter((x): x is string => !!x);
+    return labels.length ? { field: 'stage_id', labels } : null;
+  }
+  const field = sel.kind === 'state' ? 'state'
+    : sel.kind === 'repairState' ? 'repair_state'
+    : sel.kind === 'priority' ? 'priority_matrix_status'
+    : null;
+  if (!field) return null;
+  const options = meta[field]?.selection ?? [];
+  const labels = sel.values
+    .map((v) => options.find(([code]) => code === String(v))?.[1])
+    .filter((x): x is string => !!x);
+  return labels.length ? { field, labels } : null;
+}
+
+/** The canonical bucket order — the order the report prints and the proposal walks. */
+const OWNERSHIP_ORDER = [
+  'opensJobCards', 'movesToInspection', 'writesQuotations', 'confirmsQuotations',
+  'raisesRfqs', 'confirmsPos', 'receivesParts', 'movesThroughQa', 'marksRepaired',
+  'postsInvoices', 'uploadsFollowUp',
+] as const;
+
+/** One of the eleven activity buckets, by its stable key. */
+export type OwnershipBucketKey = typeof OWNERSHIP_ORDER[number];
+
+/** A bucket carrying its own key, so a consumer can map it to a role. */
+export interface OwnershipBucketEntry extends OwnershipBucket {
+  key: OwnershipBucketKey;
+}
+
+/**
+ * The measured activity map: eleven buckets, each either populated or carrying
+ * the reason it is not.
+ *
+ * Returned as data rather than as text because two very different consumers read
+ * it — the role proposal the owner approves, and the plain-text diagnostic below
+ * — and only one of them can use a sentence.
+ */
+export interface KpiOwnershipMap {
+  /** Every bucket that was set, in OWNERSHIP_ORDER. */
+  ordered: OwnershipBucketEntry[];
+  /** Bucket keys that were never set at all: UNKNOWN, and never to be read as empty. */
+  neverReached: string[];
+  /** Branches whose company resolved, i.e. the ones any of this can speak about. */
+  inScopeBranches: Branch[];
+  /** KPI branches left out because their company did not resolve — blank, not idle. */
+  missingBranches: Branch[];
+  /** Global caveats about the tracking table and the field-id lookup. */
+  noteTracking: string[];
+  /**
+   * Non-null when chatter authors could NOT be matched to Odoo users.
+   *
+   * Decisive for anything keyed on a user id. The chatter buckets then still
+   * hold their counts, but keyed on res.partner rather than res.users — good
+   * enough to print a name beside, and useless for writing a roster entry,
+   * because a partner id is a different person's user id. A consumer that keys
+   * on users must treat every `actorKind: 'partner'` bucket as unreadable.
+   */
+  partnerLookupFailed: string | null;
+  /** True when the wall-clock budget ran out, so some buckets say they were never read. */
+  budgetSpent: boolean;
+  /** The budget this run was given, in ms — printed, because it differs per caller. */
+  budgetMs: number;
+  /** Non-null when nothing could be measured at all; every other field is then empty. */
+  fatal: string | null;
+}
+
+/**
+ * Per-branch, per-action ownership, measured from Odoo.
+ *
+ * Reads only. Every bucket is wrapped in its own try/catch and announces its own
+ * failure, so one unreadable model costs one bucket and nothing else; the
+ * wall-clock budget stops the run early rather than letting the request time
+ * out, and names the buckets it never reached.
+ *
+ * The meta, stage names and tracked-change counts are passed in so a caller that
+ * has already paid for them does not pay twice; `fetchKpiRoleProposal` reads its
+ * own because it is the only thing in its request.
+ */
+export async function collectKpiOwnership(args: {
+  /**
+   * The LIVE config, read from the store. Never DEFAULT_KPI_CONFIG: the shipped
+   * defaults map `repaired` onto priority_matrix_status, which carries no
+   * tracked changes on this instance, so assuming them would report that nobody
+   * marks cars repaired.
+   */
+  config: KpiConfig | null;
+  repairMeta: OwnershipFieldMeta;
+  stageNames: Record<number, string>;
+  /** Tracked chatter changes per repair.order field, last 30 days, as the field report measured them. -1 means that probe errored. */
+  trackCounts: Record<string, number>;
+  /**
+   * Wall-clock budget. Defaults to the 25 seconds the map was written for when it
+   * shared a 60-second Admin request; the dedicated route passes its own, larger
+   * one, because there it is the only thing in the request.
+   */
+  budgetMs?: number;
+}): Promise<KpiOwnershipMap> {
+  const { config, repairMeta, stageNames, trackCounts } = args;
+  const budgetMs = args.budgetMs ?? OWNERSHIP_BUDGET_MS;
+  /** Nothing measurable: the one shape where every other field is meaningless. */
+  const fatal = (why: string): KpiOwnershipMap => ({
+    ordered: [], neverReached: [...OWNERSHIP_ORDER], inScopeBranches: [], missingBranches: [...KPI_BRANCHES],
+    noteTracking: [], partnerLookupFailed: null, budgetSpent: false, budgetMs, fatal: why,
+  });
+  const deadline = Date.now() + budgetMs;
+  const budgetLeft = () => Date.now() < deadline;
+  const sinceIso = (days: number) => new Date(Date.now() - days * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+  const hasRepairField = (f: string) => Object.prototype.hasOwnProperty.call(repairMeta, f);
+
+  // ── Scope: the five KPI branches' own workshops ──────────────────
+  // KPI_BRANCHES, and each branch's MAIN company rather than its whole cluster:
+  // that is exactly the population the KPI section scores, so ownership read
+  // over any wider set would credit people for work no KPI ever judges.
+  const branchOfCompany = new Map<number, Branch>();
+  try {
+    for (const b of KPI_BRANCHES) {
+      const id = await mainCompanyIdFor(b);
+      if (id != null) branchOfCompany.set(id, b);
+    }
+  } catch (e) {
+    return fatal(`⚠ KPI ownership map could not run — the branch companies did not resolve in Odoo: ${errText(e)}`);
+  }
+  const scopeIds = [...branchOfCompany.keys()];
+  if (!scopeIds.length) {
+    return fatal('⚠ KPI ownership map could not run — none of the five KPI branches resolved to an Odoo company, so no activity can be attributed to anyone.');
+  }
+  const inScopeBranches = new Set<string>([...branchOfCompany.values()]);
+  const missingBranches = KPI_BRANCHES.filter((b) => !inScopeBranches.has(b));
+
+  // ── Tracking-value shape: how this Odoo names the field that changed ──
+  // Odoo 17 links it by id (field_id), older versions store the technical name
+  // in `field`. Both shapes are already handled in fetchRosterSuggestion and in
+  // lib/kpi.ts; getting it wrong silently matches nothing, so it is resolved
+  // once, up front, for every (model, field) the buckets below ask about.
+  const noteTracking: string[] = [];
+  let tvRef: 'field_id' | 'field' = 'field';
+  let tvRefUsable = true;
+  const tvFieldId = new Map<string, number>();
+  try {
+    const tvMeta = (await call('mail.tracking.value', 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+    tvRef = Object.prototype.hasOwnProperty.call(tvMeta, 'field_id') ? 'field_id' : 'field';
+  } catch (e) {
+    tvRefUsable = false;
+    noteTracking.push(`⚠ mail.tracking.value could not be read, so every chatter-derived ownership bucket is unavailable: ${errText(e)}`);
+  }
+
+  const fieldIdsAsked = new Set<string>();
+  /** Look up ir.model.fields ids for tracked fields, once per (model, field). */
+  const resolveFieldIds = async (pairs: { model: string; field: string }[]): Promise<void> => {
+    if (tvRef !== 'field_id') return;
+    const wanted = pairs.filter((p) => !fieldIdsAsked.has(`${p.model}.${p.field}`));
+    if (!wanted.length) return;
+    for (const p of wanted) fieldIdsAsked.add(`${p.model}.${p.field}`);
+    const frs = (await call('ir.model.fields', 'search_read', [[
+      ['model', 'in', [...new Set(wanted.map((p) => p.model))]],
+      ['name', 'in', [...new Set(wanted.map((p) => p.field))]],
+    ] as OdooDomain], { fields: ['model', 'name'], limit: 0 })) as { id: number; model: string; name: string }[];
+    for (const f of frs) tvFieldId.set(`${f.model}.${f.name}`, f.id);
+  };
+  /** The domain leaf matching "this message records a change of <model>.<field>". */
+  const tvLeaf = (model: string, field: string): [string, string, unknown] | null => {
+    if (tvRef === 'field') return ['tracking_value_ids.field', '=', field];
+    const id = tvFieldId.get(`${model}.${field}`);
+    return id == null ? null : ['tracking_value_ids.field_id', '=', id];
+  };
+
+  // ── Per-model metadata, read once each ──────────────────────────
+  const metaCache = new Map<string, OwnershipFieldMeta | null>([['repair.order', repairMeta]]);
+  const modelMeta = async (model: string): Promise<OwnershipFieldMeta | null> => {
+    if (metaCache.has(model)) return metaCache.get(model) ?? null;
+    let m: OwnershipFieldMeta | null = null;
+    try {
+      m = (await call(model, 'fields_get', [], { attributes: ['string', 'type', 'relation', 'selection', 'store'] })) as OwnershipFieldMeta;
+    } catch { m = null; }
+    metaCache.set(model, m);
+    return m;
+  };
+  const selectionLabel = (meta: OwnershipFieldMeta, field: string, code: string): string | null =>
+    (meta[field]?.selection ?? []).find(([v]) => v === code)?.[1] ?? null;
+
+  /**
+   * Is this label unambiguous on this model?
+   *
+   * The chatter lookup asks for a message that records a change of field F and
+   * holds the label L. Those are two conditions on the same list of changes, so
+   * a message that changed F *and* changed some other tracked field to a value
+   * also labelled L would match wrongly. That needs two fields on one model to
+   * share a label — rare, but silently crediting the wrong person with a KPI is
+   * exactly what this report exists to prevent, so it is checked and reported
+   * rather than assumed away.
+   */
+  const labelIsAmbiguous = (meta: OwnershipFieldMeta, field: string, label: string): boolean =>
+    Object.entries(meta).some(([name, m]) => name !== field && (m.selection ?? []).some(([, l]) => l === label));
+
+  // ── Shared readers ──────────────────────────────────────────────
+  const blank = (): OwnershipActors => new Map();
+  const creditActor = (actors: OwnershipActors, id: number, name: string, branch: string, n: number) => {
+    let a = actors.get(id);
+    if (!a) { a = { name: name || `#${id}`, byBranch: new Map() }; actors.set(id, a); }
+    else if (name && a.name.startsWith('#')) a.name = name;
+    a.byBranch.set(branch, (a.byBranch.get(branch) ?? 0) + n);
+  };
+
+  /**
+   * Actors from one read_group over a create/write stamp and company_id — the
+   * cheapest shape there is: Odoo aggregates and we read one row per
+   * (person, company), so the cost does not grow with the number of records.
+   */
+  const actorsByStamp = async (
+    model: string, domain: OdooDomain, stamp: 'create_uid' | 'write_uid',
+  ): Promise<{ actors: OwnershipActors; outOfScope: number }> => {
+    const actors = blank();
+    let outOfScope = 0;
+    const groups = (await call(model, 'read_group', [domain], {
+      fields: [stamp, 'company_id'], groupby: [stamp, 'company_id'], lazy: false,
+    })) as ReadGroupResult[];
+    for (const g of groups) {
+      const n = (g.__count ?? 0) as number;
+      const uid = m2oId(g[stamp]);
+      if (uid == null || n <= 0) continue;
+      const cid = m2oId(g.company_id);
+      const branch = cid != null ? branchOfCompany.get(cid) : undefined;
+      if (!branch) { outOfScope += n; continue; }
+      creditActor(actors, uid, m2oName(g[stamp]), branch, n);
+    }
+    return { actors, outOfScope };
+  };
+
+  /**
+   * record id → branch, for every in-scope record this model could have been
+   * changed on inside the window.
+   *
+   * `write_date >= since` is a deliberate SUPERSET: a tracked change writes the
+   * record, so anything that transitioned inside the window carries a write_date
+   * at or after that transition. It is the one filter keeping historical job
+   * cards and other companies' records out of the chatter buckets, and it is
+   * also where each change's branch comes from.
+   */
+  const branchByRecord = async (
+    model: string, extra: OdooDomain,
+  ): Promise<{ map: Map<number, Branch>; days: number; note: string | null }> => {
+    let days = OWNERSHIP_CHATTER_DAYS;
+    for (;;) {
+      const recs = (await call(model, 'search_read', [[
+        ['company_id', 'in', scopeIds],
+        ['write_date', '>=', sinceIso(days)],
+        ...extra,
+      ] as OdooDomain], { fields: ['company_id'], limit: OWNERSHIP_RECORD_CAP + 1 })) as Record<string, unknown>[];
+      if (recs.length > OWNERSHIP_RECORD_CAP) {
+        // Too many to resolve inside an Admin request. Narrow once, then give up
+        // loudly — a half-read branch map would quietly under-report everyone.
+        if (days > OWNERSHIP_CHATTER_DAYS_NARROW) { days = OWNERSHIP_CHATTER_DAYS_NARROW; continue; }
+        return { map: new Map(), days, note: `more than ${OWNERSHIP_RECORD_CAP} ${model} records were touched in ${days} days, which is more than one Admin request can resolve to branches` };
+      }
+      const map = new Map<number, Branch>();
+      for (const r of recs) {
+        const cid = m2oId(r.company_id);
+        const branch = cid != null ? branchOfCompany.get(cid) : undefined;
+        if (typeof r.id === 'number' && branch) map.set(r.id, branch);
+      }
+      return { map, days, note: null };
+    }
+  };
+
+  /**
+   * Chatter authors of a transition INTO one of `labels` on `model.field`.
+   *
+   * Attributed to mail.message.author_id — whom Odoo records as having posted
+   * the change — resolved to a user further down, archived accounts included, so
+   * an ex-employee still shows up by name instead of vanishing.
+   */
+  const actorsByChatter = async (
+    model: string, field: string, labels: string[], branchOf: Map<number, Branch>, days: number,
+  ): Promise<{ actors: OwnershipActors; outOfScope: number; noAuthor: number; truncated: boolean; matched: number }> => {
+    const actors = blank();
+    let outOfScope = 0;
+    let noAuthor = 0;
+    let truncated = false;
+    let matched = 0;
+    const leaf = tvLeaf(model, field);
+    if (!leaf) throw new Error(`${model}.${field} is not a field this Odoo records changes of`);
+    for (const label of labels) {
+      const msgs = (await call('mail.message', 'search_read', [[
+        ['model', '=', model],
+        ['date', '>=', sinceIso(days)],
+        leaf,
+        ['tracking_value_ids.new_value_char', '=', label],
+      ] as OdooDomain], { fields: ['author_id', 'res_id'], limit: OWNERSHIP_MSG_CAP })) as Record<string, unknown>[];
+      if (msgs.length >= OWNERSHIP_MSG_CAP) truncated = true;
+      for (const m of msgs) {
+        matched++;
+        const pid = m2oId(m.author_id);
+        const rid = typeof m.res_id === 'number' ? m.res_id : null;
+        const branch = rid != null ? branchOf.get(rid) : undefined;
+        // Two different exclusions, counted apart: a change on a record that is
+        // not ours, and a change Odoo attributes to nobody at all. Lumping them
+        // together would report the second as the first and hide it.
+        if (pid == null) { noAuthor++; continue; }
+        if (!branch) { outOfScope++; continue; }
+        creditActor(actors, pid, m2oName(m.author_id), branch, 1);
+      }
+      if (!budgetLeft()) break;
+    }
+    return { actors, outOfScope, noAuthor, truncated, matched };
+  };
+
+  // ── The buckets ─────────────────────────────────────────────────
+  const buckets = new Map<string, OwnershipBucket>();
+  const emptyBucket = (
+    label: string, kpis: number[], actorKind: 'user' | 'partner', days: number, method: string, unavailable: string | null,
+  ): OwnershipBucket => ({ label, kpis, actorKind, days, method, unavailable, actors: blank(), outOfScope: 0, nonUser: 0, truncated: false });
+
+  // Historical job cards must not count here either: the KPI engine excludes
+  // them, so attributing their work would credit people for work no KPI judges.
+  const liveOnly = await notHistorical();
+
+  // Every tracked field the buckets below will ask about, resolved in ONE
+  // ir.model.fields read instead of one per bucket. Four round trips saved out
+  // of a 60-second request is worth the one extra line, and the per-bucket
+  // lookups further down then find these already cached and skip.
+  try {
+    await resolveFieldIds([
+      ...['state', 'repair_state', 'priority_matrix_status', 'stage_id'].map((field) => ({ model: 'repair.order', field })),
+      ...['sale.order', 'purchase.order', 'account.move', 'stock.picking'].map((model) => ({ model, field: 'state' })),
+    ]);
+  } catch (e) {
+    // Not fatal: each bucket re-asks for its own field and reports its own miss.
+    noteTracking.push(`⚠ The one-shot lookup of tracked field ids failed, so some ownership buckets below may report that their field is not tracked: ${errText(e)}`);
+  }
+
+  /** The three create-stamped buckets, each one read_group and nothing more. */
+  const directBuckets: { key: string; label: string; kpis: number[]; model: string; extra: OdooDomain; method: string }[] = [
+    {
+      key: 'opensJobCards', label: 'Opens job cards', kpis: [5, 8], model: 'repair.order', extra: liveOnly,
+      method: 'repair.order grouped by create_uid and company_id, Historical job cards excluded',
+    },
+    {
+      key: 'writesQuotations', label: 'Writes quotations', kpis: [12, 21], model: 'sale.order', extra: [],
+      method: 'sale.order grouped by create_uid and company_id',
+    },
+    {
+      // The bucket the owner's own example names, and the one rfqCoordinators can
+      // hold only a single person per branch of.
+      key: 'raisesRfqs', label: 'Raises RFQs', kpis: [18], model: 'purchase.order', extra: [],
+      method: 'purchase.order grouped by create_uid and company_id',
+    },
+  ];
+  for (const d of directBuckets) {
+    try {
+      const { actors, outOfScope } = await actorsByStamp(d.model, [
+        ['create_date', '>=', sinceIso(OWNERSHIP_DIRECT_DAYS)],
+        ['company_id', 'in', scopeIds],
+        ...d.extra,
+      ], 'create_uid');
+      buckets.set(d.key, { ...emptyBucket(d.label, d.kpis, 'user', OWNERSHIP_DIRECT_DAYS, d.method, null), actors, outOfScope });
+    } catch (e) {
+      buckets.set(d.key, emptyBucket(d.label, d.kpis, 'user', OWNERSHIP_DIRECT_DAYS, d.method,
+        `${d.model} could not be grouped by creator: ${errText(e)}`));
+    }
+  }
+
+  // ── The three repair.order stage-change buckets, from the LIVE mapping ──
+  // One branch map and one field lookup serve all three.
+  const repairChatter: { key: string; label: string; kpis: number[]; sel: StageSelector | undefined }[] = [
+    { key: 'movesToInspection', label: 'Moves to Inspection', kpis: [14, 15], sel: config?.stageMap?.inspection },
+    { key: 'movesThroughQa', label: 'Moves through QA', kpis: [16], sel: config?.stageMap?.qa },
+    { key: 'marksRepaired', label: 'Marks Repaired', kpis: [22], sel: config?.stageMap?.repaired },
+  ];
+  if (!config || !tvRefUsable) {
+    const why = !config
+      ? 'the live KPI config was not passed to this report, so the stage mapping is unknown — reading the shipped defaults instead would point at priority_matrix_status, which records no changes on this instance'
+      : 'mail.tracking.value is unreadable, so no stage change can be traced to its author';
+    for (const c of repairChatter) {
+      buckets.set(c.key, emptyBucket(c.label, c.kpis, 'partner', OWNERSHIP_CHATTER_DAYS, 'repair.order chatter', why));
+    }
+  } else {
+    const resolved = repairChatter.map((c) => ({ ...c, tf: ownershipTrackedField(c.sel, repairMeta, stageNames) }));
+    const fields = [...new Set(resolved.map((r) => r.tf?.field).filter((f): f is string => !!f))];
+    try {
+      await resolveFieldIds(fields.map((f) => ({ model: 'repair.order', field: f })));
+    } catch (e) {
+      noteTracking.push(`⚠ The tracked repair.order fields could not be looked up in ir.model.fields, so the stage-change buckets below may report nothing: ${errText(e)}`);
+    }
+
+    let roBranch: { map: Map<number, Branch>; days: number; note: string | null };
+    try {
+      roBranch = await branchByRecord('repair.order', liveOnly);
+    } catch (e) {
+      roBranch = { map: new Map(), days: OWNERSHIP_CHATTER_DAYS, note: `the in-scope repair orders could not be read: ${errText(e)}` };
+    }
+
+    for (const r of resolved) {
+      const method = r.tf
+        ? `chatter author of the change recording repair.order.${r.tf.field} → ${r.tf.labels.map((l) => `"${l}"`).join(' / ')}, taken from the live stage mapping`
+        : 'repair.order chatter';
+      if (!r.tf) {
+        buckets.set(r.key, emptyBucket(r.label, r.kpis, 'partner', roBranch.days, method,
+          `the live stage mapping for this stage is ${r.sel ? `kind "${r.sel.kind}" with ${r.sel.values.length} value(s), which does not resolve to a field the chatter records` : 'unset in Admin'}`));
+        continue;
+      }
+      if (trackCounts[r.tf.field] === 0) {
+        buckets.set(r.key, emptyBucket(r.label, r.kpis, 'partner', roBranch.days, method,
+          `repair.order.${r.tf.field} carries NO tracked changes at all in the last 30 days, so Odoo holds no record of who moves anything through this stage`));
+        continue;
+      }
+      if (roBranch.note) { buckets.set(r.key, emptyBucket(r.label, r.kpis, 'partner', roBranch.days, method, roBranch.note)); continue; }
+      if (!budgetLeft()) {
+        buckets.set(r.key, emptyBucket(r.label, r.kpis, 'partner', roBranch.days, method, 'the request ran out of its time budget before this bucket was read'));
+        continue;
+      }
+      try {
+        const res = await actorsByChatter('repair.order', r.tf.field, r.tf.labels, roBranch.map, roBranch.days);
+        const ambiguous = r.tf.labels.filter((l) => labelIsAmbiguous(repairMeta, r.tf!.field, l));
+        // Nothing at all came back. That is NOT "nobody does this": it means the
+        // chatter holds no such transition in the window, so either the stage is
+        // unused or the change is not being tracked — and a per-branch list of
+        // "(nobody)" would read as the first when it could be the second.
+        buckets.set(r.key, {
+          ...emptyBucket(r.label, r.kpis, 'partner', roBranch.days,
+            method + (ambiguous.length
+              ? ` ⚠ the label${ambiguous.length === 1 ? '' : 's'} ${ambiguous.map((l) => `"${l}"`).join(' / ')} also appear${ambiguous.length === 1 ? 's' : ''} on another tracked field of repair.order, so a single change touching both at once could be counted here`
+              : ''),
+            res.matched > 0 ? null
+              : `the chatter holds NO change into ${r.tf.labels.map((l) => `"${l}"`).join(' / ')} on repair.order.${r.tf.field} in the last ${roBranch.days} days, anywhere in Odoo — so either this stage is not used or the change is not tracked, and nobody can be credited either way`),
+          actors: res.actors, outOfScope: res.outOfScope, nonUser: res.noAuthor, truncated: res.truncated,
+        });
+      } catch (e) {
+        buckets.set(r.key, emptyBucket(r.label, r.kpis, 'partner', roBranch.days, method, `the chatter could not be read for this transition: ${errText(e)}`));
+      }
+    }
+  }
+
+  /**
+   * A confirmation bucket on a model other than repair.order: the chatter author
+   * of `state` → the label for `code`, with a stamp-based fallback for when the
+   * chatter holds nothing at all.
+   *
+   * The fallback is never a silent substitution. It answers a DIFFERENT question
+   * — "who last wrote this record" rather than "who confirmed it" — so which
+   * route produced the names is printed alongside them.
+   */
+  const stateBucket = async (spec: {
+    key: string; label: string; kpis: number[]; model: string; code: string;
+    /** Extra clauses narrowing the records in scope (e.g. customer invoices only). */
+    recordExtra: OdooDomain;
+    /** The stamp and date field to fall back on, and what that stamp actually means. */
+    fallback: { stamp: 'create_uid' | 'write_uid'; dateField: string; caveat: string } | null;
+    /** Printed with the method, e.g. "customer invoices only". */
+    scopeNote?: string;
+  }): Promise<void> => {
+    const { key, label, kpis, model, code, recordExtra, fallback, scopeNote } = spec;
+    const bare = `${model}.state → ${code}${scopeNote ? `, ${scopeNote}` : ''}`;
+    const meta = await modelMeta(model);
+    if (!meta) {
+      buckets.set(key, emptyBucket(label, kpis, 'partner', OWNERSHIP_CHATTER_DAYS, bare, `${model} could not be read on this instance, so this action is invisible here`));
+      return;
+    }
+    const stateLabel = selectionLabel(meta, 'state', code);
+    if (!stateLabel) {
+      buckets.set(key, emptyBucket(label, kpis, 'partner', OWNERSHIP_CHATTER_DAYS, bare, `${model}.state has no "${code}" value on this instance, so the confirmation step itself cannot be identified`));
+      return;
+    }
+    // An unreadable tracking table kills the chatter route for every model at
+    // once. That is a reason to take the weaker route and SAY so, not a reason
+    // to report the action as if nobody performed it — so it is handled as "the
+    // chatter gave us nothing" rather than as an early exit.
+    let chatterEmpty: string | null = tvRefUsable
+      ? null
+      : 'mail.tracking.value is unreadable, so no confirmation could be traced to its author';
+    if (!chatterEmpty) {
+      try { await resolveFieldIds([{ model, field: 'state' }]); } catch { /* tvLeaf then returns null and actorsByChatter says so */ }
+    }
+
+    let recs: { map: Map<number, Branch>; days: number; note: string | null } =
+      { map: new Map(), days: OWNERSHIP_CHATTER_DAYS, note: null };
+    const method = `chatter author of the change recording ${model}.state → "${stateLabel}"${scopeNote ? `, ${scopeNote}` : ''}`;
+    if (!chatterEmpty) {
+      try {
+        recs = await branchByRecord(model, recordExtra);
+      } catch (e) {
+        recs = { map: new Map(), days: OWNERSHIP_CHATTER_DAYS, note: `the in-scope ${model} records could not be read: ${errText(e)}` };
+      }
+      if (recs.note) { buckets.set(key, emptyBucket(label, kpis, 'partner', recs.days, method, recs.note)); return; }
+      if (!budgetLeft()) {
+        buckets.set(key, emptyBucket(label, kpis, 'partner', recs.days, method, 'the request ran out of its time budget before this bucket was read'));
+        return;
+      }
+    }
+
+    try {
+      if (chatterEmpty) throw new OwnershipSkip();   // straight to the fallback, with the reason already set
+      const res = await actorsByChatter(model, 'state', [stateLabel], recs.map, recs.days);
+      if (res.matched > 0) {
+        const ambiguous = labelIsAmbiguous(meta, 'state', stateLabel);
+        buckets.set(key, {
+          ...emptyBucket(label, kpis, 'partner', recs.days,
+            method + (ambiguous ? ` ⚠ "${stateLabel}" also labels a value on another tracked field of ${model}, so a single change touching both at once could be counted here` : ''), null),
+          actors: res.actors, outOfScope: res.outOfScope, nonUser: res.noAuthor, truncated: res.truncated,
+        });
+        return;
+      }
+      chatterEmpty = `${model}.state records no change into "${stateLabel}" in the last ${recs.days} days`;
+    } catch (e) {
+      // OwnershipSkip means we never tried and the reason is already in
+      // chatterEmpty; anything else is a real read failure worth quoting.
+      if (!(e instanceof OwnershipSkip)) {
+        chatterEmpty = `the chatter could not be read for ${model}.state → "${stateLabel}": ${errText(e)}`;
+      }
+    }
+
+    // The chatter yielded nothing. Fall back to a write stamp if one was offered,
+    // and say in the same breath that it is the weaker answer.
+    if (!fallback || !Object.prototype.hasOwnProperty.call(meta, fallback.dateField)) {
+      buckets.set(key, emptyBucket(label, kpis, 'partner', recs.days, method,
+        `${chatterEmpty}${fallback ? `, and ${model}.${fallback.dateField} does not exist here either, so there is no fallback left` : ', and no fallback stamp exists for it'}`));
+      return;
+    }
+    if (!budgetLeft()) {
+      buckets.set(key, emptyBucket(label, kpis, 'partner', recs.days, method, `${chatterEmpty}; the request ran out of time before the ${fallback.stamp} fallback could be read`));
+      return;
+    }
+    // The scope note travels with the fallback too: which records were counted
+    // matters exactly as much when the route changes under them.
+    const fbMethod = `${model}.${fallback.stamp} on records with ${fallback.dateField} in the window${scopeNote ? `, ${scopeNote}` : ''} — ${fallback.caveat}`;
+    // A plain date field gets a plain date: invoice_date is a date on Odoo 17
+    // while date_approve and date_done are datetimes, and handing a date column
+    // a 'YYYY-MM-DD HH:MM:SS' bound is left to the database to interpret.
+    const fbSince = meta[fallback.dateField]?.type === 'date'
+      ? sinceIso(OWNERSHIP_DIRECT_DAYS).slice(0, 10)
+      : sinceIso(OWNERSHIP_DIRECT_DAYS);
+    try {
+      const { actors, outOfScope } = await actorsByStamp(model, [
+        [fallback.dateField, '>=', fbSince],
+        ['company_id', 'in', scopeIds],
+        ...recordExtra,
+      ], fallback.stamp);
+      buckets.set(key, {
+        ...emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, `FALLBACK — ${chatterEmpty}, so instead: ${fbMethod}`, null),
+        actors, outOfScope,
+      });
+    } catch (e) {
+      buckets.set(key, emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, fbMethod, `${chatterEmpty}, and the ${fallback.stamp} fallback failed too: ${errText(e)}`));
+    }
+  };
+
+  // Confirms quotations (KPIs 2, 3, 4) — the service advisors, in the owner's
+  // description: Wajid writes the quotation, somebody else approves it.
+  await stateBucket({
+    key: 'confirmsQuotations', label: 'Confirms quotations', kpis: [2, 3, 4],
+    model: 'sale.order', code: 'sale', recordExtra: [], fallback: null,
+  });
+
+  // Confirms purchase orders (KPI 19).
+  await stateBucket({
+    key: 'confirmsPos', label: 'Confirms purchase orders', kpis: [19],
+    model: 'purchase.order', code: 'purchase', recordExtra: [],
+    fallback: { stamp: 'write_uid', dateField: 'date_approve', caveat: 'the LAST person to write the order, who is the confirmer only if nobody edited it afterwards' },
+  });
+
+  // Posts invoices (KPIs 1, 11). Customer invoices only: KPIs 1 and 11 measure
+  // the invoice raised for the repair, so counting vendor bills and journal
+  // entries here would hand a service advisor's KPI to the accounts desk. That
+  // narrowing is a judgement, so it is printed where the owner can overrule it.
+  await stateBucket({
+    key: 'postsInvoices', label: 'Posts invoices', kpis: [1, 11],
+    model: 'account.move', code: 'posted',
+    recordExtra: [['move_type', 'in', ['out_invoice', 'out_refund']]],
+    scopeNote: 'customer invoices and credit notes only, not vendor bills or journal entries',
+    fallback: { stamp: 'create_uid', dateField: 'invoice_date', caveat: 'whoever CREATED the invoice, which is not necessarily who posted it' },
+  });
+
+  // Receives parts (KPIs 20, 6). What this instance records about a receipt is
+  // discovered, not assumed: KPI 20 already times the arrival through
+  // purchase.order.effective_date, which Odoo computes from the receipt, so the
+  // receipt is where a person can be found at all.
+  {
+    const label = 'Receives parts';
+    const kpis = [20, 6];
+    const pickMeta = await modelMeta('stock.picking');
+    if (!pickMeta) {
+      buckets.set('receivesParts', emptyBucket(label, kpis, 'partner', OWNERSHIP_CHATTER_DAYS, 'stock.picking',
+        'stock.picking could not be read on this instance, so nobody can be credited with receiving parts'));
+    } else {
+      // Tie receipts to purchasing where the link exists (purchase_id, added by
+      // the purchase_stock module) — that is the exact population KPI 20 judges.
+      // Otherwise fall back to "any incoming transfer", which is wider, and say so.
+      const hasPick = (f: string) => Object.prototype.hasOwnProperty.call(pickMeta, f);
+      let scopeClause: OdooDomain;
+      let scopeNote: string;
+      if (hasPick('purchase_id')) {
+        scopeClause = [['purchase_id', '!=', false]];
+        scopeNote = 'only receipts linked to a purchase order (stock.picking.purchase_id)';
+      } else if (hasPick('picking_type_code')) {
+        scopeClause = [['picking_type_code', '=', 'incoming']];
+        scopeNote = 'ALL incoming transfers — stock.picking has no purchase_id here, so receipts could not be narrowed to purchase orders';
+      } else {
+        scopeClause = [['picking_type_id.code', '=', 'incoming']];
+        scopeNote = 'ALL incoming transfers, by picking type — stock.picking has neither purchase_id nor picking_type_code here';
+      }
+      await stateBucket({
+        key: 'receivesParts', label, kpis, model: 'stock.picking', code: 'done',
+        recordExtra: scopeClause, scopeNote,
+        fallback: { stamp: 'write_uid', dateField: 'date_done', caveat: 'the LAST person to write the receipt, who is the validator only if nobody edited it afterwards' },
+      });
+    }
+  }
+
+  // Uploads the follow-up screenshot (KPI 13).
+  // A binary field is kept as an ir.attachment row carrying res_field, and THAT
+  // row records who created it — the only place an uploader exists at all.
+  // Four outcomes, all different: no such field; a computed field with nothing
+  // stored to attribute; a value stored inline in the column with no uploader
+  // recorded anywhere; or real uploads. None of them may read as "nobody does it".
+  {
+    const label = 'Uploads the follow-up screenshot';
+    const kpis = [13];
+    const method = 'ir.attachment.create_uid on the rows holding repair.order\'s follow-up screenshot field';
+    const field = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(hasRepairField);
+    if (!field) {
+      buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method,
+        'repair.order has no follow-up screenshot field on this instance, so KPI 13 has no action for anyone to own'));
+    } else if (repairMeta[field]?.store === false) {
+      buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method,
+        `repair.order.${field} is computed, not stored — Odoo saves no value and therefore no uploader, so KPI 13 cannot be owned by anyone until it reads a stored field`));
+    } else if (!budgetLeft()) {
+      buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method,
+        'the request ran out of its time budget before this bucket was read'));
+    } else {
+      try {
+        // res_field is named explicitly: without it in the domain, Odoo's own
+        // ir.attachment search hides every field attachment by default.
+        const atts = (await call('ir.attachment', 'search_read', [[
+          ['res_model', '=', 'repair.order'],
+          ['res_field', '=', field],
+          ['create_date', '>=', sinceIso(OWNERSHIP_DIRECT_DAYS)],
+        ] as OdooDomain], { fields: ['create_uid', 'res_id'], limit: OWNERSHIP_MSG_CAP })) as Record<string, unknown>[];
+        if (!atts.length) {
+          // Either nothing was uploaded, or the value never becomes an
+          // attachment at all. One count settles which, and they mean opposite
+          // things: the first is a real (empty) answer, the second is a blind spot.
+          let ever = -1;
+          try { ever = (await call('repair.order', 'search_count', [[[field, '!=', false]] as OdooDomain])) as number; } catch { /* reported as unknown below */ }
+          buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method,
+            ever > 0
+              ? `${ever} repair order(s) carry a follow-up screenshot but Odoo holds NO attachment row for ${field}, so the value is stored inline in the column and no uploader is recorded anywhere — KPI 13 cannot be attributed to a person on this instance`
+              : ever === 0
+                ? null   // a genuine, measurable nobody: no screenshot has ever been uploaded
+                : `no attachment rows exist for repair.order.${field}, and the all-time count of repair orders carrying one could not be read, so it is unknown whether nobody uploads a screenshot or the uploader simply is not recorded`));
+        } else {
+          // Branch comes from the repair order the attachment hangs on, never
+          // from the attachment's own company_id — that is only whichever
+          // company the uploader happened to be in at the time.
+          const ids = [...new Set(atts.map((a) => (typeof a.res_id === 'number' ? a.res_id : null)).filter((x): x is number => x != null))];
+          const roBranch = new Map<number, Branch>();
+          let note: string | null = null;
+          try {
+            for (const chunk of idChunks(ids)) {
+              const recs = (await call('repair.order', 'search_read', [[
+                ['id', 'in', chunk],
+                ['company_id', 'in', scopeIds],
+                ...liveOnly,
+              ] as OdooDomain], { fields: ['company_id'], limit: 0 })) as Record<string, unknown>[];
+              for (const r of recs) {
+                const cid = m2oId(r.company_id);
+                const branch = cid != null ? branchOfCompany.get(cid) : undefined;
+                if (typeof r.id === 'number' && branch) roBranch.set(r.id, branch);
+              }
+            }
+          } catch (e) {
+            note = `the repair orders behind the follow-up screenshots could not be checked for branch: ${errText(e)}`;
+          }
+          if (note) {
+            buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method, note));
+          } else {
+            const actors = blank();
+            let outOfScope = 0;
+            for (const a of atts) {
+              const uid = m2oId(a.create_uid);
+              const rid = typeof a.res_id === 'number' ? a.res_id : null;
+              const branch = rid != null ? roBranch.get(rid) : undefined;
+              if (uid == null || !branch) { outOfScope++; continue; }
+              creditActor(actors, uid, m2oName(a.create_uid), branch, 1);
+            }
+            buckets.set('uploadsFollowUp', {
+              ...emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method, null),
+              actors, outOfScope, truncated: atts.length >= OWNERSHIP_MSG_CAP,
+            });
+          }
+        }
+      } catch (e) {
+        buckets.set('uploadsFollowUp', emptyBucket(label, kpis, 'user', OWNERSHIP_DIRECT_DAYS, method,
+          `ir.attachment could not be read, so the screenshot uploader is unknown: ${errText(e)}`));
+      }
+    }
+  }
+
+  // ── Chatter authors are PARTNERS; the roster is keyed on users ────
+  // Resolved once for every chatter bucket, with active_test:false so a departed
+  // employee still resolves to their archived user and keeps their name — the
+  // same treatment lib/kpi.ts gives chatter mentions for KPI 17. An author with
+  // no user behind it is a customer or an automated action, counted and named as
+  // such rather than quietly printed as a member of staff.
+  const partnerIds = [...new Set(
+    [...buckets.values()].filter((b) => b.actorKind === 'partner').flatMap((b) => [...b.actors.keys()]),
+  )];
+  const userByPartner = new Map<number, { id: number; name: string }>();
+  let partnerLookupFailed: string | null = null;
+  if (partnerIds.length) {
+    try {
+      for (const chunk of idChunks(partnerIds)) {
+        const us = (await call('res.users', 'search_read', [[['partner_id', 'in', chunk]] as OdooDomain], {
+          fields: ['partner_id', 'name'], limit: 0, context: { active_test: false },
+        })) as Record<string, unknown>[];
+        for (const u of us) {
+          const pid = m2oId(u.partner_id);
+          if (pid != null && typeof u.id === 'number') userByPartner.set(pid, { id: u.id, name: (u.name as string) || `#${u.id}` });
+        }
+      }
+    } catch (e) {
+      partnerLookupFailed = errText(e);
+    }
+  }
+  for (const b of buckets.values()) {
+    if (b.actorKind !== 'partner' || !b.actors.size) continue;
+    if (partnerLookupFailed) {
+      // The names still print. A chatter author name is a weaker identity than a
+      // user, not a useless one, and dropping the bucket would lose more than it
+      // protects — so it is labelled instead.
+      b.method += ` ⚠ authors could NOT be matched to Odoo users (${partnerLookupFailed}), so these are raw chatter author names and may include customers or automation`;
+      continue;
+    }
+    const resolved: OwnershipActors = new Map();
+    for (const [pid, a] of b.actors) {
+      const user = userByPartner.get(pid);
+      if (!user) {
+        for (const n of a.byBranch.values()) b.nonUser += n;
+        continue;
+      }
+      const prev = resolved.get(user.id);
+      if (!prev) resolved.set(user.id, { name: user.name, byBranch: new Map(a.byBranch) });
+      else for (const [br, n] of a.byBranch) prev.byBranch.set(br, (prev.byBranch.get(br) ?? 0) + n);
+    }
+    b.actors = resolved;
+  }
+
+  // ── Collect ─────────────────────────────────────────────────────
+  // A bucket that never got set at all would otherwise just be absent, and an
+  // absent bucket is the one failure this report must not be able to produce:
+  // the owner would read eleven actions as ten and never know which one left.
+  const neverReached = OWNERSHIP_ORDER.filter((k) => !buckets.has(k));
+  const ordered = OWNERSHIP_ORDER
+    .map((k) => { const b = buckets.get(k); return b ? { ...b, key: k } : null; })
+    .filter((b): b is OwnershipBucketEntry => !!b);
+
+  return {
+    ordered,
+    neverReached: [...neverReached],
+    inScopeBranches: KPI_BRANCHES.filter((b) => inScopeBranches.has(b)),
+    missingBranches,
+    noteTracking,
+    partnerLookupFailed,
+    budgetSpent: !budgetLeft(),
+    budgetMs,
+    fatal: null,
+  };
+}
+
+/**
+ * The ownership map as plain text — the diagnostic form, returned alongside the
+ * structured proposal so the evidence the owner approves can also be read, and
+ * pasted, as prose.
+ *
+ * One note per line, and every line carries a prefix unique across the whole
+ * report. The Admin card keys these lines by their own text, so two identical
+ * lines would collapse into one on screen — a silent loss of exactly the kind
+ * this report exists to prevent. That is also why each branch's lines name the
+ * branch rather than sitting under a header.
+ */
+export function kpiOwnershipLines(map: KpiOwnershipMap, config: KpiConfig | null): string[] {
+  const lines: string[] = [];
+  if (map.fatal) return [map.fatal];
+  const { ordered, neverReached, missingBranches, noteTracking } = map;
+  const inScopeBranches = new Set<string>(map.inScopeBranches);
+
+  lines.push('═══ KPI OWNERSHIP MAP — who performs each KPI-bearing action, per branch. Diagnostic only: no KPI, threshold, stage mapping or score is affected by anything below. ═══');
+  lines.push(`Ownership scope: ${[...inScopeBranches].join(', ')} — each branch's own workshop company, which is exactly the population the KPI section scores.`
+    + `${missingBranches.length ? ` ⚠ LEFT OUT because its company did not resolve in Odoo: ${missingBranches.join(', ')} — those branches are blank below for that reason, not because nobody works there.` : ''}`);
+  lines.push(`Ownership windows: [${OWNERSHIP_DIRECT_DAYS}d] lines come from who created the record (Odoo aggregates those, so a long window costs nothing); the shorter windows are chatter-derived and are the expensive ones. A branch here is the company on the record the action touched, not where the person usually works.`);
+
+  for (const branch of KPI_BRANCHES) {
+    if (!inScopeBranches.has(branch)) continue;
+    for (const b of ordered) {
+      if (b.unavailable) continue;   // said once, globally, below
+      const people = [...b.actors.values()]
+        .map((a) => ({ name: a.name, n: a.byBranch.get(branch) ?? 0 }))
+        .filter((p) => p.n > 0)
+        .sort((x, y) => y.n - x.n || x.name.localeCompare(y.name));
+      const shown = people.slice(0, OWNERSHIP_NAME_CAP).map((p) => `${p.name} (${p.n})`).join(' · ');
+      const more = people.length > OWNERSHIP_NAME_CAP ? ` · +${people.length - OWNERSHIP_NAME_CAP} more` : '';
+      lines.push(`${branch} · ${b.label} → ${kpiTag(b.kpis)} [${b.days}d]: `
+        + (people.length ? shown + more : '(nobody — nobody here performed this action in the window)')
+        + (b.truncated ? ' ⚠ truncated at the row cap, so these counts are floors' : ''));
+    }
+  }
+
+  // Why each bucket says what it says. Kept out of the branch lines so those
+  // stay pasteable, but printed in full: an ownership claim nobody can check is
+  // worth less than no claim at all.
+  for (const b of ordered) {
+    lines.push(`How "${b.label}" (${kpiTag(b.kpis)}) was measured: ${b.method}.`);
+  }
+  for (const b of ordered) {
+    if (b.unavailable) {
+      lines.push(`⚠ NOT ATTRIBUTABLE — "${b.label}" (${kpiTag(b.kpis)}): ${b.unavailable}. This is NOT the same as nobody doing it: the action is invisible to us here, so no name list exists to print.`);
+    }
+  }
+  for (const b of ordered) {
+    const bits: string[] = [];
+    if (b.outOfScope) bits.push(`${b.outOfScope} on records outside the five KPI branches (another company, a station, or a Historical job card)`);
+    if (b.nonUser) bits.push(`${b.nonUser} whose author is not an Odoo user — a customer replying, or an automated action`);
+    if (bits.length) lines.push(`Left out of "${b.label}": ${bits.join('; ')}.`);
+  }
+
+  // Anyone doing work in more than one branch. The saved roster holds one branch
+  // per person, so these are precisely the names that model cannot express.
+  const branchesByPerson = new Map<string, Set<string>>();
+  for (const b of ordered) {
+    for (const a of b.actors.values()) {
+      const set = branchesByPerson.get(a.name) ?? new Set<string>();
+      for (const [br, n] of a.byBranch) if (n > 0) set.add(br);
+      branchesByPerson.set(a.name, set);
+    }
+  }
+  const multi = [...branchesByPerson.entries()]
+    .filter(([, s]) => s.size > 1)
+    // Branches in the dashboards' own order, so the same evidence always reads
+    // the same way rather than in whatever order the queries happened to run.
+    .map(([name, s]) => `${name} (${KPI_BRANCHES.filter((b) => s.has(b)).join(', ')})`)
+    .sort();
+  lines.push(multi.length
+    ? `Appearing in more than one branch: ${multi.join(' · ')} — the saved roster holds one branch per person, so each of these needs a decision.`
+    : 'Appearing in more than one branch: nobody — every person listed above worked in a single branch during the window.');
+
+  // The KPIs no individual performs, stated rather than left out: a KPI missing
+  // from this report would otherwise look like one we failed to measure.
+  lines.push('No individual actor: KPI 7 (Awaiting labour) and KPI 9 (Weekly closure rate) are branch-level — they measure a queue and a throughput ratio, so nobody performs them and they are attributed to no person.');
+  lines.push('Not assigned: KPI 17 (Chatter response) falls on anyone who can be @mentioned, so it belongs to everybody rather than to one bucket.');
+  lines.push('⚠ OPEN QUESTION — KPIs 1 and 11 measure the gap between a car being marked Repaired and its invoice being posted, and two different people own those two ends ("Marks Repaired" and "Posts invoices" above). Both lists are printed; which of them should carry KPIs 1 and 11 is your call, not something Odoo can settle.');
+  if (config?.rfqCoordinators && Object.keys(config.rfqCoordinators).length) {
+    lines.push(`For comparison, the RFQ coordinators currently saved in Admin — one person per branch, which is what KPI 18 follows today: ${Object.entries(config.rfqCoordinators).map(([b, c]) => `${b} = ${c?.name ?? '?'}`).join(' · ')}.`);
+  }
+  if (neverReached.length) {
+    lines.push(`⚠ These ownership buckets were never reached, so they appear nowhere above and are UNKNOWN rather than empty: ${neverReached.join(', ')}.`);
+  }
+  for (const n of noteTracking) lines.push(n);
+  if (map.budgetSpent) {
+    lines.push(`⚠ The ownership map used its whole ${Math.round(map.budgetMs / 1000)}-second budget. Any bucket above that reports running out of time was never read — treat it as unknown rather than empty, and run it again to try it.`);
+  }
+  lines.push('═══ end of KPI ownership map ═══');
+
+  return lines;
+}
+
+// ── KPI roles: derive them from Odoo, propose them to the owner ────
+/**
+ * Ownership read from Odoo and turned into a role proposal the owner approves.
+ *
+ * Why this exists at all: KPI ownership is maintained by hand and has gone
+ * stale. On 12 November 2026 Dubai's RFQ target was charged to a man who raised
+ * ZERO RFQs in 90 days while the man who raised 552 was scored on none of them;
+ * Ajman's was charged to someone who raised 81 while another raised 413; and
+ * Sharjah and Al Ain had nobody assigned at all, so KPI 18 fell on whoever
+ * happened to open the job card. See docs/kpi-ownership-2026-11-12.md.
+ *
+ * So ownership is DERIVED from what people demonstrably do, PROPOSED here, and
+ * saved only once the owner has approved it. Both halves matter: derived alone
+ * is a machine deciding people's pay, approved alone is the stale list we have.
+ * Every proposed role therefore travels with the counts that justified it — a
+ * bare name is a guess, a name with a count beside it is a decision.
+ *
+ * Nothing here writes to Odoo, and nothing here changes a KPI, a threshold, a
+ * stage mapping or a score. It proposes roster fields and stops.
+ */
+
+/** Which activity buckets make up each role, as the owner's description of the work. */
+const ROLE_BUCKETS: Record<KpiRole, readonly OwnershipBucketKey[]> = {
+  advisor:    ['opensJobCards', 'writesQuotations', 'confirmsQuotations', 'postsInvoices'],
+  controller: ['movesToInspection', 'movesThroughQa', 'marksRepaired'],
+  parts:      ['raisesRfqs', 'confirmsPos', 'receivesParts'],
+};
+
+/**
+ * `uploadsFollowUp` belongs to no role, deliberately.
+ *
+ * KPI 13 sits with the advisor in ROLE_KPIS, but the audit found it cannot be
+ * scored at all on this instance — its population filters on a computed,
+ * readonly field and its uploader is not attributable — so an upload count is
+ * not evidence that anybody should answer for it. It is still measured and
+ * shown, because a bucket that vanished from the report would read as a bucket
+ * nobody performs.
+ */
+const UNMAPPED_BUCKET_NOTE =
+  'it drives no role proposal, because KPI 13 is not attributable on this instance (see the audit), so an upload count is not grounds for giving anyone a role';
+
+/**
+ * The floor, in actions, over OWNERSHIP_DIRECT_DAYS.
+ *
+ * The owner's number, and his reason for it is specific: he personally raised 10
+ * RFQs in that window while clearing a backlog, and must not thereby become
+ * Dubai's RFQ owner. At or above it is somebody's job; below it is somebody
+ * covering a shift.
+ */
+const ROLE_FLOOR_ACTIONS = 10;
+
+/**
+ * The threshold keys this floor will honour if one is ever saved.
+ *
+ * Read from the LIVE config only, and never added to DEFAULT_KPI_CONFIG: a
+ * default would make the owner's decision look like a shipped constant that any
+ * later edit of the defaults could move. A stored 0 — or a negative, or a
+ * non-number — is REFUSED rather than used, because zero would admit a single
+ * incidental click as proof of a role, which is the opposite of what the floor
+ * is for, and an emptied Admin box is exactly how a 0 gets stored.
+ */
+const ROLE_FLOOR_KEYS = ['roleProposalMinActions', 'ownershipMinActions'] as const;
+
+/**
+ * Wall-clock budget for the map when it runs on its own route.
+ *
+ * The route is allowed 300 seconds (the heavy reports already are), so this
+ * leaves a wide margin for the four reads above it, the login check after it and
+ * serialising the answer, while still stopping and SAYING it stopped rather than
+ * letting the request die with nothing to show.
+ */
+const ROLE_PROPOSAL_BUDGET_MS = 210_000;
+
+/** Where the floor in force came from, so the proposal can say. */
+export interface RoleFloor {
+  actions: number;
+  days: number;
+  source: 'config' | 'default';
+  /** The threshold key that supplied it, when one did. */
+  key: string | null;
+  /** Non-null when a key WAS present but unusable — never silently ignored. */
+  refused: string | null;
+}
+
+function resolveRoleFloor(config: KpiConfig | null): RoleFloor {
+  const base: RoleFloor = { actions: ROLE_FLOOR_ACTIONS, days: OWNERSHIP_DIRECT_DAYS, source: 'default', key: null, refused: null };
+  // Cast, because lib/types.ts declares no key for this and must not grow one:
+  // the floor is the owner's decision, not a shipped default.
+  const thresholds = (config?.thresholds ?? {}) as Record<string, unknown>;
+  for (const key of ROLE_FLOOR_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(thresholds, key)) continue;
+    const raw = thresholds[key];
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) {
+      return { ...base, actions: Math.floor(raw), source: 'config', key };
+    }
+    return {
+      ...base,
+      refused: `thresholds.${key} is saved as ${JSON.stringify(raw)}, which cannot be a floor — a floor of zero or less would hand someone a role off one stray click. Using ${ROLE_FLOOR_ACTIONS} instead.`,
+    };
+  }
+  return base;
+}
+
+/**
+ * Logins and names that mean "not a person".
+ *
+ * Matched on the Odoo LOGIN and the display name, never on an id: ids differ per
+ * database and a hardcoded one would silently stop matching after a restore or
+ * on a second instance, which here means OdooBot quietly becoming Sharjah's
+ * quotation owner — it writes 62 of them. `__system__` is OdooBot's own login,
+ * and the `__` prefix is Odoo's convention for its internal accounts.
+ */
+const SYSTEM_LOGINS = new Set(['__system__', 'odoobot', 'admin', 'administrator', 'default', 'public', 'portaltemplate']);
+const SYSTEM_NAMES = /^(odoobot|administrator|public user|default user|system|template user|portal user)$/i;
+
+/** Why this account is not a person, or null when it is one. */
+function systemAccountReason(login: string | null, name: string): string | null {
+  const l = (login ?? '').trim().toLowerCase();
+  if (l.startsWith('__')) return `its Odoo login "${login}" starts with "__", which is Odoo's own internal-account convention — this is automation, not a member of staff`;
+  if (l && SYSTEM_LOGINS.has(l)) return `its Odoo login "${login}" is a known system account, so its activity is automation or administration rather than a person's work`;
+  if (SYSTEM_NAMES.test(name.trim())) return `the Odoo user name "${name}" is a known system account, so its activity is automation or administration rather than a person's work`;
+  return null;
+}
+
+/** One bucket's contribution to one role in one branch, with the method behind it. */
+export interface RoleEvidence {
+  key: OwnershipBucketKey;
+  /** 'Raises RFQs'. */
+  label: string;
+  /** The KPIs that action carries. */
+  kpis: number[];
+  /** Actions this person performed in this branch. */
+  count: number;
+  /** Days of history behind `count`. They differ per bucket, and the floor is written for 90. */
+  days: number;
+  /** Exactly what was queried and how it was attributed, verbatim from the map. */
+  method: string;
+  /** The read hit its row cap, so `count` is a floor. */
+  truncated: boolean;
+}
+
+/** A bucket that could not be read, and therefore cannot be counted either way. */
+export interface RoleUnknownBucket {
+  key: OwnershipBucketKey;
+  label: string;
+  kpis: number[];
+  reason: string;
+}
+
+/**
+ * One (person, branch, role) finding.
+ *
+ * Three verdicts, not two, and the third is the whole point: `belowFloor` says
+ * we measured this person's work and it does not reach the floor, while
+ * `indeterminate` says we could not measure it. Collapsing those two would
+ * strip a role from someone who holds it, quietly, on the strength of a failed
+ * Odoo read — the one outcome this feature must not be able to produce.
+ */
+export interface ProposedBranchRole {
+  branch: string;
+  role: KpiRole;
+  /** Sum of the role's readable buckets in this branch — what met, or missed, the floor. */
+  total: number;
+  verdict: 'proposed' | 'belowFloor' | 'indeterminate';
+  /** Why it cannot be called a miss, in full. Empty for the other two verdicts. */
+  reasons: string[];
+  /** Every readable bucket of this role in this branch, zeroes included. */
+  evidence: RoleEvidence[];
+  /** Buckets of this role that could not be read at all here. */
+  unknown: RoleUnknownBucket[];
+}
+
+/** One person the proposal has something to say about. */
+export interface KpiRoleProposalPerson {
+  odooUserId: number;
+  name: string;
+  /** The Odoo login the system-account check matched on, when it could be read. */
+  login: string | null;
+  /** Branches where at least one role reached the floor. Proposed for `branches`. */
+  branches: string[];
+  /** Roles that reached the floor in at least one branch. Proposed for `roles`. */
+  roles: KpiRole[];
+  /** Every (branch, role) considered, misses and unknowns included. */
+  byBranch: ProposedBranchRole[];
+  /** Proposed `excluded: true`, with the reason. Null for a person. */
+  excludedReason: string | null;
+  /** Already on the saved roster (matched on odooUserId). */
+  rostered: boolean;
+  /** What the saved roster holds for them today, for comparison. Null when off-roster. */
+  current: { branches: string[]; roles: KpiRole[]; excluded: boolean } | null;
+  /** Total actions across every bucket and branch, misses included. */
+  totalActions: number;
+  /**
+   * Roles the saved roster gives them that this proposal does NOT propose, so
+   * applying it would take them away.
+   *
+   * Surfaced because applying REPLACES `roles` rather than adding to them, and
+   * the windows behind the buckets are not all 90 days long: a controller whose
+   * stage moves all fall outside the 30-day chatter window measures zero, and
+   * "measured zero over 30 days" is not grounds for removing a role granted over
+   * 90. Every one of these keeps a row of its own, with its pill unticked, so
+   * the owner can put it back with one click instead of discovering the loss on
+   * somebody's pay slip.
+   */
+  losesRoles: KpiRole[];
+  /** Branches the saved roster gives them that this proposal does not propose. */
+  losesBranches: string[];
+  /**
+   * False when there is nothing to apply — a rostered person the map found doing
+   * nothing. Shown rather than dropped, because that is a signal about the
+   * roster, but not tickable: applying an empty role set would read as a
+   * demotion nobody asked for.
+   */
+  applicable: boolean;
+  /**
+   * Whether this row is ticked when the proposal arrives. Only a row that
+   * ASSERTS something is on by default: a row that merely wants looking at
+   * (a near miss, an unreadable bucket, a role about to be dropped) starts off,
+   * so applying an untouched proposal can never take a role away by accident.
+   */
+  defaultChecked: boolean;
+}
+
+/** The whole proposal, as the Admin card renders it. */
+export interface KpiRoleProposalResult {
+  people: KpiRoleProposalPerson[];
+  floor: RoleFloor;
+  /** Buckets nobody can be credited from, named once: unknown, not empty. */
+  unknownBuckets: (RoleUnknownBucket & { roles: KpiRole[] })[];
+  /** Branches the map could not speak about at all. */
+  missingBranches: string[];
+  /** Non-null when the system-account check could not run — then NO exclusion is proposed. */
+  systemCheckFailed: string | null;
+  /** The ownership map in its plain-text diagnostic form, plus this layer's own notes. */
+  notes: string[];
+  /** Non-null when nothing could be measured; `people` is then empty. */
+  fatal: string | null;
+}
+
+/**
+ * Read the activity map and propose roles from it.
+ *
+ * Runs on its own route with its own 300-second limit, because it is 30-odd Odoo
+ * calls and it used to run inside the 60-second Admin page load.
+ */
+export async function fetchKpiRoleProposal(config: KpiConfig | null): Promise<KpiRoleProposalResult> {
+  cachedUid = null;
+  companyIdCache = null;
+
+  const floor = resolveRoleFloor(config);
+  const empty = (fatalWhy: string): KpiRoleProposalResult => ({
+    people: [], floor, unknownBuckets: [], missingBranches: [...KPI_BRANCHES],
+    systemCheckFailed: null, notes: [fatalWhy], fatal: fatalWhy,
+  });
+
+  // ── The reads the map used to be handed for free ─────────────────
+  // fetchKpiOdooOptions paid for these as part of the field report. It no longer
+  // runs the map, so they are paid for here — which is the point: the Admin page
+  // load no longer pays for any of it.
+  let repairMeta: OwnershipFieldMeta;
+  try {
+    repairMeta = (await call('repair.order', 'fields_get', [], {
+      attributes: ['string', 'type', 'relation', 'selection', 'store', 'readonly'],
+    })) as OwnershipFieldMeta;
+  } catch (e) {
+    return empty(`⚠ The role proposal could not run — repair.order could not be read in Odoo: ${errText(e)}`);
+  }
+  const has = (f: string) => Object.prototype.hasOwnProperty.call(repairMeta, f);
+
+  // Stage names, because the chatter stores the human LABEL of what changed, so a
+  // stage-mapped selector has to be resolved through its stage names first.
+  const preNotes: string[] = [];
+  let stageNames: Record<number, string> = {};
+  if (has('stage_id') && repairMeta.stage_id?.relation) {
+    try {
+      const recs = (await call(repairMeta.stage_id.relation, 'search_read', [[]], { fields: ['display_name'], limit: 200 })) as { id: number; display_name?: string }[];
+      stageNames = Object.fromEntries(recs.map((r) => [r.id, r.display_name || `#${r.id}`]));
+    } catch (e) {
+      // Not fatal, and not silent: a stage-mapped bucket then reports that its
+      // mapping does not resolve, which is the truth about this run.
+      preNotes.push(`⚠ repair.order.stage_id exists but its stage model could not be read (${errText(e)}), so any stage-mapped bucket below reports an unresolved mapping rather than a name list.`);
+    }
+  }
+
+  const trackCounts = await chatterTrackingCounts(
+    ['state', 'repair_state', 'priority_matrix_status', 'stage_id'].filter(has));
+
+  // ── The map ─────────────────────────────────────────────────────
+  let map: KpiOwnershipMap;
+  try {
+    map = await collectKpiOwnership({ config, repairMeta, stageNames, trackCounts, budgetMs: ROLE_PROPOSAL_BUDGET_MS });
+  } catch (e) {
+    return empty(`⚠ The role proposal could not run — the ownership map failed: ${errText(e)}`);
+  }
+  if (map.fatal) return empty(map.fatal);
+
+  const notes = [...preNotes, ...kpiOwnershipLines(map, config)];
+  const byKey = new Map<OwnershipBucketKey, OwnershipBucketEntry>(map.ordered.map((b) => [b.key, b]));
+
+  /**
+   * A bucket's reason for being uncountable, or null when it can be counted.
+   *
+   * A bucket that was never reached at all is exactly as unreadable as one that
+   * errored, and the arithmetic below has to treat the two identically — an
+   * absent bucket silently contributing 0 is how a role gets stripped.
+   */
+  const unknownOf = (key: OwnershipBucketKey): RoleUnknownBucket | null => {
+    const b = byKey.get(key);
+    if (!b) {
+      return { key, label: key, kpis: [], reason: 'this bucket was never reached, so it is UNKNOWN rather than empty — nothing was measured for it at all' };
+    }
+    if (b.unavailable) return { key, label: b.label, kpis: b.kpis, reason: b.unavailable };
+    // A chatter bucket whose authors never resolved to users is counted by
+    // res.partner id. The diagnostic can still print those names, because a
+    // name is a name; a roster entry cannot use them, because it is keyed on
+    // res.users and a partner id is some OTHER person's user id. Crediting them
+    // would not merely lose a role, it would hand it to the wrong person.
+    if (map.partnerLookupFailed && b.actorKind === 'partner') {
+      return {
+        key, label: b.label, kpis: b.kpis,
+        reason: `the chatter authors behind this action could NOT be matched to Odoo users (${map.partnerLookupFailed}), so its counts are keyed on partner records instead of on the user ids the roster uses — attributing them to a person would credit the wrong person`,
+      };
+    }
+    return null;
+  };
+
+  // Every bucket nobody can be credited from, said once at the top rather than
+  // once per person — and with the roles it damages, because that is what tells
+  // the owner which of the proposals below are standing on one leg.
+  const unknownBuckets: (RoleUnknownBucket & { roles: KpiRole[] })[] = [];
+  for (const key of OWNERSHIP_ORDER) {
+    const u = unknownOf(key);
+    if (!u) continue;
+    unknownBuckets.push({ ...u, roles: KPI_ROLE_ORDER.filter((r) => ROLE_BUCKETS[r].includes(key)) });
+  }
+
+  // ── Everyone the map saw, plus everyone the roster holds ─────────
+  // Both directions matter. Someone doing the work who is not rostered gets no
+  // card, so their violations land on nobody; a rostered person the map finds
+  // doing nothing is a stale row. Neither is an error, both are signals, and
+  // dropping either is how the current list went stale in the first place.
+  const seen = new Map<number, { name: string }>();
+  for (const b of map.ordered) {
+    // Same reason as unknownOf above: when the author lookup failed, these keys
+    // are partner ids, and treating one as a user id would invent a person.
+    if (map.partnerLookupFailed && b.actorKind === 'partner') continue;
+    for (const [uid, a] of b.actors) {
+      const prev = seen.get(uid);
+      if (!prev || prev.name.startsWith('#')) seen.set(uid, { name: a.name });
+    }
+  }
+  const roster = new Map<number, SaRosterEntry>((config?.saRoster ?? []).map((r) => [r.odooUserId, r]));
+  const candidateIds = [...new Set([...seen.keys(), ...roster.keys()])];
+
+  // ── Logins, for the system-account check ────────────────────────
+  // active_test:false so a deactivated account still resolves. OdooBot is often
+  // inactive, and an inactive automation account that failed to resolve would be
+  // proposed as if it were a person.
+  const loginById = new Map<number, string>();
+  let systemCheckFailed: string | null = null;
+  if (candidateIds.length) {
+    try {
+      for (const chunk of idChunks(candidateIds)) {
+        const us = (await call('res.users', 'search_read', [[['id', 'in', chunk]] as OdooDomain], {
+          fields: ['login', 'name'], limit: 0, context: { active_test: false },
+        })) as Record<string, unknown>[];
+        for (const u of us) {
+          if (typeof u.id !== 'number') continue;
+          if (typeof u.login === 'string') loginById.set(u.id, u.login);
+          // A name from res.users beats one carried out of a read_group label.
+          if (typeof u.name === 'string' && u.name && seen.has(u.id)) seen.set(u.id, { name: u.name });
+        }
+      }
+    } catch (e) {
+      systemCheckFailed = errText(e);
+    }
+  }
+  if (systemCheckFailed) {
+    // This check is the only thing keeping OdooBot off a KPI, so a failed check
+    // is announced as loudly as a failed bucket and NO exclusion is proposed:
+    // proposing none is honest, proposing some would imply the rest were checked.
+    notes.push(`⚠ The Odoo logins could not be read (${systemCheckFailed}), so NO account could be checked for being automation. Nothing below is proposed as excluded, and OdooBot and the Administrator — which the live map shows active in five branches and two respectively — may therefore appear as if they were people. Do not take this run's exclusions as complete; run it again.`);
+  }
+
+  // ── Role arithmetic, per person per branch ──────────────────────
+  const scope = map.inScopeBranches;
+  const people: KpiRoleProposalPerson[] = [];
+
+  for (const uid of candidateIds) {
+    const entry = roster.get(uid);
+    const name = seen.get(uid)?.name ?? entry?.name ?? `#${uid}`;
+    const login = loginById.get(uid) ?? null;
+    const excludedReason = systemCheckFailed ? null : systemAccountReason(login, name);
+    // What the roster gives them today. A (branch, role) they already hold keeps
+    // a row even when it measures a clean zero, so applying cannot drop it
+    // unseen — see `losesRoles`.
+    const heldRoles = entry ? rosterRoles(entry) : [];
+    const heldBranches = entry ? rosterBranches(entry) : [];
+
+    const byBranch: ProposedBranchRole[] = [];
+    let totalActions = 0;
+
+    for (const branch of scope) {
+      for (const role of KPI_ROLE_ORDER) {
+        const heldToday = heldRoles.includes(role) && heldBranches.includes(branch);
+        const evidence: RoleEvidence[] = [];
+        const unknown: RoleUnknownBucket[] = [];
+        let total = 0;
+        let truncated = false;
+        /** The shortest window behind this role's readable buckets. */
+        let narrowestDays = OWNERSHIP_DIRECT_DAYS;
+
+        for (const key of ROLE_BUCKETS[role]) {
+          const u = unknownOf(key);
+          if (u) { unknown.push(u); continue; }
+          const b = byKey.get(key)!;
+          const count = b.actors.get(uid)?.byBranch.get(branch) ?? 0;
+          total += count;
+          if (b.truncated) truncated = true;
+          narrowestDays = Math.min(narrowestDays, b.days);
+          evidence.push({ key, label: b.label, kpis: b.kpis, count, days: b.days, method: b.method, truncated: b.truncated });
+        }
+        totalActions += total;
+
+        // Nothing counted and nothing unreadable: a clean, measured zero. Not
+        // worth a row — this person simply does not do this job in this branch.
+        // Unless the roster says they DO: then the zero is the claim being made
+        // against them, and it has to be visible and reversible.
+        if (total === 0 && !unknown.length && !heldToday) continue;
+
+        const reasons: string[] = [];
+        if (total < floor.actions) {
+          if (heldToday) {
+            reasons.push(`the saved roster gives them this role in this branch today, and this run does not reach the floor for it — applying without ticking it back would take the role away`);
+          }
+          for (const u of unknown) {
+            reasons.push(`"${u.label}" could not be read (${u.reason}), so the total beside this role is a floor and the role may well be met`);
+          }
+          // The floor is written for 90 days; the chatter buckets reach back 30,
+          // or 7 on a busy model. Summing a short window against a long floor
+          // UNDER-counts, and under-counting here strips a role. So below the
+          // floor on a short window is "cannot say", never "no".
+          if (narrowestDays < floor.days) {
+            reasons.push(`the floor is ${floor.actions} action(s) over ${floor.days} days, but this role's evidence reaches back only ${narrowestDays} day(s) — the chatter-derived buckets are read over a shorter window than the create-stamped ones, so this total is not comparable with the floor and cannot be called a miss`);
+          }
+        }
+        if (truncated) {
+          reasons.push('a read behind this role hit its row cap, so these counts are floors');
+        }
+
+        const verdict: ProposedBranchRole['verdict'] =
+          total >= floor.actions ? 'proposed'
+            : reasons.length ? 'indeterminate'
+              : 'belowFloor';
+
+        byBranch.push({
+          branch, role, total, verdict,
+          reasons: verdict === 'indeterminate' ? reasons : [],
+          evidence, unknown,
+        });
+      }
+    }
+
+    const met = byBranch.filter((r) => r.verdict === 'proposed');
+    // Branch and role order follow the dashboards', not whatever order the
+    // queries happened to run in, so the same evidence always reads the same way.
+    const branches = scope.filter((b) => met.some((r) => r.branch === b));
+    const roles = KPI_ROLE_ORDER.filter((r) => met.some((m) => m.role === r));
+
+    // Nothing measured, nothing unreadable, nothing saved: not a signal, just an
+    // Odoo user who does none of this work. That is most of the instance.
+    if (!byBranch.length && !entry && !excludedReason) continue;
+
+    // An excluded account is never scored, so applying leaves its roles and
+    // branches alone — it takes nothing away and so loses nothing.
+    // Compared as plain strings: a saved branch need not be one of the five the
+    // KPI section scores (the audit found an 'EV Hub' entry getting no card
+    // anywhere), and such a branch is exactly one worth reporting as lost.
+    const proposedBranches = new Set<string>(branches);
+    const losesRoles = excludedReason ? [] : heldRoles.filter((r) => !roles.includes(r));
+    const losesBranches = excludedReason ? [] : heldBranches.filter((b) => !proposedBranches.has(b));
+
+    people.push({
+      odooUserId: uid,
+      name,
+      login,
+      branches,
+      roles,
+      byBranch,
+      excludedReason,
+      rostered: !!entry,
+      current: entry ? { branches: heldBranches, roles: heldRoles, excluded: entry.excluded === true } : null,
+      totalActions,
+      losesRoles,
+      losesBranches,
+      // Something to assert, something we cannot rule out, or something about to
+      // be taken away. A rostered person with none of those is still listed —
+      // see `applicable`.
+      applicable: roles.length > 0 || !!excludedReason
+        || byBranch.some((r) => r.verdict === 'indeterminate') || losesRoles.length > 0,
+      // Only an assertion is ticked on arrival.
+      defaultChecked: roles.length > 0 || !!excludedReason,
+    });
+  }
+
+  // Busiest first, so the people whose pay this decides most are read first;
+  // name breaks the tie, so the list is stable between runs.
+  people.sort((a, b) => b.totalActions - a.totalActions || a.name.localeCompare(b.name));
+
+  // ── Proposal-level notes, on top of the map's own ───────────────
+  notes.push(`Role floor in force: ${floor.actions} action(s) over ${floor.days} days, counted per role per branch`
+    + (floor.source === 'config' ? `, read from thresholds.${floor.key}.` : " — the owner's decision, deliberately not a shipped default, so editing the KPI defaults cannot move it."));
+  if (floor.refused) notes.push(`⚠ ${floor.refused}`);
+  notes.push(`Role buckets: ${KPI_ROLE_ORDER.map((r) => `${KPI_ROLE_LABELS[r]} = ${ROLE_BUCKETS[r].map((k) => byKey.get(k)?.label ?? k).join(' + ')}`).join(' · ')}.`);
+  const unmapped = OWNERSHIP_ORDER.filter((k) => !KPI_ROLE_ORDER.some((r) => ROLE_BUCKETS[r].includes(k)));
+  if (unmapped.length) {
+    notes.push(`Measured but mapped to no role: ${unmapped.map((k) => `"${byKey.get(k)?.label ?? k}"`).join(' · ')} — ${UNMAPPED_BUCKET_NOTE}.`);
+  }
+  if (map.partnerLookupFailed) {
+    notes.push(`⚠ Odoo's chatter records an author as a PARTNER, and the lookup that turns those partners into users failed (${map.partnerLookupFailed}). Every chatter-derived action — the three stage moves, quotation confirmation, purchase-order confirmation, invoice posting and parts receipt — is therefore counted against a partner record rather than against the user id a roster entry is keyed on, so it is reported as unreadable above rather than credited to anybody. The names still appear in the diagnostic; they just cannot safely become roles. Run it again before applying anything that depends on them.`);
+  }
+  if (unknownBuckets.length) {
+    notes.push(`⚠ ${unknownBuckets.length} of the ${OWNERSHIP_ORDER.length} activity buckets could NOT be read on this run: ${unknownBuckets.map((u) => `"${u.label}"`).join(' · ')}. Every role resting on one of them is marked "cannot say" rather than scored against the floor, because an unreadable bucket and an inactive person look identical once both are empty — and reading the first as the second would take a role off someone who has it.`);
+  }
+  const idle = people.filter((p) => p.rostered && p.totalActions === 0);
+  if (idle.length) {
+    notes.push(`On the saved roster but doing none of this work in the window: ${idle.map((p) => p.name).join(' · ')} — listed below with nothing to apply. They may have left, changed job, or work only on records outside the five KPI branches.`);
+  }
+  const offRoster = people.filter((p) => !p.rostered && !p.excludedReason && p.roles.length > 0);
+  if (offRoster.length) {
+    notes.push(`Doing KPI-bearing work but NOT on the saved roster: ${offRoster.map((p) => p.name).join(' · ')} — their work counts toward their branch today and reaches nobody's card.`);
+  }
+  // Applying REPLACES roles, so every removal is named here as well as on the
+  // row. A role lost quietly is a change to somebody's pay that nobody decided.
+  // A roster entry holds ONE flat set of roles and ONE flat set of branches, so
+  // somebody who is an advisor in Dubai and a parts man in Ajman can only be
+  // saved as both roles in both branches. That over-grants, and it is a property
+  // of the saved shape rather than of this reading, so it is named rather than
+  // quietly resolved: nobody should discover it from a KPI they never touch.
+  const crossRole = people.filter((p) => {
+    if (p.roles.length < 2 || p.branches.length < 2) return false;
+    const met = p.byBranch.filter((r) => r.verdict === 'proposed');
+    const perBranch = p.branches.map((b) => met.filter((r) => r.branch === b).map((r) => r.role).sort().join('+'));
+    return new Set(perBranch).size > 1;
+  });
+  if (crossRole.length) {
+    notes.push(`⚠ Different roles in different branches, which a roster entry cannot express — it holds one set of roles and one set of branches, so these people are saved as EVERY proposed role in EVERY proposed branch: ${crossRole.map((p) => `${p.name} (${p.byBranch.filter((r) => r.verdict === 'proposed').map((r) => `${r.branch}: ${KPI_ROLE_LABELS[r.role]}`).join('; ')})`).join(' · ')}. They will therefore be scored on KPIs they do not touch in one of their branches. Untick the branch or the role you do not want scored.`);
+  }
+  const losing = people.filter((p) => p.losesRoles.length > 0);
+  if (losing.length) {
+    notes.push(`⚠ Applying this proposal as it stands would REMOVE a role the saved roster gives today: ${losing.map((p) => `${p.name} loses ${p.losesRoles.map((r) => KPI_ROLE_LABELS[r]).join(' + ')}`).join(' · ')}. Each one has an unticked pill below — tick it to keep the role. A removal is sometimes right (that is the whole point of re-deriving ownership) but it is never automatic.`);
+  }
+
+  return {
+    people,
+    floor,
+    unknownBuckets,
+    missingBranches: map.missingBranches,
+    systemCheckFailed,
+    notes,
+    fatal: null,
+  };
 }
