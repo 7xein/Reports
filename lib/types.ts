@@ -26,7 +26,7 @@ export const subKey = (branch: string, sub: string): string => `${branch}__${sub
 // in the browser and must agree with the WIP page about what a station is.
 export const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
   'Dubai': {
-    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE DXB',
+    'Main branch':        'EVS Dubai',
     'Emarat - Albarsha':  'Emarat - Albarsha',
     'Emarat - Altwar':    'Emarat - Altwar',
   },
@@ -191,6 +191,23 @@ export interface RegionalData {
 }
 
 // ── KPI section ───────────────────────────────────────────────────────────
+
+/**
+ * The branches the KPI section scores: the five UAE emirates, each one's MAIN
+ * company only.
+ *
+ * Deliberately narrower than WORKSHOP_BRANCHES. The owner's rule is "only Odoo
+ * IDs that do not have a parent company", so every station (Emarat - Altwar,
+ * Emarat - Albarsha, Emarat - Muwafja, Almushrif) is out, and so are Qatar and
+ * EV Hub. The main company behind each name is SUB_BRANCH_COMPANY[b][MAIN_STATION]
+ * where the branch has stations, and its single BRANCH_CLUSTERS entry where it
+ * does not.
+ *
+ * KPI-only: WIP, the sales pages and the EVHUB/CEO reports keep the wider
+ * BRANCHES / WORKSHOP_BRANCHES scoping, so this list must not narrow them.
+ */
+export const KPI_BRANCHES: readonly Branch[] = ['Dubai', 'Ajman', 'Sharjah', 'Abu Dhabi', 'Al Ain'];
+
 // Display order: per-job compliance first, then the "sitting too long" rules.
 // `id` values are stable (they're stored in config) — only the order changes.
 // Names here are threshold-free fallbacks — kpiDisplayName() builds the label

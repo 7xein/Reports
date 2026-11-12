@@ -9,7 +9,7 @@
  */
 
 import type { WipMetricKey, Branch } from './types';
-import { BRANCHES, WORKSHOP_BRANCHES, subKey, SUB_BRANCH_COMPANY, resolveAgeField } from './types';
+import { BRANCHES, WORKSHOP_BRANCHES, KPI_BRANCHES, MAIN_STATION, subKey, SUB_BRANCH_COMPANY, resolveAgeField } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -26,7 +26,7 @@ const ODOO_API_KEY = () => requireEnv('ODOO_API_KEY');
 // ── Branch consolidation rules ─────────────────────────────────────
 // Order matches BRANCHES constant: Dubai, Ajman, Sharjah, Abu Dhabi, Al Ain, Qatar
 export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
-  'Dubai':     ['EVS ELECTRIC VEHICLE SERVICE DXB', 'Emarat - Altwar', 'Emarat - Albarsha'],
+  'Dubai':     ['EVS Dubai', 'Emarat - Altwar', 'Emarat - Albarsha'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
   'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
   'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Almushrif'],
@@ -147,6 +147,48 @@ export async function unresolvedCompanies(): Promise<string[]> {
 export async function allTrackedCompanyIds(): Promise<number[]> {
   const map = await getCompanyIds();
   return ALL_TRACKED_COMPANIES.map((n) => companyIdFor(map, n)).filter(Boolean) as number[];
+}
+
+/**
+ * The one Odoo company that is a branch's own workshop — not its stations.
+ *
+ * Two shapes to cover: a branch with stations names its own site under
+ * MAIN_STATION, while a branch without them has exactly one company and that is
+ * the main one. Named here rather than inlined because "the main company" is
+ * only self-evident for the branches that have stations to be the main one of.
+ */
+export function mainCompanyFor(branch: Branch): string | undefined {
+  return SUB_BRANCH_COMPANY[branch]?.[MAIN_STATION] ?? BRANCH_CLUSTERS[branch]?.[0];
+}
+
+/**
+ * Odoo id of a branch's main company, or undefined when that name no longer
+ * resolves. Resolution and degradation match branchCompanyIds: the relaxed
+ * companyIdFor match, a warning naming the company, and a drop rather than a
+ * throw — one renamed company costs that branch its score instead of failing
+ * the whole report.
+ */
+export async function mainCompanyIdFor(branch: Branch): Promise<number | undefined> {
+  const name = mainCompanyFor(branch);
+  if (!name) { console.warn(`⚠ Branch "${branch}" has no main company configured`); return undefined; }
+  const map = await getCompanyIds();
+  const id = companyIdFor(map, name);
+  if (!id) console.warn(`⚠ Company "${name}" not found in Odoo`);
+  return id;
+}
+
+/**
+ * The company ids the KPI section scores: the five UAE main branches, stations
+ * and Qatar and EV Hub excluded. Sequential on purpose — getCompanyIds caches
+ * after the first call, so this costs one res.company read, not five.
+ */
+export async function kpiCompanyIds(): Promise<number[]> {
+  const ids: number[] = [];
+  for (const b of KPI_BRANCHES) {
+    const id = await mainCompanyIdFor(b);
+    if (id != null) ids.push(id);
+  }
+  return ids;
 }
 
 /** Reverse of getCompanyIds: company id → name. */

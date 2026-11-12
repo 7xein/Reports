@@ -10,10 +10,10 @@
  */
 
 import {
-  WORKSHOP_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
+  KPI_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
   KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField,
 } from './types';
-import { call, allTrackedCompanyIds, branchCompanyIds, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
+import { call, kpiCompanyIds, mainCompanyIdFor, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
 
 // ── Week helpers ───────────────────────────────────────────────────
@@ -665,13 +665,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   /** Elapsed time as the appendix counts it: working hours only. */
   const elapsed = (from: number, to: number) => businessMsBetween(from, to, holidays);
 
-  const trackedIds = await allTrackedCompanyIds();
+  // Every Odoo domain below filters on these, so the whole engine is narrowed to
+  // the five UAE main branches here and nowhere else. Stations, Qatar and EV Hub
+  // are not in it — KPI_BRANCHES says why the KPIs are narrower than the rest of
+  // the dashboard.
+  const kpiIds = await kpiCompanyIds();
 
   // company id → branch
   const idToBranch: Record<number, Branch> = {};
-  // EV Hub is absent, so its companies never resolve to a branch and its
-  // records drop out of every KPI at the push() guard.
-  for (const b of WORKSHOP_BRANCHES) for (const id of await branchCompanyIds(b)) idToBranch[id] = b;
+  // Only the five main companies are mapped, so a station's, Qatar's or EV Hub's
+  // records never resolve to a branch and drop out of every KPI at the push()
+  // guard. That guard is the only scope check on the paths that read records by
+  // id rather than by domain (KPI 17's chatter), so it is not mere redundancy.
+  for (const b of KPI_BRANCHES) {
+    const id = await mainCompanyIdFor(b);
+    if (id != null) idToBranch[id] = b;
+  }
 
   // Which optional fields exist on this instance?
   const meta = (await call('repair.order', 'fields_get', [], { attributes: ['type', 'relation', 'selection'] })) as FieldsMeta;
@@ -781,7 +790,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const weekDomain: OdooDomain = [
     ['create_date', '>=', wStart],
     ['create_date', '<', wEnd],
-    ['company_id', 'in', trackedIds],
+    ['company_id', 'in', kpiIds],
     ...notHist,
   ];
   const enabled = config.enabledKpis ?? [];
@@ -1030,13 +1039,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // (a) Still-open quotations: compliant while they're inside the window.
     const open = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['draft', 'sent']],
-      ['company_id', 'in', trackedIds],
+      ['company_id', 'in', kpiIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
     // (b) Quotations confirmed during the week: was approval inside the window?
     const confirmed = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['sale', 'done']],
       ['date_order', '>=', wStart], ['date_order', '<', wEnd],
-      ['company_id', 'in', trackedIds],
+      ['company_id', 'in', kpiIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'date_order'], limit: 0 })) as Rec[];
 
     // Both repair.order lookups below ask about the same quotations, so the id
@@ -1104,7 +1113,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   if (on(21)) {
     const quotes = (await call('sale.order', 'search_read', [[
       ['create_date', '>=', wStart], ['create_date', '<', wEnd],
-      ['company_id', 'in', trackedIds],
+      ['company_id', 'in', kpiIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'state'], limit: 0 })) as Rec[];
 
     // Same dead-work rule as Quote approval — nobody is scored on a quotation
@@ -1344,7 +1353,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             approvedSos = (await call('sale.order', 'search_read', [[
               ['state', 'in', ['sale', 'done']],
               ['date_order', '>=', wStart], ['date_order', '<', wEnd],
-              ['company_id', 'in', trackedIds],
+              ['company_id', 'in', kpiIds],
             ]], { fields: ['date_order'], limit: 0 })) as Rec[];
           } catch {
             notes.push('RFQ after approval (KPI 18) could not read the approved quotations for this week.');
@@ -1364,7 +1373,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
               ros.push(...(await call('repair.order', 'search_read', [[
                 ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
                 ['is_parts_available', '=', false],
-                ['company_id', 'in', trackedIds],
+                ['company_id', 'in', kpiIds],
                 ...notHist,
               ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'sale_order_id', 'fleet_id'], limit: 0 })) as Rec[]);
             } catch { /* a failed chunk leaves its orders unjudged rather than failing the KPI */ }
@@ -1427,7 +1436,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           // A silent re-attribution looks like the KPI is broken, so say whose
           // numbers moved — and only for branches that actually scored.
           if (creditedTo.size) {
-            const who = WORKSHOP_BRANCHES
+            // KPI_BRANCHES, not the wider workshop list: creditedTo is keyed by
+            // the branch an RO resolved to, and only these five ever do now.
+            const who = KPI_BRANCHES
               .filter((b) => creditedTo.has(b))
               .map((b) => `${b} → ${creditedTo.get(b)}`)
               .join(', ');
@@ -1453,7 +1464,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             raised = (await call('purchase.order', 'search_read', [[
               ['create_date', '>=', wStart], ['create_date', '<', wEnd],
               ['state', '!=', 'cancel'],
-              ['company_id', 'in', trackedIds],
+              ['company_id', 'in', kpiIds],
             ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'state', 'date_approve'], limit: 0 })) as Rec[];
           } catch {
             notes.push('RFQ confirmed (KPI 19) could not read the purchase orders raised this week.');
@@ -1496,7 +1507,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             confirmedPos = (await call('purchase.order', 'search_read', [[
               ['date_approve', '>=', wStart], ['date_approve', '<', wEnd],
               ['state', 'in', CONFIRMED_STATES],
-              ['company_id', 'in', trackedIds],
+              ['company_id', 'in', kpiIds],
             ]], { fields: poFields, limit: 0 })) as Rec[];
           } catch {
             notes.push('Parts placed (KPI 20) could not read the purchase orders confirmed this week.');
@@ -1751,7 +1762,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const baseROs = (await call('repair.order', 'search_read', [[
       ['create_date', '>=', sinceIso],
       ...selectorDomainNot(config.stageMap.closed),
-      ['company_id', 'in', trackedIds],
+      ['company_id', 'in', kpiIds],
       ...notHist,
     ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
 
@@ -1773,7 +1784,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const overdueByState = async (sel: StageSelector, days: number) => {
       const recs = (await call('repair.order', 'search_read', [[
         ...selectorDomain(sel),
-        ['company_id', 'in', trackedIds],
+        ['company_id', 'in', kpiIds],
         ...notHist,
       ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
       const tf = trackedField(sel, meta, stageNames);
@@ -1802,7 +1813,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (parts) {
         const openROs = (await call('repair.order', 'search_read', [[
           ...selectorDomainNot(config.stageMap.closed),
-          ['company_id', 'in', trackedIds],
+          ['company_id', 'in', kpiIds],
           ...notHist,
         ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
 
@@ -1901,7 +1912,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // ── Roll up ────────────────────────────────────────────────────────
   const roster = config.saRoster ?? [];
 
-  const branches: BranchNode[] = WORKSHOP_BRANCHES.map((b) => {
+  // Anyone rostered outside the KPI scope now gets no card at any level: their
+  // branch builds no node, so there is nowhere for them to appear. The Admin
+  // roster still offers every workshop branch, so an ordinary config edit can
+  // put someone here — and a person silently missing from the page reads as a
+  // broken report, or worse goes unnoticed while they are unscored.
+  const offScope = roster.filter((r) => !(KPI_BRANCHES as readonly string[]).includes(r.branch));
+  if (offScope.length) {
+    const who = offScope.map((r) => `${r.name || `User ${r.odooUserId}`} (${r.branch})`).join(', ');
+    notes.push(`Not scored here: ${who}. The KPI section covers the five UAE main branches only — Dubai, Ajman, Sharjah, Abu Dhabi and Al Ain — so anyone rostered to a station, to Qatar or to EV Hub has no card on this page. Move them to one of the five in Admin → KPI Configuration if they should be scored. The WIP and sales reports still count their branch.`);
+  }
+
+  // Five nodes, not seven: the KPI section scores main branches only, so Qatar
+  // and EV Hub build no node at all and no station figure is folded into one.
+  const branches: BranchNode[] = KPI_BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
     const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames, sectionById);
 
