@@ -392,6 +392,50 @@ export const ROLES_FROM_SECTION: Record<KpiSection, readonly KpiRole[]> = {
   workshop: ['controller', 'parts'],
 };
 
+/**
+ * Who answers for each KPI, per branch — **derived from Odoo, never configured.**
+ *
+ * The owner's rule: "it should be purely based on what they do on the system."
+ * A person owns a KPI in a branch when they perform that KPI's own action there
+ * often enough to be responsible for it, counted from Odoo. Nobody labels
+ * anybody: one Dubai user writes 843 quotations and moves 704 cars through QA,
+ * so he owns the quotation KPIs and QA duration, and nothing on the page calls
+ * him an advisor or a controller. If somebody else starts raising the invoices
+ * after repair, they pick up the invoicing KPIs at the next refresh without
+ * anyone being asked.
+ *
+ * Shape: branch → KPI id → Odoo user ids. The inner key is a string because
+ * this round-trips through JSON in Redis, where object keys are always strings.
+ */
+export type KpiOwners = Record<string, Record<string, number[]>>;
+
+/**
+ * The floor: more than this many actions inside KPI_OWNER_WINDOW_DAYS earns
+ * ownership. The owner's words — "it happens more than 10 times in one month,
+ * then they also should be responsible."
+ *
+ * Thirty days rather than ninety matters: the chatter-derived counts only reach
+ * about thirty, so a ninety-day floor measured against a thirty-day count would
+ * under-count and strip ownership from people who hold it.
+ */
+export const KPI_OWNER_FLOOR = 10;
+export const KPI_OWNER_WINDOW_DAYS = 30;
+
+/** The Odoo user ids that answer for a KPI in a branch. */
+export const ownersFor = (
+  cfg: { kpiOwners?: KpiOwners },
+  branch: string,
+  kpiId: number,
+): number[] => cfg.kpiOwners?.[branch]?.[String(kpiId)] ?? [];
+
+/** Whether this person answers for this KPI in this branch. */
+export const ownsKpi = (
+  cfg: { kpiOwners?: KpiOwners },
+  branch: string,
+  kpiId: number,
+  userId: number,
+): boolean => ownersFor(cfg, branch, kpiId).includes(userId);
+
 export interface SaRosterEntry {
   odooUserId: number;
   name: string;
@@ -492,6 +536,13 @@ export interface KpiConfig {
     qa: StageSelector;
   };
   saRoster: SaRosterEntry[];
+  /**
+   * Derived, not configured: who answers for each KPI in each branch, refreshed
+   * from Odoo activity. Absent until the first refresh, which is the honest
+   * reading of "nobody has been shown to own anything yet" — so an individual
+   * card carries no KPIs rather than guessing at a set.
+   */
+  kpiOwners?: KpiOwners;
   enabledKpis: number[];
   /**
    * Per-KPI section override, edited in Admin — it overrides the per-definition

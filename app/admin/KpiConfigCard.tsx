@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   KPI_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
-  KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf, Branch,
-  KpiRole, KPI_ROLE_ORDER, KPI_ROLE_LABELS, SaRosterEntry, rosterBranches, rosterRoles,
+  KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf, rosterBranches, KpiOwners,
 } from '@/lib/types';
 
 interface OdooOptions {
@@ -79,145 +78,32 @@ function toSuggestedPerson(s: RosterSuggestion, alreadyTracked: boolean): Sugges
   };
 }
 
-/* ── Role proposal: mirrors GET /api/kpi/role-proposal ─────────────
+/* ── KPI ownership: mirrors /api/kpi/role-proposal (the ownership refresh) ──
  * Declared here rather than imported for the same reason OdooOptions is:
  * lib/odoo.ts is a server module and this card is a client component. These
- * shapes must stay in step with KpiRoleProposalResult in lib/odoo.ts.
+ * shapes must stay in step with KpiOwnersResult in lib/odoo.ts.
  */
-
-/** One activity bucket's contribution to one role in one branch. */
-interface RoleEvidence {
-  key: string;
-  label: string;
-  kpis: number[];
-  count: number;
-  /** Days of history behind `count` — they differ per bucket, and that matters. */
-  days: number;
-  method: string;
-  truncated: boolean;
-}
-
-/** A bucket that could not be read, so it can be counted neither for nor against. */
-interface RoleUnknownBucket {
-  key: string;
-  label: string;
-  kpis: number[];
-  reason: string;
-}
-
-/**
- * One (person, branch, role) finding. Three verdicts, and the third is the point:
- * `belowFloor` means we measured and it does not reach the floor, while
- * `indeterminate` means we could not measure. Shown differently, always.
- */
-interface ProposedBranchRole {
-  branch: string;
-  role: KpiRole;
-  total: number;
-  verdict: 'proposed' | 'belowFloor' | 'indeterminate';
-  reasons: string[];
-  evidence: RoleEvidence[];
-  unknown: RoleUnknownBucket[];
-}
-
-interface RoleProposalPerson {
-  odooUserId: number;
-  name: string;
-  login: string | null;
-  branches: string[];
-  roles: KpiRole[];
-  byBranch: ProposedBranchRole[];
-  excludedReason: string | null;
-  rostered: boolean;
-  current: { branches: string[]; roles: KpiRole[]; excluded: boolean } | null;
-  totalActions: number;
-  /** Roles the roster gives them today that this proposal does not — applying removes these. */
-  losesRoles: KpiRole[];
-  losesBranches: string[];
-  applicable: boolean;
-  /** Only a row that ASSERTS something arrives ticked. */
-  defaultChecked: boolean;
-}
-
-interface RoleProposalResult {
-  people: RoleProposalPerson[];
-  floor: { actions: number; days: number; source: 'config' | 'default'; key: string | null; refused: string | null };
-  unknownBuckets: (RoleUnknownBucket & { roles: KpiRole[] })[];
+interface OwnerCount { bucket: string; label: string; count: number; days: number; truncated: boolean }
+interface OwnerEntry { userId: number; name: string; counts: OwnerCount[]; kept: string | null }
+interface OwnersReport {
+  owners: KpiOwners;
+  detail: Record<string, Record<string, OwnerEntry[]>>;
+  unreadable: { key: string; label: string; kpis: number[]; reason: string; partial: boolean }[];
   missingBranches: string[];
+  excluded: { userId: number; name: string; reason: string }[];
   systemCheckFailed: string | null;
+  floor: number;
+  windowDays: number;
   notes: string[];
   fatal: string | null;
+  computedAt: string;
 }
 
-/**
- * A proposal row plus the reviewer's edits. Lives outside cfg until it is
- * applied, exactly like the roster suggestion above it.
- *
- * `picks` is keyed per (branch, role) cell rather than per person: the owner's
- * rule is that ownership is a SET, and the whole reason this feature exists is
- * that one name per branch could not express it. Seeded from the verdicts, so an
- * untouched row applies exactly what Odoo proposed.
- */
-interface RoleRow extends RoleProposalPerson {
-  checked: boolean;
-  picks: Record<string, boolean>;
-  /**
-   * Tick to clear an `excluded: true` the owner set by hand. Default off: a role
-   * proposal must never quietly revive somebody who was deliberately taken out
-   * of scoring (central purchasing, for instance), so un-excluding is its own
-   * explicit act rather than a side effect of applying a role.
-   */
-  restore: boolean;
-}
-
-const cellKey = (branch: string, role: KpiRole) => `${branch}|${role}`;
-
-function toRoleRow(p: RoleProposalPerson): RoleRow {
-  const picks: Record<string, boolean> = {};
-  for (const r of p.byBranch) picks[cellKey(r.branch, r.role)] = r.verdict === 'proposed';
-  // defaultChecked, not applicable: a row that only wants looking at starts
-  // unticked, so applying an untouched proposal cannot remove a role by accident.
-  return { ...p, checked: p.defaultChecked, picks, restore: false };
-}
-
-/** The (branch, role) cells this row would write — what `roles` and `branches` come from. */
-const pickedCells = (row: RoleRow): ProposedBranchRole[] =>
-  row.byBranch.filter((r) => row.picks[cellKey(r.branch, r.role)]);
-
-const rowRoles = (row: RoleRow): KpiRole[] => {
-  const picked = pickedCells(row);
-  return KPI_ROLE_ORDER.filter((r) => picked.some((p) => p.role === r));
-};
-
-/** Branches in the dashboards' own order, so the same proposal always reads the same way. */
-const rowBranches = (row: RoleRow): string[] => {
-  const picked = pickedCells(row);
-  return (KPI_BRANCHES as readonly string[]).filter((b) => picked.some((p) => p.branch === b));
-};
-
-/**
- * The branch carrying most of this person's measured activity.
- *
- * Only used to give a NEW roster entry its required primary `branch` when the
- * proposal is an exclusion and so names no branch of its own — an entry has to
- * carry one, and the busiest is the least arbitrary choice available.
- */
-function busiestBranch(p: RoleProposalPerson): string {
-  const totals = new Map<string, number>();
-  for (const r of p.byBranch) totals.set(r.branch, (totals.get(r.branch) ?? 0) + r.total);
-  let best = ''; let bestN = -1;
-  for (const b of KPI_BRANCHES as readonly string[]) {
-    const n = totals.get(b) ?? 0;
-    if (n > bestN) { best = b; bestN = n; }
-  }
-  return best || KPI_BRANCHES[0];
-}
-
-/** Every bucket behind one cell, counts and all — the evidence the owner signs off on. */
-function cellEvidenceLine(r: ProposedBranchRole): string {
-  const bits = r.evidence.map((e) => `${e.label} ${e.count}${e.truncated ? '+' : ''} (${e.days}d)`);
-  for (const u of r.unknown) bits.push(`${u.label}: UNREADABLE`);
-  return bits.join(' · ');
+/** "Name (23)", or "Name (kept)" for an owner carried over from the previous refresh. */
+function ownerLabel(o: OwnerEntry): string {
+  const counts = o.counts.map((c) => `${c.count}${c.truncated ? '+' : ''}`).join(' / ');
+  if (o.kept) return counts ? `${o.name} (${counts}, kept)` : `${o.name} (kept)`;
+  return counts ? `${o.name} (${counts})` : o.name;
 }
 
 type MapKey = 'inspection' | 'qa' | 'repaired' | 'underRepair' | 'awaitingParts' | 'awaitingLabour' | 'presenceTags' | 'insuranceTags' | 'closed';
@@ -326,16 +212,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   // nothing reaches the roster until "Add selected to roster" is pressed.
   const [suggestions, setSuggestions] = useState<SuggestedPerson[] | null>(null);
   const [suggestNotes, setSuggestNotes] = useState<string[]>([]);
-  // The role proposal, kept separate from the roster suggestion above for the
-  // same reason both are kept out of cfg: nothing reaches the live config until
-  // the owner applies a reviewed list and then presses Save.
-  const [proposing, setProposing] = useState(false);
-  const [roleRows, setRoleRows] = useState<RoleRow[] | null>(null);
-  const [proposalMeta, setProposalMeta] = useState<RoleProposalResult | null>(null);
-  // Which rows have their per-bucket evidence open. Collapsed by default: the
-  // counts that decide a role are on the row itself, and the bucket-by-bucket
-  // method behind them is a second click away rather than forty lines of noise.
-  const [openEvidence, setOpenEvidence] = useState<Record<number, boolean>>({});
+  // KPI ownership: derived from Odoo and written straight into the stored config
+  // by the refresh route (and nightly by the sync cron). Read-only here.
+  const [refreshingOwners, setRefreshingOwners] = useState(false);
+  const [ownersReport, setOwnersReport] = useState<OwnersReport | null>(null);
 
   useEffect(() => {
     fetch('/api/kpi/odoo-options', { credentials: 'include' })
@@ -350,6 +230,15 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       })
       .catch((e) => setOptsError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoadingOpts(false));
+  }, []);
+
+  // The last refresh's counts, from the store — no Odoo call. Absent until the
+  // first refresh; the table then falls back to the stored owners, without counts.
+  useEffect(() => {
+    fetch('/api/kpi/role-proposal', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (body?.report) setOwnersReport(body.report as OwnersReport); })
+      .catch(() => { /* the stored owners still show */ });
   }, []);
 
   function setSelector(key: MapKey, next: StageSelector) {
@@ -389,22 +278,21 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     setCfg((p) => ({ ...p, saRoster: p.saRoster.map((r) => (r.odooUserId === userId ? { ...r, branch } : r)) }));
   }
 
-  function setSaSection(userId: number, section: KpiSection) {
-    setCfg((p) => ({ ...p, saRoster: p.saRoster.map((r) => (r.odooUserId === userId ? { ...r, section } : r)) }));
-  }
-
   /**
-   * Back to the default means DELETING the branch's key — a stored 0 or null
-   * would still read as "nominated" and credit every verdict to nobody.
+   * The one roster decision left to a person. Ownership is derived from Odoo, but
+   * whether an account should be scored at all is not something activity can
+   * tell: OdooBot and central staff do real work that must still count for the
+   * branch, yet belong on nobody's card.
    */
-  function setRfqCoordinator(branch: Branch, userId: string) {
-    setCfg((p) => {
-      const next = { ...(p.rfqCoordinators ?? {}) };
-      const user = (opts?.users ?? []).find((u) => String(u.id) === userId);
-      if (user) next[branch] = { id: user.id, name: user.name };
-      else delete next[branch];
-      return { ...p, rfqCoordinators: next };
-    });
+  function setSaExcluded(userId: number, excluded: boolean) {
+    setCfg((p) => ({
+      ...p,
+      saRoster: p.saRoster.map((r) => {
+        if (r.odooUserId !== userId) return r;
+        const { excluded: _drop, ...rest } = r;
+        return excluded ? { ...rest, excluded: true } : rest;
+      }),
+    }));
   }
 
   /**
@@ -463,7 +351,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     setCfg((p) => {
       const next = [...p.saRoster];
       for (const s of picked) {
-        const entry = { odooUserId: s.odooUserId, name: s.name, branch: s.branchPick, section: s.sectionPick };
+        const entry = { odooUserId: s.odooUserId, name: s.name, branch: s.branchPick };
         const at = next.findIndex((r) => r.odooUserId === s.odooUserId);
         if (at >= 0) next[at] = { ...next[at], ...entry };
         else next.push(entry);
@@ -475,147 +363,27 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   }
 
   /**
-   * Reads 90 days of Odoo activity and proposes who holds which role, per branch.
-   *
-   * Slow by design — it is 30-odd Odoo calls on its own 300-second route, which
-   * is exactly why it is behind a button instead of running on page load. A
-   * second run replaces the whole preview; a failure leaves both the preview and
-   * the roster untouched.
+   * Re-derives KPI ownership from Odoo and SAVES it — no approval step. Slow
+   * (30-odd Odoo calls on a 300-second route). The new owners are copied into
+   * cfg too, so a later "Save KPI Configuration" does not write the old ones back.
    */
-  async function loadRoleProposal() {
-    setProposing(true); setMessage('');
+  async function refreshOwnership() {
+    setRefreshingOwners(true); setMessage('');
     try {
-      const res = await fetch('/api/kpi/role-proposal', { credentials: 'include' });
-      // Defensive parse, for the same reason the options fetch above does it: a
-      // timed-out route answers with plain text, and parsing that throws a JSON
-      // error that tells the reader nothing about what went wrong.
+      const res = await fetch('/api/kpi/role-proposal', { method: 'POST', credentials: 'include' });
+      // Defensive parse: a timed-out route answers with plain text.
       const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        setMessage(`Error ${res.status}: ${body?.detail || body?.error || res.statusText || 'the role proposal failed'}`);
+      if (!res.ok || !body) {
+        setMessage(`Error ${res.status}: ${body?.detail || body?.error || res.statusText || 'the ownership refresh failed'}`);
         return;
       }
-      if (!body) {
-        setMessage('The server answered with something that was not a role proposal.');
-        return;
-      }
-      const result = body as RoleProposalResult;
-      const people: RoleProposalPerson[] = Array.isArray(result.people) ? result.people : [];
-      setProposalMeta(result);
-      setRoleRows(people.map(toRoleRow));
-      setOpenEvidence({});
+      const report = body as OwnersReport;
+      setOwnersReport(report);
+      setCfg((p) => ({ ...p, kpiOwners: report.owners }));
+      setMessage(`✓ Ownership refreshed and saved${report.unreadable.length ? ` — ${countLabel(report.unreadable.length, 'action', 'actions')} not fully read, their KPIs kept the previous owners` : ''}.`);
     } catch (e) {
-      setMessage(`Role proposal failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally { setProposing(false); }
-  }
-
-  function toggleRoleRow(userId: number) {
-    setRoleRows((p) => p && p.map((r) => (r.odooUserId === userId ? { ...r, checked: !r.checked } : r)));
-  }
-
-  function setAllRoleRows(checked: boolean) {
-    // Only rows with something to apply can be checked — see `applicable`.
-    setRoleRows((p) => p && p.map((r) => ({ ...r, checked: checked && r.applicable })));
-  }
-
-  /** Back to exactly what Odoo proposed, after the owner has edited the pills. */
-  function resetRoleRows() {
-    setRoleRows((p) => p && p.map((r) => toRoleRow(r)));
-  }
-
-  /** Tick or untick one (branch, role) cell. This is where ownership becomes a set. */
-  function toggleRoleCell(userId: number, branch: string, role: KpiRole) {
-    const key = cellKey(branch, role);
-    setRoleRows((p) => p && p.map((r) => (
-      r.odooUserId === userId ? { ...r, picks: { ...r.picks, [key]: !r.picks[key] } } : r
-    )));
-  }
-
-  function toggleRestore(userId: number) {
-    setRoleRows((p) => p && p.map((r) => (r.odooUserId === userId ? { ...r, restore: !r.restore } : r)));
-  }
-
-  function toggleEvidence(userId: number) {
-    setOpenEvidence((p) => ({ ...p, [userId]: !p[userId] }));
-  }
-
-  function discardRoleProposal() {
-    setRoleRows(null); setProposalMeta(null); setOpenEvidence({});
-  }
-
-  /**
-   * Writes the ticked proposal onto the roster: upsert by odooUserId, so anyone
-   * already tracked is updated rather than duplicated, and anyone absent from
-   * the proposal is left exactly as they were. Nothing is persisted — Save stays
-   * an explicit act.
-   *
-   * Three kinds of row, handled apart:
-   *  - an exclusion (OdooBot, Administrator) writes `excluded: true` ONLY. Its
-   *    roles and branches are left alone, because an excluded entry is never
-   *    scored and narrowing it would read as a demotion of a robot.
-   *  - a role row writes `roles` and `branches` from the ticked cells, and sets
-   *    the primary `branch` to the first of them so the roster table below shows
-   *    the same thing this proposal does.
-   *  - a ticked row that resolves to no cells at all writes NOTHING, and says so
-   *    rather than silently saving an empty role set — an empty `roles` falls
-   *    back to the legacy section, which is not what unticking everything means.
-   */
-  function applyRoleProposal() {
-    const picked = (roleRows ?? []).filter((r) => r.checked);
-    if (picked.length === 0) {
-      setMessage('Nothing selected — the roster is unchanged.');
-      return;
-    }
-    const skipped: string[] = [];
-    const applied: string[] = [];
-
-    setCfg((p) => {
-      const next = [...p.saRoster];
-      for (const row of picked) {
-        const at = next.findIndex((r) => r.odooUserId === row.odooUserId);
-        const existing = at >= 0 ? next[at] : undefined;
-
-        if (row.excludedReason) {
-          const entry: SaRosterEntry = existing
-            ? { ...existing, excluded: true }
-            : { odooUserId: row.odooUserId, name: row.name, branch: busiestBranch(row), excluded: true };
-          if (at >= 0) next[at] = entry; else next.push(entry);
-          applied.push(`${row.name} → excluded from scoring`);
-          continue;
-        }
-
-        const roles = rowRoles(row);
-        const branches = rowBranches(row);
-        if (!roles.length || !branches.length) {
-          // Un-excluding on its own is still a real change worth applying.
-          if (row.restore && existing?.excluded) {
-            next[at] = { ...existing, excluded: false };
-            applied.push(`${row.name} → no longer excluded`);
-          } else {
-            skipped.push(row.name);
-          }
-          continue;
-        }
-
-        const base: SaRosterEntry = existing
-          ? { ...existing, roles, branches, branch: branches[0] }
-          : { odooUserId: row.odooUserId, name: row.name, branch: branches[0], branches, roles };
-        // `excluded` is only ever written where the proposal actually asserts
-        // something about it: true above, and false here only on the explicit
-        // Restore tick. Anything else leaves the owner's own decision in place.
-        const entry: SaRosterEntry = row.restore ? { ...base, excluded: false } : base;
-        if (at >= 0) next[at] = entry; else next.push(entry);
-        applied.push(`${row.name} → ${roles.map((r) => KPI_ROLE_LABELS[r]).join(' + ')} in ${branches.join(', ')}`
-          + (row.restore ? ' (no longer excluded)' : ''));
-      }
-      return { ...p, saRoster: next };
-    });
-
-    discardRoleProposal();
-    setMessage(applied.length
-      ? `✓ Applied ${countLabel(applied.length, 'person', 'people')} — ${applied.join(' · ')}`
-        + (skipped.length ? `. Skipped (nothing ticked): ${skipped.join(', ')}` : '')
-        + '. NOT saved yet — press Save KPI Configuration below to persist.'
-      : `Nothing applied: ${skipped.join(', ')} had no branch and role ticked. Tick at least one to give someone a role.`);
+      setMessage(`Ownership refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setRefreshingOwners(false); }
   }
 
   function toggleKpi(id: number) {
@@ -732,8 +500,6 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   }
 
   const allUsers = opts?.users ?? [];
-  // Read through the override rather than assumed — an admin may have moved KPI 18.
-  const kpi18Section = sectionOf(18, cfg);
   const personQuery = personSearch.trim().toLowerCase();
   const matchedUsers = allUsers.filter(
     (u) => !rosterById.has(u.id) && (personQuery === '' || u.name.toLowerCase().includes(personQuery)),
@@ -747,16 +513,17 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   // No focus:outline-none on the preview controls — the focus ring must stay visible.
   const suggestPillCls = 'text-xs px-2.5 py-1 rounded-full border bg-white text-ink-muted border-border hover:border-gray-400 transition-colors cursor-pointer';
   const suggestSelectCls = 'text-xs border border-border rounded px-2 py-1 text-ink bg-white focus:border-evs-green';
-  const selectedRoleRows = roleRows?.filter((r) => r.checked).length ?? 0;
-  const applicableRoleRows = roleRows?.filter((r) => r.applicable).length ?? 0;
-  // One pill, three states. 'proposed' is the only one that is on by default, so
-  // the three have to be distinguishable at a glance: green = Odoo proposed it,
-  // amber = Odoo could not measure it, plain = measured and below the floor.
-  const roleCellCls = (on: boolean, verdict: ProposedBranchRole['verdict']) =>
-    `text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
-      on ? 'bg-evs-green text-white border-evs-green'
-        : verdict === 'indeterminate' ? 'bg-amber-50 text-amber-700 border-amber-300 hover:border-amber-400'
-          : 'bg-white text-ink-muted border-border hover:border-gray-400'}`;
+  // The ownership table: the last refresh's evidence when there is one, else the
+  // stored owners by name only (counts exist only once a refresh has run).
+  const userName = (id: number) =>
+    rosterById.get(id)?.name ?? allUsers.find((u) => u.id === id)?.name ?? `#${id}`;
+  const ownerDetail: Record<string, Record<string, OwnerEntry[]>> = ownersReport?.detail
+    ?? Object.fromEntries(Object.entries(cfg.kpiOwners ?? {}).map(([b, byKpi]) => [b,
+      Object.fromEntries(Object.entries(byKpi ?? {}).map(([k, ids]) => [k,
+        (ids ?? []).map((id) => ({ userId: id, name: userName(id), counts: [], kept: null }))]))]));
+  const ownerRows = (KPI_BRANCHES as readonly string[]).flatMap((b) => KPI_DEFINITIONS
+    .filter((k) => (ownerDetail[b]?.[String(k.id)]?.length ?? 0) > 0)
+    .map((k) => ({ branch: b, kpi: k, owners: ownerDetail[b][String(k.id)] })));
 
   return (
     <div className="bg-white rounded-lg shadow-sm p-6 mt-5">
@@ -937,83 +704,10 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         </label>
       </div>
 
-      {/* 2d. Who raises the RFQs */}
-      <div className="text-sm font-bold text-ink mb-1">2d. RFQ coordinator per branch</div>
-      <p className="text-xs text-ink-muted mb-2">
-        RFQ after approval scores whoever opened the job card, which is rarely the person who raises the RFQ —
-        name that person here and the branch&rsquo;s verdicts, hits and misses alike, move onto them.
-      </p>
-      <div className="flex flex-col gap-2 mb-6">
-        {KPI_BRANCHES.map((b) => {
-          const chosen = cfg.rfqCoordinators?.[b];
-          const entry = chosen ? rosterById.get(chosen.id) : undefined;
-          // A stored person Odoo no longer lists (archived, or options failed to
-          // load) still has to appear, or the box would read as the default while
-          // the config says otherwise.
-          const missing = chosen && !allUsers.some((u) => u.id === chosen.id) ? chosen : undefined;
-          return (
-            <div key={b} className="flex flex-col gap-1">
-              <label className="text-sm text-ink-muted flex items-center gap-2 flex-wrap">
-                <span className="w-24">{b}</span>
-                <select value={chosen ? String(chosen.id) : ''}
-                  onChange={(e) => setRfqCoordinator(b, e.target.value)}
-                  className="text-sm border border-border rounded px-2 py-1 text-ink bg-white focus:border-evs-green">
-                  <option value="">— job card owner (default) —</option>
-                  {missing && <option value={String(missing.id)}>{missing.name}</option>}
-                  {allUsers.map((u) => (
-                    <option key={u.id} value={String(u.id)}>
-                      {u.roCount > 0 ? `${u.name} (${u.roCount} ROs)` : u.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {chosen && !entry && (
-                <div className="text-xs text-ink-muted ml-24">
-                  ⚠ {chosen.name} is not in Tracked people, so they get no card of their own — these
-                  evaluations will only roll into the {b} total.
-                </div>
-              )}
-              {/* Absent section means Service Advisor, so an untouched roster entry counts as one. */}
-              {chosen && entry && (entry.section ?? 'advisor') === 'advisor' && kpi18Section === 'workshop' && (
-                <div className="text-xs text-ink-muted ml-24">
-                  ⚠ {chosen.name} is listed under {KPI_SECTION_LABELS.advisor}, but RFQ after approval sits in{' '}
-                  {KPI_SECTION_LABELS.workshop} — it will not appear on their card until the person or the KPI is
-                  reassigned (section 5 below).
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
       {/* 3. Tracked people roster */}
       <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
         <div className="text-sm font-bold text-ink">3. Tracked people</div>
         <div className="flex items-center gap-2 flex-wrap">
-        <button
-          onClick={loadRoleProposal}
-          disabled={proposing}
-          aria-busy={proposing}
-          title="Reads 90 days of Odoo activity and proposes who holds which role in which branch, with the counts behind each. Takes a few minutes; nothing is saved until you apply it and press Save."
-          className={`
-            inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
-            border-2 transition-all duration-200
-            ${proposing
-              ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
-              : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'}
-            disabled:opacity-50
-          `}
-        >
-          {proposing ? (
-            <>
-              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Reading Odoo…
-            </>
-          ) : 'Refresh roles from Odoo'}
-        </button>
         <button
           onClick={loadSuggestion}
           disabled={suggesting}
@@ -1042,8 +736,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       </div>
       <p className="text-xs text-ink-muted mb-3">
         Only checked users are measured individually. Everyone&apos;s ROs still count toward branch totals.
-        A person&apos;s section decides which group they appear under on the KPI page — it is separate from
-        which section a KPI itself belongs to (set in 5. KPI sections).
+        Which KPIs a person answers for comes from KPI ownership below, not from this list.
       </p>
 
       {/* 3a. Suggestion preview — reviewed here, merged into the roster only on apply. */}
@@ -1083,10 +776,6 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                     onChange={(e) => setSuggestionBranch(s.odooUserId, e.target.value)} className={suggestSelectCls}>
                     {KPI_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                   </select>
-                  <select value={s.sectionPick} aria-label={`Section for ${s.name}`}
-                    onChange={(e) => setSuggestionSection(s.odooUserId, e.target.value as KpiSection)} className={suggestSelectCls}>
-                    {KPI_SECTION_ORDER.map((sec) => <option key={sec} value={sec}>{KPI_SECTION_LABELS[sec]}</option>)}
-                  </select>
                 </div>
               );
             })}
@@ -1108,245 +797,114 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         </div>
       )}
 
-      {/* 3b. Role proposal — derived from Odoo, reviewed here, written to the
-           roster only on apply, and saved only on Save. All three steps matter:
-           a derived list alone is a machine deciding people's pay. */}
-      {roleRows && proposalMeta && (
-        <div className="border border-border rounded-md p-3 mb-4">
-          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-            <span className="text-xs font-bold uppercase tracking-wide text-ink-muted">
-              Roles derived from Odoo — nothing is saved until you apply it and press Save
-            </span>
-            <span className="text-xs text-ink-muted tabular-nums">
-              {selectedRoleRows} of {applicableRoleRows} selected
-            </span>
-          </div>
-
-          {proposalMeta.fatal && (
-            <div className="mb-2 px-3 py-2 bg-danger/5 border border-danger/20 rounded-md text-xs text-danger">
-              {proposalMeta.fatal}
-            </div>
-          )}
-          {/* The system-account check is the only thing keeping OdooBot — active
-              in all five branches — off somebody's KPI, so its failure is the
-              loudest thing on this panel rather than a line in the notes. */}
-          {proposalMeta.systemCheckFailed && (
-            <div className="mb-2 px-3 py-2 bg-danger/5 border border-danger/20 rounded-md text-xs text-danger">
-              ⚠ The Odoo logins could not be read, so no account could be checked for being automation.
-              No exclusions are proposed below, and OdooBot and the Administrator may appear as if they were
-              people. Do not treat this run&apos;s exclusions as complete — run it again.
-            </div>
-          )}
-          {/* An unreadable bucket must never read as an absence of activity: that
-              is how a role gets taken off someone who has it. */}
-          {proposalMeta.unknownBuckets.length > 0 && (
-            <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-md text-xs text-amber-800">
-              <div className="font-semibold mb-1">
-                {proposalMeta.unknownBuckets.length} activity bucket(s) could NOT be read — these are UNKNOWN, not empty:
-              </div>
-              {proposalMeta.unknownBuckets.map((u) => (
-                <div key={u.key} className="mb-0.5">
-                  <span className="font-semibold">{u.label}</span>
-                  {u.roles.length > 0 && <span> ({u.roles.map((r) => KPI_ROLE_LABELS[r]).join(', ')})</span>}: {u.reason}
-                </div>
-              ))}
-              <div className="mt-1">
-                Any role resting on one of them is marked <span className="font-semibold">cannot say</span> below
-                instead of being scored against the floor.
-              </div>
-            </div>
-          )}
-          {proposalMeta.missingBranches.length > 0 && (
-            <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-md text-xs text-amber-800">
-              ⚠ Left out because its Odoo company did not resolve: {proposalMeta.missingBranches.join(', ')} — blank
-              below for that reason, not because nobody works there.
-            </div>
-          )}
-
-          <div className="text-xs text-ink-muted mb-2">
-            Floor: a role is proposed in a branch when that role&apos;s actions there reach{' '}
-            <span className="font-semibold tabular-nums">{proposalMeta.floor.actions}</span> over{' '}
-            <span className="tabular-nums">{proposalMeta.floor.days}</span> days
-            {proposalMeta.floor.source === 'config' ? ` (from thresholds.${proposalMeta.floor.key})` : ''}.
-            Tick a branch-and-role pill to give it, untick to take it away.
-          </div>
-
-          <div className="flex items-center gap-2 mb-2">
-            <button onClick={() => setAllRoleRows(true)} className={suggestPillCls}>Select all</button>
-            <button onClick={() => setAllRoleRows(false)} className={suggestPillCls}>Select none</button>
-            <button onClick={resetRoleRows} className={suggestPillCls}>Reset to what Odoo proposed</button>
-          </div>
-
-          <div className="max-h-96 overflow-y-auto border border-border rounded-md divide-y divide-border">
-            {roleRows.map((row) => {
-              const roles = rowRoles(row);
-              const branches = rowBranches(row);
-              const showEvidence = !!openEvidence[row.odooUserId];
-              // Recomputed from the live ticks rather than read from the payload,
-              // so ticking a pill back makes the warning go away in front of the
-              // owner instead of standing there contradicting the pills.
-              const losesRoles = (row.current?.roles ?? []).filter((r) => !roles.includes(r));
-              const losesBranches = (row.current?.branches ?? []).filter((b) => !branches.includes(b));
-              return (
-                <div key={row.odooUserId} className="px-3 py-2">
-                  <div className="flex items-start gap-3">
-                    {row.applicable ? (
-                      <input type="checkbox" checked={row.checked} onChange={() => toggleRoleRow(row.odooUserId)}
-                        aria-label={`Apply the proposal for ${row.name}`} className="mt-1 cursor-pointer" />
-                    ) : (
-                      // Nothing to assert, so nothing to tick. Shown anyway: a
-                      // rostered person doing none of this work is a signal about
-                      // the roster, and applying an empty role set is not a fix.
-                      <span className="mt-1 w-[13px] shrink-0" aria-hidden="true" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap text-sm text-ink">
-                        <span className="truncate font-semibold">{row.name}</span>
-                        {row.login && <span className="text-[11px] text-ink-muted">{row.login}</span>}
-                        {row.rostered
-                          ? <span className="text-[11px] text-ink-muted">on the roster</span>
-                          : <span className="text-[11px] text-amber-700">NOT on the roster — their work reaches nobody&apos;s card today</span>}
-                        <span className="text-[11px] text-ink-muted tabular-nums">{row.totalActions} actions</span>
-                      </div>
-
-                      {row.current && (
-                        <div className="text-[11px] text-ink-muted">
-                          Saved today: {row.current.roles.map((r) => KPI_ROLE_LABELS[r]).join(' + ') || 'no roles'}
-                          {' in '}{row.current.branches.join(', ') || 'no branch'}
-                          {row.current.excluded ? ' · excluded from scoring' : ''}
-                        </div>
-                      )}
-
-                      {row.excludedReason ? (
-                        <div className="text-[11px] text-amber-800 mt-0.5">
-                          Proposed: <span className="font-semibold">excluded from scoring</span> — {row.excludedReason}.
-                          Its work still counts toward the branch; it simply reaches no person.
-                        </div>
-                      ) : row.byBranch.length === 0 ? (
-                        <div className="text-[11px] text-ink-muted mt-0.5">
-                          No KPI-bearing activity found in any of the five branches in the window — nothing to
-                          propose, so nothing is applied for them. Check whether they have left or changed job.
-                        </div>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                            {row.byBranch.map((r) => {
-                              const on = !!row.picks[cellKey(r.branch, r.role)];
-                              return (
-                                <button key={cellKey(r.branch, r.role)}
-                                  onClick={() => toggleRoleCell(row.odooUserId, r.branch, r.role)}
-                                  title={cellEvidenceLine(r) + (r.reasons.length ? ` — ${r.reasons.join('; ')}` : '')}
-                                  className={roleCellCls(on, r.verdict)}>
-                                  {r.branch} · {KPI_ROLE_LABELS[r.role]}{' '}
-                                  <span className="tabular-nums">{r.total}</span>
-                                  {r.verdict === 'indeterminate' ? ' · cannot say' : ''}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          {/* Spelled out, not only in a tooltip: this is the row
-                              that decides whether a name keeps a role. */}
-                          {row.byBranch.some((r) => r.verdict === 'indeterminate') && (
-                            <div className="text-[11px] text-amber-800 mt-1">
-                              {row.byBranch.filter((r) => r.verdict === 'indeterminate').map((r) => (
-                                <div key={cellKey(r.branch, r.role)}>
-                                  ⚠ {r.branch} · {KPI_ROLE_LABELS[r.role]}: {r.reasons.join('; ')}.
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {/* Applying REPLACES roles, so a removal has to be
-                              stated before it happens, not discovered after. */}
-                          {row.checked && (losesRoles.length > 0 || losesBranches.length > 0) && (
-                            <div className="text-[11px] text-amber-800 mt-1">
-                              ⚠ Applying this row REMOVES what the roster gives them today:{' '}
-                              {[
-                                losesRoles.length ? losesRoles.map((r) => KPI_ROLE_LABELS[r]).join(' + ') : '',
-                                losesBranches.length ? `the branch(es) ${losesBranches.join(', ')}` : '',
-                              ].filter(Boolean).join(' and ')}
-                              . Tick the matching pill above to keep it, or untick this row to leave them alone.
-                            </div>
-                          )}
-                          <div className="flex items-center gap-2 flex-wrap mt-1">
-                            <span className="text-[11px] text-ink-muted">
-                              Will write: {roles.map((r) => KPI_ROLE_LABELS[r]).join(' + ') || '—'}
-                              {' in '}{branches.join(', ') || '—'}
-                            </span>
-                            <button onClick={() => toggleEvidence(row.odooUserId)} className={suggestPillCls}>
-                              {showEvidence ? 'Hide the counts' : 'Show the counts'}
-                            </button>
-                            {/* Only offered where there is an exclusion to lift. */}
-                            {row.current?.excluded && (
-                              <label className="text-[11px] text-ink-muted flex items-center gap-1 cursor-pointer">
-                                <input type="checkbox" checked={row.restore} onChange={() => toggleRestore(row.odooUserId)}
-                                  className="cursor-pointer" />
-                                Also stop excluding them
-                              </label>
-                            )}
-                          </div>
-                          {showEvidence && (
-                            <div className="mt-1 border border-border rounded p-2 bg-surface">
-                              {row.byBranch.map((r) => (
-                                <div key={cellKey(r.branch, r.role)} className="text-[11px] text-ink-muted mb-1 last:mb-0">
-                                  <span className="font-semibold text-ink">{r.branch} · {KPI_ROLE_LABELS[r.role]}</span>{' '}
-                                  = <span className="tabular-nums">{r.total}</span>
-                                  {r.evidence.map((e) => (
-                                    <div key={e.key} className="ml-3">
-                                      {e.label} (KPI{e.kpis.length === 1 ? '' : 's'} {e.kpis.join(', ')}):{' '}
-                                      <span className="tabular-nums text-ink">{e.count}{e.truncated ? '+' : ''}</span>{' '}
-                                      over {e.days}d — {e.method}
-                                    </div>
-                                  ))}
-                                  {r.unknown.map((u) => (
-                                    <div key={u.key} className="ml-3 text-amber-800">
-                                      {u.label}: UNREADABLE — {u.reason}
-                                    </div>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {roleRows.length === 0 && (
-              <div className="px-3 py-2 text-xs text-ink-muted">
-                Odoo reported no KPI-bearing activity in the window, and the saved roster is empty.
-              </div>
-            )}
-          </div>
-
-          {/* The map's own diagnostic, in full. An ownership claim nobody can
-              check is worth less than no claim at all. */}
-          {proposalMeta.notes.length > 0 && (
-            <details className="mt-3">
-              <summary className="text-xs text-ink-muted cursor-pointer">
-                How this was measured ({proposalMeta.notes.length} lines)
-              </summary>
-              <div className="mt-1.5 max-h-72 overflow-y-auto">
-                {proposalMeta.notes.map((n) => (
-                  <div key={n} className="text-[11px] text-ink-muted mb-1 whitespace-pre-wrap">{n}</div>
-                ))}
-              </div>
-            </details>
-          )}
-
-          <div className="flex items-center gap-3 mt-3">
-            <button onClick={applyRoleProposal}
-              className="px-4 py-1.5 bg-evs-green text-white text-sm font-bold rounded-md hover:bg-evs-green-dark transition-colors cursor-pointer">
-              Apply selected roles
-            </button>
-            <button onClick={discardRoleProposal}
-              className="px-4 py-1.5 text-sm font-semibold rounded-md border-2 border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark transition-all duration-200 cursor-pointer">
-              Discard
-            </button>
-          </div>
+      {/* 3b. KPI ownership — derived from Odoo and saved by the refresh itself; read-only here. */}
+      <div className="border border-border rounded-md p-3 mb-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+          <span className="text-xs font-bold uppercase tracking-wide text-ink-muted">
+            KPI ownership — more than {ownersReport?.floor ?? 10} actions in {ownersReport?.windowDays ?? 30} days, per KPI per branch
+          </span>
+          <button
+            onClick={refreshOwnership}
+            disabled={refreshingOwners}
+            aria-busy={refreshingOwners}
+            title="Reads the last 30 days of Odoo activity and saves who owns each KPI in each branch. Takes a few minutes. Also runs every night."
+            className={`
+              inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+              border-2 transition-all duration-200
+              ${refreshingOwners
+                ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+                : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'}
+              disabled:opacity-50
+            `}
+          >
+            {refreshingOwners ? (
+              <>
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Reading Odoo…
+              </>
+            ) : 'Refresh ownership now'}
+          </button>
         </div>
-      )}
+
+        <div className="text-xs text-ink-muted mb-2">
+          {ownersReport
+            ? `Last refreshed ${new Date(ownersReport.computedAt).toLocaleString()}. Counts are actions in the last ${ownersReport.windowDays} days.`
+            : 'Counts appear after the next refresh.'}
+        </div>
+
+        {/* An action that could not be read is NOT an absence of activity: its
+            KPIs keep the previous owners, marked "kept". */}
+        {ownersReport && ownersReport.unreadable.length > 0 && (
+          <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-md text-xs text-amber-800">
+            <div className="font-semibold mb-1">
+              {countLabel(ownersReport.unreadable.length, 'action', 'actions')} could not be fully read — their KPIs kept the previous owners:
+            </div>
+            {ownersReport.unreadable.map((u) => (
+              <div key={u.key} className="mb-0.5">
+                <span className="font-semibold">{u.label}</span> (KPI {u.kpis.join(', ')}): {u.reason}
+              </div>
+            ))}
+          </div>
+        )}
+        {ownersReport && ownersReport.missingBranches.length > 0 && (
+          <div className="mb-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-md text-xs text-amber-800">
+            ⚠ Not measured because its Odoo company did not resolve: {ownersReport.missingBranches.join(', ')} — previous owners kept.
+          </div>
+        )}
+        {ownersReport?.systemCheckFailed && (
+          <div className="mb-2 px-3 py-2 bg-danger/5 border border-danger/20 rounded-md text-xs text-danger">
+            ⚠ The Odoo logins could not be read, so system accounts were screened by name only.
+          </div>
+        )}
+
+        {ownerRows.length > 0 ? (
+          <div className="overflow-x-auto max-h-72 overflow-y-auto border border-border rounded-md">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="border-b border-border">
+                  <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Branch</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">KPI</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Owners (count)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ownerRows.map((r) => (
+                  <tr key={`${r.branch}|${r.kpi.id}`} className="border-b border-border last:border-b-0">
+                    <td className="py-1.5 px-3 text-ink">{r.branch}</td>
+                    <td className="py-1.5 px-3 text-ink" title={r.kpi.rule}>{kpiDisplayName(r.kpi.id, r.kpi.name, cfg.thresholds)}</td>
+                    <td className="py-1.5 px-3 text-ink-muted tabular-nums">
+                      {r.owners.map((o, i) => (
+                        <span key={o.userId} title={o.kept ?? o.counts.map((c) => `${c.label}: ${c.count} in ${c.days}d`).join(' · ')}
+                          className={o.kept ? 'text-amber-700' : 'text-ink'}>
+                          {i > 0 ? ' · ' : ''}{ownerLabel(o)}
+                        </span>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-xs text-ink-muted">No KPI owners stored yet — press Refresh ownership now.</div>
+        )}
+
+        {ownersReport && ownersReport.notes.length > 0 && (
+          <details className="mt-3">
+            <summary className="text-xs text-ink-muted cursor-pointer">
+              How this was measured ({ownersReport.notes.length} lines)
+            </summary>
+            <div className="mt-1.5 max-h-72 overflow-y-auto">
+              {ownersReport.notes.map((n) => (
+                <div key={n} className="text-[11px] text-ink-muted mb-1 whitespace-pre-wrap">{n}</div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
 
       {opts && opts.users.length > 0 ? (
         <>
@@ -1361,7 +919,8 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Odoo user</th>
                 <th className="text-right py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">ROs (90d)</th>
                 <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Branch</th>
-                <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted">Section</th>
+                <th className="text-left py-2 px-3 text-xs font-semibold uppercase tracking-wide text-ink-muted"
+                  title="Never scored on a card, while their work still counts for the branch — for OdooBot, Administrator and central staff">Exclude</th>
               </tr>
             </thead>
             <tbody>
@@ -1381,31 +940,18 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                         className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
                         {KPI_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                       </select>
-                    </td>
-                    <td className="py-1.5 px-3">
-                      {/* Absent section means Service Advisor — the documented default, so never blank. */}
-                      <select disabled={!entry} value={entry?.section ?? 'advisor'}
-                        onChange={(e) => setSaSection(u.id, e.target.value as KpiSection)}
-                        className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
-                        {KPI_SECTION_ORDER.map((s) => <option key={s} value={s}>{KPI_SECTION_LABELS[s]}</option>)}
-                      </select>
-                      {/* Roles, branches and exclusion are set by "Refresh roles
-                          from Odoo", not here — but they override the dropdown
-                          above, so they are shown beside it. Without this, an
-                          applied proposal would be invisible on this table and
-                          the Section box would read as the live answer when it
-                          is no longer consulted. */}
-                      {entry && (entry.roles?.length || (entry.branches?.length ?? 0) > 1 || entry.excluded) && (
+                      {entry && ((entry.branches?.length ?? 0) > 1 || entry.excluded) && (
                         <div className="text-[10px] text-ink-muted mt-0.5">
                           {entry.excluded && <span className="text-amber-700">excluded from scoring</span>}
-                          {entry.excluded && (entry.roles?.length || (entry.branches?.length ?? 0) > 1) ? ' · ' : ''}
-                          {entry.roles?.length
-                            ? `${rosterRoles(entry).map((r) => KPI_ROLE_LABELS[r]).join(' + ')} (overrides the section)`
-                            : ''}
-                          {entry.roles?.length && (entry.branches?.length ?? 0) > 1 ? ' · ' : ''}
+                          {entry.excluded && (entry.branches?.length ?? 0) > 1 ? ' · ' : ''}
                           {(entry.branches?.length ?? 0) > 1 ? rosterBranches(entry).join(', ') : ''}
                         </div>
                       )}
+                    </td>
+                    <td className="py-1.5 px-3">
+                      <input type="checkbox" disabled={!entry} checked={!!entry?.excluded}
+                        onChange={(e) => setSaExcluded(u.id, e.target.checked)}
+                        aria-label={`Exclude ${u.name} from scoring`} className="cursor-pointer disabled:opacity-40" />
                     </td>
                   </tr>
                 );
@@ -1441,34 +987,6 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                 on ? 'bg-evs-green text-white border-evs-green' : 'bg-white text-ink-muted border-border hover:border-gray-400'}`}>
               {kpiDisplayName(k.id, k.name, cfg.thresholds)}
             </button>
-          );
-        })}
-      </div>
-
-      {/* 5. KPI sections */}
-      <div className="text-sm font-bold text-ink mb-1">5. KPI sections</div>
-      <p className="text-xs text-ink-muted mb-3">
-        KPIs are grouped on the dashboard into Service Advisor and Workshop, each with its own total.
-        Both still feed the branch total.
-      </p>
-      <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5 mb-6">
-        {KPI_DEFINITIONS.map((k) => {
-          const current = sectionOf(k.id, cfg);
-          return (
-            <div key={k.id} className="flex items-center justify-between gap-3 min-w-0">
-              <span className="text-[13px] text-ink truncate" title={k.rule}>
-                {kpiDisplayName(k.id, k.name, cfg.thresholds)}
-              </span>
-              <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0">
-                {KPI_SECTION_ORDER.map((s) => (
-                  <button key={s} onClick={() => setKpiSection(k.id, s)}
-                    className={`text-[11px] font-semibold px-2.5 py-1 transition-colors cursor-pointer ${
-                      current === s ? 'bg-evs-green text-white' : 'bg-white text-ink-muted hover:text-ink'}`}>
-                    {KPI_SECTION_LABELS[s]}
-                  </button>
-                ))}
-              </div>
-            </div>
           );
         })}
       </div>

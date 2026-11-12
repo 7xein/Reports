@@ -1,34 +1,39 @@
 /**
- * GET /api/kpi/role-proposal
+ * /api/kpi/role-proposal — KPI ownership refresh.
  *
- * Who should hold which KPI role, derived from what people demonstrably do in
- * Odoo over the last 90 days, per branch, with the counts that justified every
- * proposal. The owner reviews it in Admin, ticks and unticks, applies it to the
- * roster, and then presses Save — nothing here writes to Odoo or to the config.
+ * (The path is kept from the old role proposal it replaces.)
  *
- * On its OWN route, deliberately. The activity map behind this is 30-odd Odoo
- * calls, and it used to run inside GET /api/kpi/odoo-options on every Admin page
- * load — the page the owner configures everything from — against that route's
- * 60-second limit. That is why it was never deployed. Here it is paid for when
- * the button is pressed, and a slow Odoo can no longer take the Admin page down.
+ *   GET  — the last refresh's report (owners with the counts behind them), read
+ *          from the store without touching Odoo. `report` is null when none is
+ *          stored yet.
+ *   POST — refresh now: derive per-KPI, per-branch owners from the last 30 days
+ *          of Odoo activity and write them straight into the stored KPI config.
+ *          No approval step — the owner's decision. Returns the owners, the
+ *          counts behind each, and any action that could not be read (whose
+ *          KPIs keep their previous owners).
+ *
+ * The same refresh runs nightly from /api/sync-odoo.
  */
 
 import { NextResponse } from 'next/server';
-import { fetchKpiRoleProposal } from '@/lib/odoo';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { readData } from '@/lib/data-store';
-import { withKpiDefaults, type KpiConfig } from '@/lib/types';
+import { refreshKpiOwners, lastKpiOwnersReport } from '@/lib/kpi-owners-refresh';
 
 export const dynamic = 'force-dynamic';
 
-// 300, not 60, for the same reason as /api/kpi and the CEO and EVHUB reports:
-// this is 30-odd Odoo calls, several of them chatter reads over tens of
-// thousands of rows, and a minute is not enough. The map stops itself well
-// inside this and reports which buckets it never reached, so a slow Odoo costs
-// an incomplete proposal that says so — never a dead request with nothing in it.
+// 300, not 60: the activity map is 30-odd Odoo calls, several of them chatter
+// reads over tens of thousands of rows. It stops itself well inside this and
+// reports which actions it never reached.
 export const maxDuration = 300;
 
 export async function GET() {
+  if (!isAdminAuthenticated()) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  return NextResponse.json({ report: await lastKpiOwnersReport() });
+}
+
+export async function POST() {
   if (!isAdminAuthenticated()) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -37,44 +42,31 @@ export async function GET() {
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     return NextResponse.json(
-      { error: 'Failed to build the role proposal', detail: `Missing environment variables: ${missing.join(', ')}` },
-      { status: 500 }
+      { error: 'Ownership refresh failed', detail: `Missing environment variables: ${missing.join(', ')}` },
+      { status: 500 },
     );
   }
 
   try {
-    // The SAVED config, and it is load-bearing twice over. The map needs the
-    // live stage mapping to know which chatter change means "reached
-    // Inspection", "reached QA" or "marked Repaired" — the shipped defaults
-    // point `repaired` at priority_matrix_status, which records no changes on
-    // this instance, so assuming them would report that nobody marks cars
-    // repaired. And the proposal compares itself against the saved roster, so
-    // without it every person would read as off-roster.
-    //
-    // Unlike the options route, a store that cannot be read is NOT survivable
-    // here: it would silently produce a proposal with three empty buckets and a
-    // roster of nobody, which is exactly the "looks like an absence of activity"
-    // failure this feature exists to prevent. So it fails loudly instead.
-    let config: KpiConfig;
-    try {
-      config = withKpiDefaults((await readData()).kpiConfig);
-    } catch (e) {
-      console.error('❌ [kpi/role-proposal] could not read the saved KPI config:', e);
+    const result = await refreshKpiOwners();
+    if (result.fatal) {
       return NextResponse.json(
-        {
-          error: 'Failed to build the role proposal',
-          detail: 'The saved KPI configuration could not be read, and without it the stage mapping is unknown and the saved roster cannot be compared — so the proposal would understate three of the eleven activity buckets and show everyone as off-roster. '
-            + `Fix the config store and try again: ${e instanceof Error ? e.message : String(e)}`,
-        },
-        { status: 500 }
+        { ...result, error: 'Ownership refresh failed', detail: `${result.fatal} — the stored owners were left unchanged.` },
+        { status: 502 },
       );
     }
-    return NextResponse.json(await fetchKpiRoleProposal(config));
+    if (!result.saved) {
+      return NextResponse.json(
+        { ...result, error: 'Ownership refresh failed', detail: `Odoo was read, but the owners could not be saved: ${result.saveError ?? 'unknown error'}` },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json(result);
   } catch (error) {
-    console.error('❌ [kpi/role-proposal] failed:', error);
+    console.error('❌ [kpi/role-proposal] ownership refresh failed:', error);
     return NextResponse.json(
-      { error: 'Failed to build the role proposal', detail: error instanceof Error ? error.message : String(error) },
-      { status: 500 }
+      { error: 'Ownership refresh failed', detail: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
     );
   }
 }

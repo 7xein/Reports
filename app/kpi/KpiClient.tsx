@@ -4,40 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
 import {
   KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL, DEFAULT_KPI_TARGET, targetOf,
-  KPI_ROLE_ORDER, KPI_ROLE_LABELS, KPI_IDS_FOR_EVERYONE, rolesForKpi, type KpiRole,
 } from '@/lib/types';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai: '#78C41A', Ajman: '#3B82F6', Sharjah: '#F59E0B',
   'Abu Dhabi': '#8B5CF6', 'Al Ain': '#EF4444', 'EV Hub': '#EC4899', Qatar: '#06B6D4',
-};
-
-/**
- * Role accents are deliberately cool hues, kept well clear of the warm
- * green → amber → red performance scale, so a category colour can never be
- * mistaken for a score.
- *
- * The first two are the hues the two sections used, kept where they describe the
- * same work: the advisor is still the advisor, and the controller is the half of
- * the old "Workshop" heading that moves cars through the stages. Parts is the
- * one genuinely new hue, chosen inside the same cool family.
- *
- * The two groups that belong to no role — "Everyone" and "Branch only" — carry
- * no accent at all and are rendered in the muted ink the page already uses for
- * secondary text. They are not roles, and a colour of their own would imply they
- * were.
- */
-const ROLE_ACCENT: Record<KpiRole, string> = {
-  advisor: '#0ea5e9',
-  controller: '#6366f1',
-  parts: '#8b5cf6',
-};
-
-/** Short role labels for the compact readouts, where the full names will not fit. */
-const ROLE_SHORT: Record<KpiRole, string> = {
-  advisor: 'SA',
-  controller: 'WC',
-  parts: 'PP',
 };
 
 const LOW_VOLUME = 5;      // fewer applicable records than this gets an n=X badge
@@ -64,48 +35,12 @@ const GROUP_OF: Record<number, string> = Object.fromEntries(KPI_DEFINITIONS.map(
 const GROUP_ORDER: string[] = [...new Set(KPI_DEFINITIONS.map((d) => d.group as string))];
 
 /**
- * What KPI rows are laid out under: one heading per role, then the two that
- * answer to no role.
- *
- * This replaced the two section headings, which had stopped describing anything
- * — a parts man's four rows all landed under "Workshop", and Chatter response
- * sat under a heading whose average deliberately excludes it.
+ * The two KPIs nobody performs (7, Awaiting labour; 9, Weekly closure rate).
+ * They reach no individual, so they appear at branch and company level only,
+ * under a heading of their own rather than in their definition group.
  */
-type RowGroupKey = KpiRole | 'everyone' | 'branchOnly';
-
-const ROW_GROUPS: { key: RowGroupKey; label: string; accent?: string; note?: string }[] = [
-  ...KPI_ROLE_ORDER.map((r) => ({ key: r as RowGroupKey, label: KPI_ROLE_LABELS[r], accent: ROLE_ACCENT[r] })),
-  { key: 'everyone', label: 'Everyone' },
-  {
-    key: 'branchOnly',
-    label: 'Branch only',
-    // The sentence is the point of this group: these are exactly the two KPIs
-    // nobody should be paid or fined on, and until now nothing on the page said
-    // so. They appear here at branch and company level only — having no role,
-    // they reach no individual card, so this heading can never appear on one.
-    note: 'No individual is scored on these — nobody performs them, so they are a reading for the branch rather than a score for a person.',
-  },
-];
-
-/**
- * Whether a KPI belongs under a given heading.
- *
- * Total by construction, so no enabled KPI can fall through and lose its row:
- * a KPI either has at least one role and appears under each of them, or it has
- * none — and then it is either one everybody answers for (17, Chatter response:
- * anyone can be @mentioned) or a branch reading nobody performs (7 and 9).
- * KPI_IDS_FOR_EVERYONE is tested first for exactly that reason: rolesForKpi(17)
- * is empty too, and read in the other order 17 would file itself under
- * "Branch only" and be described as something nobody is scored on.
- */
-function inRowGroup(key: RowGroupKey, id: number): boolean {
-  if (key === 'everyone') return KPI_IDS_FOR_EVERYONE.includes(id);
-  if (key === 'branchOnly') return !KPI_IDS_FOR_EVERYONE.includes(id) && rolesForKpi(id).length === 0;
-  return rolesForKpi(id).includes(key);
-}
-
-/** The groups carrying an average: a role's. "Everyone" and "Branch only" show none. */
-const isRole = (key: RowGroupKey): key is KpiRole => (KPI_ROLE_ORDER as readonly string[]).includes(key);
+const BRANCH_ONLY_IDS: readonly number[] = [7, 9];
+const BRANCH_ONLY_NOTE = 'No individual is scored on these — nobody performs them, so they are a reading for the branch rather than a score for a person.';
 
 const fmtPct = (p: number | null) => (p === null ? 'N/A' : `${p.toFixed(1)}%`);
 
@@ -239,116 +174,67 @@ function KpiRow({ cell, delta, expandable = false }: {
   );
 }
 
-/** Compact "SA 62% · WS 48%" readout. Section totals always come from the tree. */
-const fmtPctShort = (p: number | null) => (p === null ? '—' : `${Math.round(p)}%`);
-
-/**
- * The compact readout beside a headline figure. Keyed by role, not by the old
- * two sections, so it names the same groups the rows below it are grouped under
- * — a summary that said "SA · WS" over bodies headed "Parts & Purchasing" would
- * be describing a page that no longer exists.
- *
- * Three figures where there were two, so the nowrap is dropped: on a narrow
- * card these wrap onto a second line rather than overflowing their container.
- */
-function RoleFigures({ roleAverages, labelClass, className = '' }: {
-  roleAverages: Record<KpiRole, number | null>;
-  labelClass: string;
-  className?: string;
-}) {
-  return (
-    <span className={`text-[11px] tabular-nums ${className}`}>
-      {KPI_ROLE_ORDER.map((r, i) => (
-        <span key={r}>
-          {i > 0 && <span className={labelClass}> · </span>}
-          <span className={labelClass}>{ROLE_SHORT[r]} </span>
-          <span className="font-bold" style={{ color: band(roleAverages[r]).hex }}>{fmtPctShort(roleAverages[r])}</span>
-        </span>
-      ))}
-    </span>
-  );
-}
-
-// ── Grouped by role ────────────────────────────────────────────────
-function KpiRoleGroups({ cells, roleAverages, deltaFor, expandable = false }: {
+// ── Grouped by KPI group ───────────────────────────────────────────
+/** One card per KPI group, in definition order; a group with no cells is skipped. */
+function GroupCards({ cells, deltaFor, expandable }: {
   cells: KpiCell[];
-  roleAverages: Record<KpiRole, number | null>;
   deltaFor: (id: number) => number | null;
-  expandable?: boolean;
+  expandable: boolean;
 }) {
-  // Laid out before rendering so the gap between headings is a gap between the
-  // headings that actually appear: a person holding one role sees one heading,
-  // at the top, with nothing spaced above it.
-  const laid = ROW_GROUPS
-    .map((g) => {
-      const mine = cells.filter((c) => inRowGroup(g.key, c.id));
-      // Groups whose KPIs span several roles legitimately appear under each,
-      // showing only that role's rows.
-      const cards = GROUP_ORDER
-        .map((group) => ({ group, all: mine.filter((c) => GROUP_OF[c.id] === group) }))
-        .filter((c) => c.all.length > 0);
-      return { ...g, mine, cards };
-    })
-    // No cards means no heading at all — never a header on its own. This is also
-    // what keeps "Branch only" off every person's card without a special case:
-    // those KPIs reach no individual, so a person's cells never include one.
-    .filter((g) => g.cards.length > 0);
-
+  const cards = GROUP_ORDER
+    .map((group) => ({ group, all: cells.filter((c) => GROUP_OF[c.id] === group) }))
+    .filter((c) => c.all.length > 0);
   return (
-    <div className="mb-4">
-      {laid.map((g, gi) => {
-        const measured = g.mine.filter((c) => c.pct !== null).length;
-        // Only a role has an average. A KPI everybody answers for must not form
-        // a group average of its own — that is how an advisor's card came to
-        // show a full "WORKSHOP 0%" off one missed mention — and a branch
-        // reading nobody performs has nobody to average for.
-        const total = isRole(g.key) ? roleAverages[g.key] : null;
-
+    <div className="grid lg:grid-cols-2 gap-4">
+      {cards.map(({ group, all }, i) => {
+        // An odd number of cards leaves the last one alone on its row —
+        // let it run full width rather than sit next to a gap.
+        const wide = cards.length % 2 === 1 && i === cards.length - 1;
+        // Worst-first within the group; unmeasured KPIs sink to the bottom.
+        const ordered = [...all].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
         return (
-          <div key={g.key} className={gi > 0 ? 'mt-8' : ''}>
-            <div className="flex items-baseline flex-wrap gap-x-2 pb-2 mb-3 border-b border-border">
-              <span className={`w-1 h-4 rounded-full shrink-0 ${g.accent ? '' : 'bg-border'}`}
-                style={g.accent ? { background: g.accent } : undefined} />
-              <span className={`text-[13px] font-black uppercase tracking-[0.18em] ${g.accent ? '' : 'text-ink-muted'}`}
-                style={g.accent ? { color: g.accent } : undefined}>
-                {g.label}
-              </span>
-              <span className="ml-auto flex items-baseline gap-2">
-                {isRole(g.key) && (
-                  <span className={`text-xl font-black tabular-nums ${band(total).text}`}>{fmtPct(total)}</span>
-                )}
-                <span className="text-[11px] text-ink-muted whitespace-nowrap">
-                  {measured} of {g.mine.length} measured
-                </span>
-              </span>
+          <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
+            <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
+              <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
+              <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
             </div>
-
-            {g.note && <p className="text-[11px] text-ink-muted mb-3">{g.note}</p>}
-
-            <div className="grid lg:grid-cols-2 gap-4">
-              {g.cards.map(({ group, all }, i) => {
-                // An odd number of cards leaves the last one alone on its row —
-                // let it run full width rather than sit next to a gap.
-                const wide = g.cards.length % 2 === 1 && i === g.cards.length - 1;
-                // Worst-first within the group; unmeasured KPIs sink to the bottom.
-                const ordered = [...all].sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
-                return (
-                  <div key={group} className={`border border-border rounded-lg overflow-hidden bg-white ${wide ? 'lg:col-span-2' : ''}`}>
-                    <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
-                      <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
-                      <span className="text-xs font-bold uppercase tracking-wider text-ink">{group}</span>
-                      <span className="text-[11px] text-ink-muted ml-auto">{all.length} KPI{all.length !== 1 ? 's' : ''}</span>
-                    </div>
-                    {ordered.map((c) => (
-                      <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
+            {ordered.map((c) => (
+              <KpiRow key={c.id} cell={c} delta={deltaFor(c.id)} expandable={expandable} />
+            ))}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * The KPI rows a node carries, grouped by each KPI's own definition group, with
+ * the branch-only readings (7 and 9) split out under their own heading. Renders
+ * whatever cells the node has — which KPIs a person owns is the engine's call.
+ */
+function KpiGroups({ cells, deltaFor, expandable = false }: {
+  cells: KpiCell[];
+  deltaFor: (id: number) => number | null;
+  expandable?: boolean;
+}) {
+  const scored = cells.filter((c) => !BRANCH_ONLY_IDS.includes(c.id));
+  const branchOnly = cells.filter((c) => BRANCH_ONLY_IDS.includes(c.id));
+
+  return (
+    <div className="mb-4">
+      {scored.length > 0 && <GroupCards cells={scored} deltaFor={deltaFor} expandable={expandable} />}
+      {branchOnly.length > 0 && (
+        <div className={scored.length > 0 ? 'mt-8' : ''}>
+          <div className="flex items-baseline flex-wrap gap-x-2 pb-2 mb-3 border-b border-border">
+            <span className="w-1 h-4 rounded-full shrink-0 bg-border" />
+            <span className="text-[13px] font-black uppercase tracking-[0.18em] text-ink-muted">Branch only</span>
+          </div>
+          <p className="text-[11px] text-ink-muted mb-3">{BRANCH_ONLY_NOTE}</p>
+          <GroupCards cells={branchOnly} deltaFor={deltaFor} expandable={expandable} />
+        </div>
+      )}
     </div>
   );
 }
@@ -486,7 +372,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                       </span>
                     )}
                   </div>
-                  <RoleFigures roleAverages={tree.company.roleAverages} labelClass="text-white/50" className="mt-2 block" />
                   <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · all branches</div>
                 </div>
 
@@ -559,8 +444,6 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                               style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
                           </span>
                           <span className="flex-1 sm:hidden" />
-                          <RoleFigures roleAverages={b.roleAverages} labelClass="text-ink-muted"
-                            className="hidden md:flex items-baseline gap-1 shrink-0" />
                           <Delta value={branchDelta(b.name)} className="w-14 text-right" />
                           <span className={`text-sm font-bold tabular-nums w-16 text-right ${bb.text}`}>{fmtPct(b.achievement)}</span>
                         </div>
@@ -569,7 +452,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   })}
               </div>
 
-              <KpiRoleGroups cells={tree.company.kpis} roleAverages={tree.company.roleAverages} deltaFor={kpiDelta} />
+              <KpiGroups cells={tree.company.kpis} deltaFor={kpiDelta} />
             </>
           )}
 
@@ -588,7 +471,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
               </div>
 
-              <KpiRoleGroups cells={branchNode.kpis} roleAverages={branchNode.roleAverages} deltaFor={kpiDelta} />
+              <KpiGroups cells={branchNode.kpis} deltaFor={kpiDelta} />
 
               <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3 mt-5">People</div>
               {branchNode.serviceAdvisors.length === 0 ? (
@@ -596,29 +479,16 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   No people on the roster for {branchNode.name}. Add them in <strong>Admin → KPI Configuration</strong>.
                 </div>
               ) : (
-                /* One list, in the order the engine sorted it (best achievement
-                   first). Flat on purpose: a person can hold several roles now,
-                   and grouping by role would list them twice — so each role is
-                   a label beside the name instead of a heading above it. */
+                /* One flat list, in the order the engine sorted it (best
+                   achievement first). */
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {branchNode.serviceAdvisors.map((s) => {
                     const sb = band(s.achievement);
-                    // Ordered by KPI_ROLE_ORDER rather than by however the
-                    // roster entry happens to list them, so two people holding
-                    // the same pair read the same way.
-                    const roles = KPI_ROLE_ORDER.filter((r) => s.roles.includes(r));
                     return (
                       <button key={s.odooUserId} onClick={() => setSa(s.odooUserId)}
                         className="text-left bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-all cursor-pointer border-t-2"
                         style={{ borderTopColor: sb.hex }}>
-                        <div className="flex items-center flex-wrap gap-x-2 gap-y-1 min-w-0">
-                          <span className="font-bold text-ink truncate">{s.name}</span>
-                          {roles.map((r) => (
-                            <span key={r}
-                              className="text-[10px] font-semibold text-ink-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0"
-                              title={`Scored on the ${KPI_ROLE_LABELS[r]} KPIs`}>{KPI_ROLE_LABELS[r]}</span>
-                          ))}
-                        </div>
+                        <div className="font-bold text-ink truncate">{s.name}</div>
                         <div className={`text-2xl font-black tabular-nums mt-1 ${sb.text}`}>{fmtPct(s.achievement)}</div>
                         <div className="text-xs text-ink-muted mt-1.5">{s.roCount} RO{s.roCount !== 1 ? 's' : ''} this week</div>
                       </button>
@@ -639,7 +509,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <span className={`text-3xl font-black tabular-nums ${band(saNode.achievement).text}`}>{fmtPct(saNode.achievement)}</span>
               </div>
-              <KpiRoleGroups cells={saNode.kpis} roleAverages={saNode.roleAverages} deltaFor={() => null} expandable />
+              <KpiGroups cells={saNode.kpis} deltaFor={() => null} expandable />
             </>
           )}
 

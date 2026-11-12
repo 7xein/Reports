@@ -2,7 +2,8 @@
  * /api/sync-odoo
  *
  * Two modes:
- *   GET  — Vercel Cron hits this daily at 08:00 Gulf and reports on YESTERDAY.
+ *   GET  — Vercel Cron hits this daily at 08:00 Gulf and reports on YESTERDAY,
+ *          then refreshes KPI ownership (failure there never fails the sync).
  *          Fetches the WIP snapshot and re-reads the WHOLE month's sales, so an
  *          invoice posted late but dated earlier still lands. Auto-saves both.
  *   POST — Admin "Sync from Odoo" button. Fetches and returns data for
@@ -15,12 +16,20 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales, fetchSalesRange } from '@/lib/odoo';
+import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales, fetchSalesRange, KPI_OWNER_BUDGET_MS } from '@/lib/odoo';
 import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
+import { refreshKpiOwners } from '@/lib/kpi-owners-refresh';
 import { BRANCHES, type WipDailyEntry, type RegionalSalesEntry } from '@/lib/types';
 
-export const maxDuration = 60;
+// 300, not 60: after the WIP and sales sync, the cron also refreshes KPI
+// ownership, which is 30-odd Odoo calls on its own.
+export const maxDuration = 300;
+
+/** Leave this much of maxDuration for the ownership refresh's own reads and its store write. */
+const OWNERSHIP_RESERVE_MS = 60_000;
+/** Below this, the ownership map is not worth starting: it would read almost nothing. */
+const OWNERSHIP_MIN_BUDGET_MS = 20_000;
 
 // ── Cron entry point (auto-saves) ──────────────────────────────────
 /**
@@ -49,6 +58,41 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const started = Date.now();
+  const sync = await dailySync();
+
+  // KPI ownership, after the existing work and whatever its outcome — it does
+  // not depend on WIP or sales. A failure here is logged and reported, never
+  // allowed to change the sync's own status.
+  let ownership: Record<string, unknown>;
+  const budgetMs = Math.min(KPI_OWNER_BUDGET_MS, maxDuration * 1000 - (Date.now() - started) - OWNERSHIP_RESERVE_MS);
+  if (budgetMs < OWNERSHIP_MIN_BUDGET_MS) {
+    console.error(`⚠ [cron] KPI ownership refresh skipped — only ${Math.round(budgetMs / 1000)}s left after the sync.`);
+    ownership = { status: 'skipped', detail: 'not enough time left after the sync' };
+  } else {
+    try {
+      const r = await refreshKpiOwners({ budgetMs });
+      if (r.fatal) console.error('⚠ [cron] KPI ownership refresh could not read Odoo; stored owners left unchanged:', r.fatal);
+      else if (!r.saved) console.error('⚠ [cron] KPI ownership refresh could not save:', r.saveError);
+      else console.log(`💾 [cron] KPI ownership refreshed${r.changed ? ' (changed)' : ' (unchanged)'}${r.unreadable.length ? ` — ${r.unreadable.length} action(s) not fully read, previous owners kept for their KPIs` : ''}`);
+      ownership = {
+        status: r.fatal ? 'failed' : r.saved ? 'saved' : 'failed',
+        changed: r.changed,
+        unreadable: r.unreadable.map((u) => ({ key: u.key, kpis: u.kpis, partial: u.partial, reason: u.reason })),
+        ...(r.fatal ? { detail: r.fatal } : r.saveError ? { detail: r.saveError } : {}),
+      };
+    } catch (e) {
+      console.error('⚠ [cron] KPI ownership refresh failed:', e);
+      ownership = { status: 'failed', detail: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  return NextResponse.json({ ...sync.body, ownership }, { status: sync.status });
+}
+
+/** The WIP + sales sync, unchanged in substance; returns its body and status instead of a response. */
+async function dailySync(): Promise<{ body: Record<string, unknown>; status: number }> {
+
   // Both halves target the same Gulf day, and neither is allowed to sink the
   // other — a WIP failure should not cost us the day's sales.
   //
@@ -72,7 +116,7 @@ export async function GET(request: NextRequest) {
   if (salesRes.status === 'rejected') errors.push(`Sales: ${String(salesRes.reason)}`);
   if (wipRes.status === 'rejected' && salesRes.status === 'rejected') {
     console.error('❌ [cron] both halves failed:', errors);
-    return NextResponse.json({ error: 'Sync failed', detail: errors.join(' | ') }, { status: 500 });
+    return { body: { error: 'Sync failed', detail: errors.join(' | ') }, status: 500 };
   }
 
   // One read, both patches, one write.
@@ -125,21 +169,24 @@ export async function GET(request: NextRequest) {
     await writeData(data);
     console.log(`💾 [cron] Saved ${date} — WIP ${wipRes.status}, ${salesRows} sales rows over ${salesDays} days`);
 
-    return NextResponse.json({
-      success: true,
-      date,
-      wip: wipRes.status === 'fulfilled' ? 'saved' : 'failed',
-      salesFrom: monthStart,
-      salesDays,
-      salesRows,
-      ...(errors.length ? { warnings: errors } : {}),
-    });
+    return {
+      body: {
+        success: true,
+        date,
+        wip: wipRes.status === 'fulfilled' ? 'saved' : 'failed',
+        salesFrom: monthStart,
+        salesDays,
+        salesRows,
+        ...(errors.length ? { warnings: errors } : {}),
+      },
+      status: 200,
+    };
   } catch (error) {
     console.error('❌ [cron] save failed:', error);
-    return NextResponse.json(
-      { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
-      { status: 500 },
-    );
+    return {
+      body: { error: 'Sync failed', detail: error instanceof Error ? error.message : String(error) },
+      status: 500,
+    };
   }
 }
 

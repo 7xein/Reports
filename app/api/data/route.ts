@@ -84,8 +84,14 @@ export async function POST(req: NextRequest) {
   } else if (body.type === 'kpi-config') {
     // Stamp the save time — it's part of the KPI cache key, so saving config
     // immediately invalidates any previously cached KPI trees.
+    // kpiOwners is derived from Odoo, never edited in Admin, so the stored value
+    // always wins over whatever the form sends. Otherwise an Admin tab opened
+    // before the nightly refresh and saved after it would write the old owners
+    // back over the new ones.
+    const stored = current.kpiConfig as import('@/lib/types').KpiConfig | undefined;
     current.kpiConfig = {
       ...(body.payload as import('@/lib/types').KpiConfig),
+      ...(stored?.kpiOwners ? { kpiOwners: stored.kpiOwners } : {}),
       updatedAt: new Date().toISOString(),
     };
   } else {

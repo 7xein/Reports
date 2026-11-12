@@ -16,13 +16,36 @@
  * rostered in therefore reaches no card, which is disclosed in a note rather
  * than dropped in silence.
  *
+ * ── Who a verdict belongs to ──
+ *
+ * Every evaluation names the person who PERFORMED the action its KPI measures,
+ * not the person who happens to have opened the job card. The two are different
+ * people for most of these KPIs — a late invoice is the invoicer's miss, not the
+ * advisor's — and `push()` charging `rec.create_uid` is why the invoicing KPIs
+ * never reached whoever invoices. Each KPI block now states its performer; where
+ * it genuinely cannot know, it says so rather than letting the default stand.
+ *
+ * Whose CARD a KPI appears on is a separate question, answered by ownership
+ * derived from Odoo activity (`config.kpiOwners`, populated by the refresh and
+ * only read here). No role and no section label is involved: a label can
+ * contradict what somebody actually does, and then somebody has to arbitrate it.
+ *
+ * One consequence for the reconciliation promised above: a verdict with NO
+ * performer — the action never happened at all — is shared across that KPI's
+ * owners in the branch, so each of them carries it. The person level is then no
+ * longer a strict partition of the branch level: that one event is counted once
+ * for the branch and once for each owner. It is the only case where several
+ * people are marked down for one event, which is why every instance of it is
+ * disclosed in a note.
+ *
  * Weekly window: Saturday 00:00 → Friday 23:59 Gulf time (UTC+4).
  */
 
 import {
   KPI_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
   KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField, DEFAULT_KPI_CONFIG,
-  ROLE_KPIS, rosterBranches, rosterRoles, rolesForKpi, SaRosterEntry, KpiRole, KPI_ROLE_ORDER,
+  rosterBranches, rosterRoles, rolesForKpi, KpiRole, KPI_ROLE_ORDER,
+  ownersFor, ownsKpi, KPI_OWNER_FLOOR, KPI_OWNER_WINDOW_DAYS,
 } from './types';
 import { call, kpiCompanyIds, mainCompanyIdFor, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
@@ -132,6 +155,21 @@ interface Evaluation {
   compliant: boolean;
   ref: string;
 }
+
+/** Who an evaluation names when the action it judges was never performed. */
+const NO_PERFORMER = { id: null as number | null, name: 'No performer recorded' };
+
+/**
+ * KPIs that are branch readings and must reach no individual card at all.
+ *
+ * 7 (Awaiting labour) and 9 (Weekly closure rate) measure a state of the branch,
+ * not an action anybody took: nobody "does" a closure rate. They therefore have
+ * no performer AND no owner, so rule 3's sharing is switched off for them
+ * explicitly rather than left to depend on the refresh happening to find them no
+ * owners. If a future refresh ever did name one, these two would otherwise start
+ * marking people down for the branch's backlog.
+ */
+const BRANCH_ONLY_KPI_IDS: readonly number[] = [7, 9];
 
 // ── Aggregation ────────────────────────────────────────────────────
 const VIOLATION_CAP = 50;
@@ -271,11 +309,16 @@ async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<n
     const mm = (await call('account.move', 'fields_get', [], { attributes: ['selection'] })) as FieldsMeta;
     const postedLabel = (mm.state?.selection ?? []).find(([v]) => v === 'posted')?.[1];
     if (postedLabel) {
-      Object.assign(out, await trackedTransitions('account.move', [
+      // Only the timestamps are taken: who POSTED the invoice is deliberately not
+      // read from here. KPIs 1 and 11 charge `account.move.create_uid` instead —
+      // on this instance the creator and the poster are the same person on all
+      // but 1–5% of invoices, and a second chatter read to close that gap would
+      // cost more than it buys.
+      Object.assign(out, (await trackedTransitions('account.move', [
         ['model', '=', 'account.move'],
         ['res_id', 'in', moveIds],
         ['tracking_value_ids', '!=', false],
-      ], 'state', [postedLabel]));
+      ], 'state', [postedLabel])).at);
     }
   } catch { /* chatter unavailable — the read below covers every move instead, so this alone is not a failure */ }
 
@@ -333,12 +376,24 @@ async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<n
  * they are not yet invoiced and go through the caller's tri-state. `dayOnly`
  * names the jobs whose billing invoice carries a date but no time, which cannot
  * be timed at all — the caller leaves those unjudged.
+ *
+ * `creators` is who raised that billing invoice — the person KPIs 1 and 11 are
+ * about. Without it both KPIs charged the repair order's creator, i.e. the
+ * advisor who opened the job card, which is why "the invoice was late" never
+ * once reached the people who actually invoice. One bulk read of the chosen
+ * invoices, not one per job.
  */
 async function invoiceTimesForRos(
   ros: Rec[],
   repairedAt: Record<number, number>,
   graceMs: number,
-): Promise<{ times: Record<number, number>; failed: boolean; depositOnly: number; dayOnly: Set<number> }> {
+): Promise<{
+  times: Record<number, number>;
+  failed: boolean;
+  depositOnly: number;
+  dayOnly: Set<number>;
+  creators: Record<number, { id: number; name: string }>;
+}> {
   const roMoves: Record<number, number[]> = {};
   for (const r of ros) {
     const direct = m2o(r.invoice_id)?.[0];
@@ -369,6 +424,8 @@ async function invoiceTimesForRos(
   const { posted, dayOnly: dayOnlyMoves, failed } = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
   const out: Record<number, number> = {};
   const dayOnly = new Set<number>();
+  /** RO id → the invoice chosen as the billing one, so its raiser can be read. */
+  const billingMove: Record<number, number> = {};
   let depositOnly = 0;
   for (const [key, moves] of Object.entries(roMoves)) {
     const roId = Number(key);
@@ -401,8 +458,31 @@ async function invoiceTimesForRos(
     if (!billing) { depositOnly++; continue; } // deposits only → not yet invoiced
     if (dayOnlyMoves.has(billing.id)) { dayOnly.add(roId); continue; }
     out[roId] = billing.t;
+    billingMove[roId] = billing.id;
   }
-  return { times: out, failed: soFailed || failed, depositOnly, dayOnly };
+
+  // Who raised each billing invoice. One read of the invoices actually chosen —
+  // not of every invoice on every job — so the performer costs a single bulk call
+  // however many repair orders are in the week. A failed read simply leaves the
+  // performer unknown, which the caller handles; it never falls back to the job
+  // card's creator, because that is the misattribution being removed.
+  const creators: Record<number, { id: number; name: string }> = {};
+  const moveIds = [...new Set(Object.values(billingMove))];
+  if (moveIds.length) {
+    try {
+      const rows = (await call('account.move', 'read', [moveIds], { fields: ['create_uid'] })) as Rec[];
+      const byMove = new Map<number, { id: number; name: string }>();
+      for (const m of rows) {
+        const u = m2o(m.create_uid);
+        if (u) byMove.set(m.id as number, { id: u[0], name: u[1] });
+      }
+      for (const [key, mid] of Object.entries(billingMove)) {
+        const who = byMove.get(mid);
+        if (who) creators[Number(key)] = who;
+      }
+    } catch { /* performer unknown — never guessed at */ }
+  }
+  return { times: out, failed: soFailed || failed, depositOnly, dayOnly, creators };
 }
 
 // ── Engine ─────────────────────────────────────────────────────────
@@ -616,17 +696,44 @@ async function resolveStageNames(config: KpiConfig, meta: FieldsMeta): Promise<R
 }
 
 /**
+ * A set of tracked transitions: when each record arrived, and who moved it.
+ *
+ * Two parallel maps rather than one map of pairs, so that the callers which only
+ * ever wanted the clock keep reading `at[id]` and nothing else. The author rides
+ * along inside the query that was already being run for the timestamp — a KPI
+ * whose performer is whoever made the transition therefore costs no extra Odoo
+ * call, which is the whole reason it is captured here rather than looked up per
+ * record afterwards.
+ *
+ * `by` holds a res.partner id (mail.message.author_id), not a user id. Resolving
+ * it to a user is the caller's job, because only the caller knows whether an
+ * unresolvable author means "unknown performer" or "not scored at all". It must
+ * never be charged as a user id: partner ids and user ids are different
+ * sequences, so doing that fines whichever unrelated person holds that number.
+ */
+type Transitions = {
+  /** record id → epoch ms of the transition `pick` selected. */
+  at: Record<number, number>;
+  /** record id → res.partner that authored that same transition, null if unreadable. */
+  by: Record<number, number | null>;
+};
+
+/** An empty result, built fresh each time so no caller can mutate a shared one. */
+const noTransitions = (): Transitions => ({ at: {}, by: {} });
+
+/**
  * When each RO actually entered the given state, read from Odoo's chatter/tracking
  * log (mail.message + mail.tracking.value). Returns roId → epoch ms of a
- * transition into one of `labels`, over all of history. Returns {} if tracking
- * isn't readable, so callers fall back to a date proxy.
+ * transition into one of `labels`, over all of history, plus the partner who
+ * authored it. Returns empty maps if tracking isn't readable, so callers fall
+ * back to a date proxy.
  *
  * `pick` is trackedTransitions'. It stays 'last' here because the callers that
  * do not state otherwise are the ones asking how long a car has been in the
  * state it is in now; anything measured FROM the arrival passes 'first'.
  */
-async function stateEntryTimes(roIds: number[], field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Record<number, number>> {
-  if (!roIds.length || !labels.length) return {};
+async function stateEntryTimes(roIds: number[], field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Transitions> {
+  if (!roIds.length || !labels.length) return noTransitions();
   return trackedTransitions('repair.order', [
     ['model', '=', 'repair.order'],
     ['res_id', 'in', roIds],
@@ -641,19 +748,23 @@ async function stateEntryTimes(roIds: number[], field: string, labels: string[],
  * nothing.
  */
 /**
- * Every tracked change of `field` per RO, ascending: [{ t, label }].
+ * Every tracked change of `field` per RO, ascending: [{ t, label, author }].
  *
  * trackedTransitions only answers "when did it arrive"; this answers "and when
  * did it leave", which is what a dwell-time KPI needs.
+ *
+ * `author` is the res.partner that posted the message carrying the change — the
+ * person who moved the car — captured in the query that was already fetching the
+ * date, so a KPI charged to whoever made the transition costs nothing extra.
  */
-async function stateTimeline(roIds: number[], field: string): Promise<Record<number, { t: number; label: string }[]>> {
+async function stateTimeline(roIds: number[], field: string): Promise<Record<number, { t: number; label: string; author: number | null }[]>> {
   if (!roIds.length) return {};
   try {
     const msgs = (await call('mail.message', 'search_read', [[
       ['model', '=', 'repair.order'],
       ['res_id', 'in', roIds],
       ['tracking_value_ids', '!=', false],
-    ]], { fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0 })) as Rec[];
+    ]], { fields: ['res_id', 'date', 'author_id', 'tracking_value_ids'], limit: 0 })) as Rec[];
     if (!msgs.length) return {};
 
     const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
@@ -682,14 +793,15 @@ async function stateTimeline(roIds: number[], field: string): Promise<Record<num
     }
     if (!labelOf.size) return {};
 
-    const out: Record<number, { t: number; label: string }[]> = {};
+    const out: Record<number, { t: number; label: string; author: number | null }[]> = {};
     for (const m of msgs) {
       const t = odooTime(m.date);
       if (t == null) continue;
+      const author = m2o(m.author_id)?.[0] ?? null;
       for (const id of (m.tracking_value_ids as number[] | undefined) ?? []) {
         const label = labelOf.get(id);
         if (!label) continue;
-        (out[m.res_id as number] ??= []).push({ t, label });
+        (out[m.res_id as number] ??= []).push({ t, label, author });
       }
     }
     for (const list of Object.values(out)) list.sort((a, b) => a.t - b.t);
@@ -733,8 +845,8 @@ async function trackingStartedAt(model: string, field: string): Promise<number |
 
 async function roIdsEnteringStateInWindow(
   field: string, labels: string[], from: string, to: string,
-): Promise<Record<number, number>> {
-  if (!labels.length) return {};
+): Promise<Transitions> {
+  if (!labels.length) return noTransitions();
   // The EARLIEST qualifying arrival inside the window, not the latest. The
   // population here is "entered the state during the scoring week", so the week
   // it is being scored for is the week the clock has to start in: a car that
@@ -767,16 +879,22 @@ async function roIdsEnteringStateInWindow(
  *
  * Nothing here defaults to 'first': the two readings are both correct for their
  * own question, so each caller states which question it is asking.
+ *
+ * The author of each message comes back alongside its date (see Transitions).
+ * `author_id` is simply another field on a query that already runs, so every KPI
+ * whose performer is "whoever moved it" is attributable for free; the previous
+ * shape returned the clock and threw the person away, which is why those KPIs
+ * had to fall back to the job card's creator.
  */
-async function trackedTransitions(model: string, msgDomain: OdooDomain, field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Record<number, number>> {
+async function trackedTransitions(model: string, msgDomain: OdooDomain, field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Transitions> {
   try {
     const msgs = (await call('mail.message', 'search_read', [msgDomain], {
-      fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0,
+      fields: ['res_id', 'date', 'author_id', 'tracking_value_ids'], limit: 0,
     })) as Rec[];
-    if (!msgs.length) return {};
+    if (!msgs.length) return noTransitions();
 
     const tvIds = [...new Set(msgs.flatMap((m) => (m.tracking_value_ids as number[] | undefined) ?? []))];
-    if (!tvIds.length) return {};
+    if (!tvIds.length) return noTransitions();
 
     // Odoo 17 links the changed field via field_id (m2o); older versions store the
     // technical name in `field`.
@@ -802,20 +920,28 @@ async function trackedTransitions(model: string, msgDomain: OdooDomain, field: s
       else if (tv[ref] !== field) continue;
       hits.add(tv.id as number);
     }
-    if (!hits.size) return {};
+    if (!hits.size) return noTransitions();
 
-    const out: Record<number, number> = {};
+    const at: Record<number, number> = {};
+    const by: Record<number, number | null> = {};
     for (const m of msgs) {
       const ids = (m.tracking_value_ids as number[] | undefined) ?? [];
       if (!ids.some((id) => hits.has(id))) continue;
       const t = odooTime(m.date);
       const rid = m.res_id as number;
       if (t == null) continue;
-      if (out[rid] == null || (pick === 'first' ? t < out[rid] : t > out[rid])) out[rid] = t;
+      if (at[rid] == null || (pick === 'first' ? t < at[rid] : t > at[rid])) {
+        at[rid] = t;
+        // Taken from the message that carries the SURVIVING transition, so the
+        // clock and the performer always describe the same event. Reading the
+        // author off any other message would charge one person's verdict with
+        // another person's timestamp.
+        by[rid] = m2o(m.author_id)?.[0] ?? null;
+      }
     }
-    return out;
+    return { at, by };
   } catch {
-    return {}; // tracking unavailable — caller falls back
+    return noTransitions(); // tracking unavailable — caller falls back
   }
 }
 
@@ -1032,6 +1158,105 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const evals: Evaluation[] = [];
   const roCountByUser: Record<number, number> = {};
 
+  /** The subject of a verdict: an Odoo user, or nobody. */
+  type Performer = { id: number | null; name: string };
+
+  /**
+   * Chatter author (res.partner) → the Odoo user who is that person.
+   *
+   * Half the KPIs here are performed by whoever moved a car between stages, and
+   * the chatter records that person as a PARTNER. A partner id is not a user id,
+   * so it can never be charged as one — do that and the verdict lands on
+   * whichever unrelated user happens to hold the same number.
+   *
+   * Resolved the way KPI 17 already resolves its mention recipients, including
+   * `active_test: false`: a departed employee is still a user and still performed
+   * the work they performed while employed. Without it Odoo's implicit
+   * `active = True` would drop ex-staff, and their verdicts would silently become
+   * unattributable — i.e. shared across everyone else.
+   *
+   * Cached for the whole run and filled in bulk, so a second KPI asking about the
+   * same people costs no call at all. Unresolved partners are cached as `null`
+   * too: a customer, a mail gateway or an Odoo automation is never a performer,
+   * and re-asking about them every block would multiply reads for a known answer.
+   */
+  const userByPartner = new Map<number, Performer | null>();
+  const loadAuthors = async (partners: (number | null | undefined)[]) => {
+    const want = [...new Set(partners.filter((p): p is number => p != null && !userByPartner.has(p)))];
+    if (!want.length) return;
+    // Recorded as unresolved up front, so a failed read is not retried by every
+    // later caller — and so a failure reads as "unknown performer", never as the
+    // record creator.
+    for (const p of want) userByPartner.set(p, null);
+    try {
+      const users = (await call('res.users', 'search_read', [[['partner_id', 'in', want]]], {
+        fields: ['partner_id', 'name'], limit: 0, context: { active_test: false },
+      })) as Rec[];
+      for (const u of users) {
+        const pid = m2o(u.partner_id)?.[0];
+        if (pid != null) userByPartner.set(pid, { id: u.id as number, name: (u.name as string) || `User ${u.id}` });
+      }
+    } catch { /* every partner in this batch stays unresolved */ }
+  };
+  /**
+   * The performer behind a chatter author, or null when there is none to charge.
+   *
+   * Null covers both "nobody made this transition" and "the author is not an
+   * internal user", and both must behave the same: the verdict names nobody and
+   * falls to rule 3. The one thing it must never do is return the partner id.
+   */
+  const authorPerformer = (partner: number | null | undefined): Performer | null =>
+    (partner != null ? userByPartner.get(partner) ?? null : null);
+
+  /**
+   * Who confirmed each quotation — the person KPIs 2, 3 and 4 are about.
+   *
+   * All three judge the approval of a quotation, and approval is a click
+   * somebody made: `sale.order.state` moving to Confirmed, recorded in the
+   * chatter with its author. The quotation's own creator wrote it, which is a
+   * different act by frequently a different person, and the repair order's
+   * creator — what these KPIs charged until now — did neither.
+   *
+   * This is the one performer in the engine that costs an Odoo read of its own:
+   * nothing else here reads sale.order's chatter. It is bounded on purpose —
+   * filled in bulk for whole populations and cached across the three KPIs, so
+   * the second and third blocks pay nothing for quotations the first already
+   * asked about, and nothing is ever looked up one record at a time.
+   *
+   * A quotation whose confirmation cannot be read falls back to its creator at
+   * the call site, per the owner's rule. A quotation that was never confirmed has
+   * no confirmer to find, which is correct: there was no approval to attribute.
+   */
+  const confirmerBySo = new Map<number, Performer | null>();
+  let soConfirmLabels: string[] | null = null;
+  const loadQuotationConfirmers = async (soIds: (number | null | undefined)[]) => {
+    const want = [...new Set(soIds.filter((id): id is number => id != null && !confirmerBySo.has(id)))];
+    if (!want.length) return;
+    for (const id of want) confirmerBySo.set(id, null);   // unresolved until proven otherwise
+    if (soConfirmLabels == null) {
+      // The chatter stores the human LABEL of the new value, so the codes have to
+      // be translated through the selection list exactly as trackedField() does
+      // for repair.order. Resolved once per run.
+      try {
+        const soMeta = (await call('sale.order', 'fields_get', [], { attributes: ['selection'] })) as FieldsMeta;
+        soConfirmLabels = (soMeta.state?.selection ?? [])
+          .filter(([code]) => code === 'sale' || code === 'done')
+          .map(([, label]) => label);
+      } catch { soConfirmLabels = []; }
+    }
+    if (!soConfirmLabels.length) return;
+    // 'last', not 'first': KPI 2 times the approval Odoo recorded in date_order,
+    // and Odoo overwrites that stamp when a quotation is confirmed again. The
+    // performer has to come from the same confirmation the clock does.
+    const tx = await trackedTransitions('sale.order', [
+      ['model', '=', 'sale.order'],
+      ['res_id', 'in', want],
+      ['tracking_value_ids', '!=', false],
+    ], 'state', soConfirmLabels, 'last');
+    await loadAuthors(Object.values(tx.by));
+    for (const [key, partner] of Object.entries(tx.by)) confirmerBySo.set(Number(key), authorPerformer(partner));
+  };
+
   /**
    * Record an evaluation against a named person rather than the record's creator.
    * Most KPIs judge whoever raised the RO; this one judges whoever was asked.
@@ -1048,22 +1273,40 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   };
 
   /**
-   * `attributeTo` overrides who is scored when the record's creator is the wrong
-   * subject — KPI 18 judges repair orders but belongs to whoever raises the RFQ.
-   * The branch still comes from the record, so a Dubai order stays Dubai's.
+   * `performedBy` is who did the thing this KPI measures, and it has three
+   * distinct values — the distinction is the whole fix, so it is spelled out:
+   *
+   *   • OMITTED  → the record's own creator performed it. True where the record
+   *     IS the action: KPI 5 and 8 judge a job card and its creator opened it,
+   *     KPI 12 and 21 judge a quotation and its creator wrote it, KPI 19 and 20
+   *     judge a purchase order and its creator raised it.
+   *   • a person → somebody other than the record's creator performed it. Most
+   *     KPIs are this case, because most of them judge a repair order for
+   *     something that was done on a quotation, an invoice or a purchase order,
+   *     or for a stage move somebody else made. Charging `create_uid` there sent
+   *     every verdict to whoever opened the job card, whatever the KPI measured.
+   *   • NULL     → the action was never performed, or its performer cannot be
+   *     read. The verdict then names nobody and is shared across the KPI's
+   *     owners in that branch at roll-up (rule 3). Passing the record's creator
+   *     instead would charge the one person we know did NOT do it.
+   *
+   * `undefined` and `null` therefore mean opposite things and are kept apart on
+   * purpose: a block that cannot identify the performer must say `null`, never
+   * leave the argument off.
+   *
+   * The branch always comes from the record, so a Dubai order stays Dubai's
+   * however far away the performer sits.
    */
   const push = (kpiId: number, rec: Rec, compliant: boolean, ref: string,
-                attributeTo?: { id: number; name: string }) => {
+                performedBy?: { id: number | null; name: string } | null) => {
     const cid = m2o(rec.company_id)?.[0];
     const branch = cid != null ? idToBranch[cid] : undefined;
     if (!branch) return; // untracked company (CarDIP, …)
     const u = m2o(rec.create_uid);
-    evals.push({
-      kpiId, branch,
-      userId: attributeTo?.id ?? u?.[0] ?? null,
-      userName: attributeTo?.name ?? u?.[1] ?? 'Unknown',
-      compliant, ref,
-    });
+    const who = performedBy === undefined
+      ? { id: u?.[0] ?? null, name: u?.[1] ?? 'Unknown' }
+      : (performedBy ?? NO_PERFORMER);
+    evals.push({ kpiId, branch, userId: who.id, userName: who.name, compliant, ref });
   };
 
   /**
@@ -1165,8 +1408,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // whatever state they're in now. Falls back to current-state matching.
     let deliveredAt = tfRepaired
       ? await roIdsEnteringStateInWindow(tfRepaired.field, tfRepaired.labels, wStart, wEnd)
-      : {};
-    const enteredIds = Object.keys(deliveredAt).map(Number);
+      : noTransitions();
+    const enteredIds = Object.keys(deliveredAt.at).map(Number);
 
     let repaired: Rec[];
     if (enteredIds.length) {
@@ -1191,14 +1434,26 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Wall-clock minutes, deliberately: the grace absorbs the clerical gap
     // between posting an invoice and ticking the car Repaired, not working time.
     const invoices = (on(1) || on(11))
-      ? await invoiceTimesForRos(repaired, deliveredAt, invoiceGraceMinutes * 60_000)
-      : { times: {} as Record<number, number>, failed: false, depositOnly: 0, dayOnly: new Set<number>() };
+      ? await invoiceTimesForRos(repaired, deliveredAt.at, invoiceGraceMinutes * 60_000)
+      : {
+        times: {} as Record<number, number>, failed: false, depositOnly: 0, dayOnly: new Set<number>(),
+        creators: {} as Record<number, { id: number; name: string }>,
+      };
     const invoicedAt = invoices.times;
 
-    /** Judge repaired → invoice-posted against a time limit. */
+    /**
+     * Judge repaired → invoice-posted against a time limit.
+     *
+     * Charged to whoever raised the billing invoice, which is what both KPIs
+     * measure. Until now they were charged to the repair order's creator, so the
+     * one KPI the invoicing staff answer for landed on the advisor who opened the
+     * job card — the defect this whole change exists to remove. A repaired car
+     * with no invoice at all has no invoicer to name, and then the verdict names
+     * nobody and is shared across the KPI's owners at roll-up.
+     */
     const judgeInvoiceTiming = (kpiId: number, limitMs: number) => {
       for (const r of repaired) {
-        const rep = deliveredAt[r.id as number];
+        const rep = deliveredAt.at[r.id as number];
         if (rep == null) continue;                 // no repaired timestamp → not measurable
         // Billing invoice found, but it carries a date and no time. An hour
         // cannot be timed from a date, and the old parse put it at 04:00 Gulf,
@@ -1212,10 +1467,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // purpose, clamps to zero elapsed and is compliant — the advisor did
         // invoice the car. Anything earlier than the grace is a deposit and was
         // never selected as the billing invoice, so it cannot reach this line.
-        if (inv != null) push(kpiId, r, elapsed(rep, inv) <= limitMs, ref);
+        if (inv != null) push(kpiId, r, elapsed(rep, inv) <= limitMs, ref, invoices.creators[r.id as number] ?? null);
         // The running clock is business time too, or a Thursday repair would be
         // failed by the weekend before anyone could invoice it.
-        else if (elapsed(rep, now) > limitMs) push(kpiId, r, false, ref);  // overdue, still uninvoiced
+        // No performer: there is no invoice, so there is nobody who invoiced it.
+        else if (elapsed(rep, now) > limitMs) push(kpiId, r, false, ref, null);  // overdue, still uninvoiced
         // still inside the window and uninvoiced → not judged yet
       }
     };
@@ -1229,6 +1485,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     } else {
       if (on(1)) judgeInvoiceTiming(1, businessHours(thresholds.invoiceHours ?? 1));
       if (on(11)) judgeInvoiceTiming(11, businessHours(thresholds.deliveryHours ?? 48));
+      // An invoice was found but its raiser was not. Stated, because the verdict
+      // is then shared across the KPI's owners instead of naming one person, and
+      // a reader comparing a card against the branch is owed the reason.
+      const noRaiser = Object.keys(invoicedAt).filter((k) => !invoices.creators[Number(k)]).length;
+      if (noRaiser) {
+        notes.push(`Invoice on delivery and Delivered after repair could not read who raised the billing invoice on ${noRaiser} repaired RO${noRaiser === 1 ? '' : 's'}. ${noRaiser === 1 ? 'That verdict names' : 'Those verdicts name'} nobody and ${noRaiser === 1 ? 'is' : 'are'} shared across each KPI's owners in the branch; neither is charged to whoever opened the job card, who does not raise the invoice.`);
+      }
       if (on(1) || on(11)) {
         notes.push(`Invoice on delivery and Delivered after repair are timed to the invoice that bills the repair: the earliest invoice posted no more than ${limitLabel(invoiceGraceMinutes, 'minute')} before the car was marked Repaired, or at any time after it. Anything posted earlier than that is a down-payment invoice — Odoo posts those at quotation time, and taking the earliest invoice on the job meant a deposit timed the repair, gave a negative interval, and marked the job compliant forever whenever the real closing invoice was posted. The grace is wall-clock time, so invoicing a car a few minutes before ticking it Repaired still counts as invoicing it.`);
       }
@@ -1276,16 +1539,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       let insideGrace = 0, noRepairedAt = 0, noQaEntry = 0, eligible = 0;
       for (const r of repaired) {
         // Judged only if this job card is KNOWN to have entered QA.
-        if (qaEntry[r.id as number] == null) { noQaEntry++; continue; }
+        if (qaEntry.at[r.id as number] == null) { noQaEntry++; continue; }
         eligible++;
-        const rep = deliveredAt[r.id as number];
+        const rep = deliveredAt.at[r.id as number];
         // Without the Repaired moment there is no way to know the grace has run
         // out. The job card's own create_date would say it always has — the same
         // ambiguity-resolved-as-a-fine this engine no longer accepts anywhere.
         if (rep == null) { noRepairedAt++; continue; }
         if (now - rep < graceMs) { insideGrace++; continue; }
-        // No attributeTo: this is the service advisor's KPI, and push()'s default
-        // subject is the repair order's create_uid — whoever opened the job card.
+        // No performer passed, which here means "the record's creator did it":
+        // the owner's rule for this KPI is explicit — "always the service advisor
+        // that created the repair order" — and push()'s default subject is the
+        // repair order's create_uid, i.e. whoever opened the job card. The upload
+        // itself is a binary field and carries no author of its own, so the job
+        // card's owner is also the only attributable signal that exists.
         push(13, r, !!r[followUpField], (r.name as string) || '');
       }
       if (thresholds.followUpGraceDays == null) {
@@ -1322,9 +1589,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // as 2026-11-14 20:00:00Z, whose UTC clock is 20:00 and whose Gulf clock
       // is the midnight that reveals it as a day, not a time.
       const fieldIsDate = meta[scheduleField]?.type === 'date';
-      let unpromised = 0, dayPromises = 0;
+      // Performed by whoever marked the car Repaired — the moment this KPI
+      // judges. That person is the chatter author of the Repaired transition the
+      // clock above already read, so the only cost is resolving their partner to
+      // a user. The repair order's creator, which this KPI charged before, does
+      // not decide when a car is finished.
+      await loadAuthors(Object.values(deliveredAt.by));
+      let unpromised = 0, dayPromises = 0, noMarker = 0;
       for (const r of repaired) {
-        const rep = deliveredAt[r.id as number];
+        const rep = deliveredAt.at[r.id as number];
         if (rep == null) continue;                 // no repaired timestamp → not measurable
         const raw = r[scheduleField];
         let due: number | null;
@@ -1347,7 +1620,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
         // Nothing promised, so nothing can be late.
         if (due == null || !Number.isFinite(due)) { unpromised++; continue; }
-        push(22, r, rep <= due, (r.name as string) || '');
+        const markedBy = authorPerformer(deliveredAt.by[r.id as number]);
+        if (!markedBy) noMarker++;
+        push(22, r, rep <= due, (r.name as string) || '', markedBy);
+      }
+      if (noMarker) {
+        notes.push(`Ready by promised time could not identify who marked ${noMarker} repaired RO${noMarker === 1 ? '' : 's'} Repaired — the chatter author behind the transition is not an internal Odoo user, or could not be read. ${noMarker === 1 ? 'That verdict names' : 'Those verdicts name'} nobody and ${noMarker === 1 ? 'is' : 'are'} shared across this KPI's owners in the branch instead of being charged to whoever opened the job card, who did not decide when the car was finished.`);
       }
       if (unpromised) {
         notes.push(`Ready by promised time skipped ${unpromised} repaired RO${unpromised === 1 ? '' : 's'} with no scheduled delivery date — nothing was promised, so nothing can be late.`);
@@ -1360,7 +1638,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       notes.push('Ready by promised time is inactive — repair.order carries no schedule_date to judge the promise against.');
     }
 
-    if (!Object.keys(deliveredAt).length) {
+    if (!Object.keys(deliveredAt.at).length) {
       notes.push(tfRepaired
         ? `No "${tfRepaired.labels.join('/')}" transitions found on ${tfRepaired.field} in the chatter this week. If that field is not tracked in Odoo, map Repaired to one that is — delivery, invoicing and follow-up all need the moment it happened.`
         : 'Repaired is not mapped to a state or status, so nothing can be timed from it.');
@@ -1375,8 +1653,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const tf = trackedField(config.stageMap.underRepair, meta, stageNames);
 
     // ROs that STARTED repair during this week, whatever state they're in now.
-    let entered = tf ? await roIdsEnteringStateInWindow(tf.field, tf.labels, wStart, wEnd) : {};
-    const startedIds = Object.keys(entered).map(Number);
+    let entered = tf ? await roIdsEnteringStateInWindow(tf.field, tf.labels, wStart, wEnd) : noTransitions();
+    const startedIds = Object.keys(entered.at).map(Number);
 
     let inRepair: Rec[];
     if (startedIds.length) {
@@ -1399,6 +1677,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const soIds = [...new Set(inRepair.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
     const soCreated: Record<number, number> = {};
     const soApproved: Record<number, number> = {};
+    /** Quotation → who wrote it, the fallback performer when its confirmer is unreadable. */
+    const soAuthor: Record<number, Performer> = {};
     // "We could not read the quotations" is a different fact from "the quotation
     // was never approved", and the two used to be indistinguishable here: an empty
     // soApproved failed every quoted RO on KPI 3, while an empty soCreated passed
@@ -1407,10 +1687,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     let quotationsUnreadable = false;
     if (soIds.length) {
       try {
-        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date', 'date_order', 'state'] })) as Rec[];
+        // create_uid rides along in a read that already runs: both KPIs are about
+        // somebody's handling of the QUOTATION, so when the confirmation itself
+        // cannot be read the quotation's author is the owner's stated fallback —
+        // never the repair order's creator, who neither wrote nor confirmed it.
+        const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date', 'create_uid', 'date_order', 'state'] })) as Rec[];
         for (const so of sos) {
           const c = odooTime(so.create_date);
           if (c != null) soCreated[so.id as number] = c;
+          const u = m2o(so.create_uid);
+          if (u) soAuthor[so.id as number] = { id: u[0], name: u[1] };
           if (so.state === 'sale' || so.state === 'done') {
             const a = odooTime(so.date_order);
             if (a != null) soApproved[so.id as number] = a;
@@ -1418,26 +1704,43 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       } catch { quotationsUnreadable = true; }
     }
+    // Who clicked Confirm on each of these quotations. One bulk chatter read,
+    // shared with KPI 2 through the run-wide cache.
+    if (soIds.length && !quotationsUnreadable) await loadQuotationConfirmers(soIds);
+    /**
+     * The performer for both KPIs: whoever confirmed the quotation, falling back
+     * to whoever wrote it, and nobody at all when there is no quotation.
+     *
+     * A repair order with no quotation is the pure rule-3 case — the action these
+     * KPIs measure never happened, so there is no performer to find and the
+     * verdict is shared across the KPI's owners rather than landed on the person
+     * who opened the job card.
+     */
+    const quotePerformer = (soId: number | null): Performer | null =>
+      (soId == null ? null : confirmerBySo.get(soId) ?? soAuthor[soId] ?? null);
 
     let sequenceChecked = 0;
     for (const r of inRepair) {
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
-      const startedAt = entered[r.id as number];
+      const startedAt = entered.at[r.id as number];
       // An RO with no quotation linked at all is still judged: that verdict comes
       // from the repair order, which was read fine. Only the ones whose quotation
       // we failed to read go unjudged, counted for the note below.
       const unreadable = soId != null && quotationsUnreadable;
+      // Null exactly when soId is null, so "no quotation" is a verdict with no
+      // performer rather than one charged to the job card's owner.
+      const who = quotePerformer(soId);
 
       if (on(4)) {
-        if (soId == null) push(4, r, false, ref);              // no quote at all
+        if (soId == null) push(4, r, false, ref, null);         // no quote at all, nobody to charge
         else if (!unreadable) {
           const quotedAt = soCreated[soId];
           if (startedAt != null && quotedAt != null) {
             sequenceChecked++;
-            push(4, r, quotedAt <= startedAt, ref);            // quote must pre-date repair start
+            push(4, r, quotedAt <= startedAt, ref, who);        // quote must pre-date repair start
           } else {
-            push(4, r, true, ref);                             // exists, sequence unverifiable
+            push(4, r, true, ref, who);                         // exists, sequence unverifiable
           }
         }
       }
@@ -1445,12 +1748,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (on(3)) {
         // The quotation must have been APPROVED (confirmed into a sale order)
         // before the RO moved into Under Repair.
-        if (soId == null) push(3, r, false, ref);
+        if (soId == null) push(3, r, false, ref, null);         // no quote at all, nobody to charge
         else if (!unreadable) {
           const approvedAt = soApproved[soId];
-          if (approvedAt == null) push(3, r, false, ref);       // never approved
-          else if (startedAt != null) push(3, r, approvedAt <= startedAt, ref);
-          else push(3, r, true, ref);                           // approved, sequence unverifiable
+          // Never approved: the quotation exists, so its author is still the
+          // person answerable for getting it approved. Only a job with no
+          // quotation at all has nobody.
+          if (approvedAt == null) push(3, r, false, ref, who);   // never approved
+          else if (startedAt != null) push(3, r, approvedAt <= startedAt, ref, who);
+          else push(3, r, true, ref, who);                       // approved, sequence unverifiable
         }
       }
     }
@@ -1493,6 +1799,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (created == null || now - created < graceMs) continue;
       const tagged = tagFields.some((f) => ((r[f] as number[] | undefined) ?? []).length > 0);
       const ref = (r.name as string) || '';
+      // No performer passed, meaning the record's own creator: both KPIs judge
+      // the job card itself, and whoever opened it is who should have tagged it.
+      // Odoo keeps no author for a tag, so there is no other signal and none is
+      // invented.
       if (on(5)) push(5, r, tagged, ref);
       if (on(8) && presenceLive) push(8, r, hasAnyTag(r, presence), ref);
     }
@@ -1587,6 +1897,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Only quotations attached to a job card in the Orders tab are scored.
     const { out: outOfScope, unchecked } = await quotationsOutOfScope(soIds);
 
+    // Who confirmed each quotation that was confirmed this week. The open ones
+    // have no confirmation yet by definition, so they are not asked about — and
+    // asking would cost a read for an answer that cannot exist.
+    await loadQuotationConfirmers(confirmed.map((q) => q.id as number));
+    /**
+     * The performer: whoever confirmed the quotation, or whoever wrote it.
+     *
+     * `undefined` is returned for the fallback rather than the creator being
+     * looked up again, because push()'s default subject is this record's
+     * create_uid and this record IS the quotation — the two are the same person
+     * by construction, and naming them twice invites the two copies to drift.
+     */
+    const approverOf = (q: Rec): Performer | undefined =>
+      confirmerBySo.get(q.id as number) ?? undefined;
+
     let historicalSkipped = 0;
     for (const q of open) {
       if (insuranceExempt.has(q.id as number)) continue;
@@ -1595,6 +1920,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (created == null) continue;
       // Still open, so the clock is still running — on business time, or a
       // quotation raised on Thursday would fail over a weekend nobody worked.
+      // Nothing has been confirmed, so the quotation's author carries it: the
+      // thing being measured is their quotation sitting unapproved.
       push(2, q, elapsed(created, now) <= limitMs, (q.name as string) || '');
     }
     let outOfOrder = 0;
@@ -1609,7 +1936,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // would read as instant approval.
       const took = measured(created, approved);
       if (took == null) { outOfOrder++; continue; }
-      push(2, q, took <= limitMs, (q.name as string) || '');
+      push(2, q, took <= limitMs, (q.name as string) || '', approverOf(q));
     }
     notes.push(staleOpen == null
       ? `Quote approval now scores only quotations created in the last ${openBaselineDays} days. Older ones that are still open are excluded — a draft nobody has confirmed after that long is treated as dead rather than as still pending, instead of failing this KPI every week forever. How many were excluded could not be counted this time. The window is the "Awaiting parts / labour baseline window" under Admin → KPI Configuration, shared with KPIs 6 and 7.`
@@ -1651,6 +1978,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const st = String(q.state ?? 'unknown');
       byState[st] = (byState[st] ?? 0) + 1;
       // Confirmed into a sale order is what "the customer approved it" looks like.
+      // No performer passed, meaning this record's creator: the rate is about the
+      // quotations a person raised and how many of them the customer took, so the
+      // quotation's author is the subject — not whoever confirmed it, and not
+      // whoever opened the job card behind it.
       push(21, q, st === 'sale' || st === 'done', (q.name as string) || '');
     }
     notes.push('Quotation approval rate (KPI 21) counts the quotations CREATED this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending and the denominator is quotations created, not quotations sent.');
@@ -1685,8 +2016,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const tfClosed = trackedField(config.stageMap.closed, meta, stageNames);
     const closedThisWeek = tfClosed
       ? await roIdsEnteringStateInWindow(tfClosed.field, tfClosed.labels, wStart, wEnd)
-      : {};
-    let closedSet = new Set(Object.keys(closedThisWeek).map(Number));
+      : noTransitions();
+    let closedSet = new Set(Object.keys(closedThisWeek.at).map(Number));
 
     if (!closedSet.size) {
       // No chatter history — fall back to "created this week and closed now".
@@ -1696,7 +2027,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       closedSet = new Set(nowClosed.map((r) => r.id as number));
     }
 
-    for (const r of received) push(9, r, closedSet.has(r.id as number), (r.name as string) || '');
+    // No performer, deliberately: a closure rate is a property of the week's
+    // intake, not an act anybody performs. Charging it to whoever opened each job
+    // card made a branch's throughput into one advisor's score. It carries no
+    // owner either (BRANCH_ONLY_KPI_IDS), so it is never shared out at roll-up
+    // and reaches no individual card at all — it stays a branch reading.
+    for (const r of received) push(9, r, closedSet.has(r.id as number), (r.name as string) || '', null);
   }
 
   // ── KPIs 12, 14, 15 & 16 — the workshop stage clock ──
@@ -1735,8 +2071,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Full stage history, not just the Inspection hits, so a silent RO can be told
     // apart from one that genuinely skipped check-in.
     const timeline = await stateTimeline(weekROs.map((r) => r.id as number), tfInspection.field);
+    // Performed by whoever moved the car into Inspection — check-in is that
+    // transition, and the chatter names its author. Captured by the timeline read
+    // that was already running, so the only cost is one bulk partner→user lookup,
+    // itself shared with the other stage KPIs.
+    await loadAuthors(Object.values(timeline).flatMap((events) => events.map((e) => e.author)));
 
-    let unobserved = 0, judged = 0, outOfOrder = 0;
+    let unobserved = 0, judged = 0, outOfOrder = 0, noMover = 0;
     for (const r of weekROs) {
       const roAt = odooTime(r.create_date);
       if (roAt == null) continue;
@@ -1750,7 +2091,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         const took = measured(roAt, hits[0].t);
         if (took == null) { outOfOrder++; continue; }
         judged++;
-        push(14, r, took <= limitMs, ref);
+        const movedBy = authorPerformer(hits[0].author);
+        if (!movedBy) noMover++;
+        push(14, r, took <= limitMs, ref, movedBy);
         continue;
       }
       // No Inspection on record. Only a failure if we have some other stage change
@@ -1758,7 +2101,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (!events.length) { unobserved++; continue; }
       // Business time while the clock runs, so an RO raised at closing is not
       // failed by the night it sat through.
-      if (elapsed(roAt, now) > limitMs) { judged++; push(14, r, false, ref); }
+      // Nobody checked this car in, so there is nobody who performed it: the
+      // verdict names no one rather than falling to whoever opened the job card.
+      if (elapsed(roAt, now) > limitMs) { judged++; push(14, r, false, ref, null); }
+    }
+    if (noMover) {
+      notes.push(`Check-in after RO could not identify who moved ${noMover} repair order${noMover === 1 ? '' : 's'} into Inspection — the chatter author is not an internal Odoo user, or could not be read. ${noMover === 1 ? 'That verdict names' : 'Those verdicts name'} nobody and ${noMover === 1 ? 'is' : 'are'} shared across this KPI's owners in the branch.`);
     }
     if (unobserved) {
       notes.push(`Check-in ignored ${unobserved} of ${weekROs.length} ROs with no stage history at all — they moved before tracking was switched on, so their check-in was never recorded. Judged ${judged}.`);
@@ -1773,7 +2121,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // tighter promise on getting the quote out.
   if ((on(12) || on(15)) && tfInspection && has('sale_order_id')) {
     const entered = await roIdsEnteringStateInWindow(tfInspection.field, tfInspection.labels, wStart, wEnd);
-    const ids = Object.keys(entered).map(Number);
+    const ids = Object.keys(entered.at).map(Number);
     if (!ids.length) {
       notes.push(`No repair order entered "${tfInspection.labels.join('/')}" during this week according to the chatter — inspection and quote-after-inspection have nothing to measure.`);
     }
@@ -1786,13 +2134,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
       const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
       const soCreated: Record<number, number> = {};
+      /** Quotation → who wrote it. KPI 12 is that person's promise, nobody else's. */
+      const soAuthor: Record<number, Performer> = {};
       let quotesUnreadable = false;
       if (soIds.length) {
         try {
-          const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
+          // create_uid costs nothing extra on a read that already runs.
+          const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date', 'create_uid'] })) as Rec[];
           for (const so of sos) {
             const t = odooTime(so.create_date);
             if (t != null) soCreated[so.id as number] = t;
+            const u = m2o(so.create_uid);
+            if (u) soAuthor[so.id as number] = { id: u[0], name: u[1] };
           }
         } catch {
           // The tri-state below does NOT catch this — it reads a missing entry as
@@ -1802,10 +2155,36 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       }
 
-      const judgeQuoteTiming = (kpiId: number, limitMs: number, label: string) => {
+      // One measurement, two different performers — which is why the resolver is
+      // a parameter rather than something judgeQuoteTiming decides for itself.
+      //
+      // KPI 15 asks how long the inspection ran, and that is the inspector's: the
+      // person who moved the car into Inspection, read from the chatter author of
+      // the very transition the clock starts at. KPI 12 asks whether a quotation
+      // reached the customer in time, and that is whoever wrote the quotation.
+      // Both used to be charged to the repair order's creator, who in general did
+      // neither.
+      await loadAuthors(Object.values(entered.by));
+      let noInspector = 0;
+      const inspectedBy = (r: Rec): Performer | null => {
+        const who = authorPerformer(entered.by[r.id as number]);
+        if (!who) noInspector++;        // counted only for KPI 15, its only caller
+        return who;
+      };
+      // Null when there is no quotation yet: nobody has performed the act KPI 12
+      // measures, so the verdict names nobody rather than the job card's owner.
+      const quotedBy = (_r: Rec, soId: number | null): Performer | null =>
+        (soId != null ? soAuthor[soId] ?? null : null);
+
+      const judgeQuoteTiming = (
+        kpiId: number,
+        limitMs: number,
+        label: string,
+        performedBy: (r: Rec, soId: number | null) => Performer | null,
+      ) => {
         let outOfOrder = 0;
         for (const r of ros) {
-          const from = entered[r.id as number];
+          const from = entered.at[r.id as number];
           if (from == null) continue;
           const ref = (r.name as string) || '';
           const soId = m2o(r.sale_order_id)?.[0] ?? null;
@@ -1823,19 +2202,22 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             // impossible to fail.
             const took = measured(from, quotedAt);
             if (took == null) { outOfOrder++; continue; }
-            push(kpiId, r, took <= limitMs, ref);
+            push(kpiId, r, took <= limitMs, ref, performedBy(r, soId));
           }
           // The unquoted clock runs on business time as well — otherwise the
           // weekend, not the workshop, decides the overrun.
-          else if (elapsed(from, now) > limitMs) push(kpiId, r, false, ref);  // still unquoted, window gone
+          else if (elapsed(from, now) > limitMs) push(kpiId, r, false, ref, performedBy(r, null));  // still unquoted, window gone
         }
         if (outOfOrder) {
           notes.push(`${label} left ${outOfOrder} repair order${outOfOrder === 1 ? '' : 's'} unjudged whose quotation was created before the inspection it is timed from — the quotation belongs to an earlier pass through Inspection, so there is no interval to measure here. ${outOfOrder === 1 ? 'It used' : 'They used'} to read as quoted instantly, which is how a re-inspection that was never re-quoted could not fail.`);
         }
       };
 
-      if (on(15)) judgeQuoteTiming(15, businessHours(thresholds.inspectionHours ?? 27), 'Inspection duration');
-      if (on(12)) judgeQuoteTiming(12, businessHours(thresholds.quoteSentHours ?? 4), 'Quote sent to customer');
+      if (on(15)) judgeQuoteTiming(15, businessHours(thresholds.inspectionHours ?? 27), 'Inspection duration', inspectedBy);
+      if (on(15) && noInspector) {
+        notes.push(`Inspection duration could not identify who moved ${noInspector} repair order${noInspector === 1 ? '' : 's'} into Inspection — the chatter author is not an internal Odoo user, or could not be read. ${noInspector === 1 ? 'That verdict names' : 'Those verdicts name'} nobody and ${noInspector === 1 ? 'is' : 'are'} shared across this KPI's owners in the branch rather than charged to whoever opened the job card.`);
+      }
+      if (on(12)) judgeQuoteTiming(12, businessHours(thresholds.quoteSentHours ?? 4), 'Quote sent to customer', quotedBy);
       if (quotesUnreadable) {
         const skipped = ros.filter((r) => m2o(r.sale_order_id)?.[0] != null).length;
         notes.push(`Inspection duration and Quote sent to customer left ${skipped} repair order${skipped === 1 ? '' : 's'} unjudged — their quotations could not be read from Odoo, so an RO still waiting for a quote cannot be told apart from one whose quote we failed to fetch. Repair orders with no quotation linked at all are still counted.`);
@@ -1847,7 +2229,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   if (on(16) && tfQa) {
     const limitMs = businessHours(thresholds.qaHours ?? 9);
     const entered = await roIdsEnteringStateInWindow(tfQa.field, tfQa.labels, wStart, wEnd);
-    const ids = Object.keys(entered).map(Number);
+    const ids = Object.keys(entered.at).map(Number);
     if (!ids.length) {
       notes.push(`No repair order entered "${tfQa.labels.join('/')}" during this week according to the chatter — QA duration has nothing to measure.`);
     }
@@ -1865,8 +2247,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // week the population came from.
       const weekFromMs = odooTime(wStart) ?? -Infinity;
       const weekToMs = odooTime(wEnd) ?? Infinity;
+      // Performed by whoever moved the car through QA: the chatter author of the
+      // QA entry this dwell is timed from. Both the timeline and the windowed
+      // lookup already carry that author, so nothing extra is read from Odoo.
+      await loadAuthors([
+        ...Object.values(entered.by),
+        ...Object.values(timeline).flatMap((events) => events.map((e) => e.author)),
+      ]);
 
-      let outOfOrder = 0;
+      let outOfOrder = 0, noMover = 0;
       for (const r of ros) {
         const ref = (r.name as string) || '';
         const events = timeline[r.id as number] ?? [];
@@ -1884,9 +2273,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // earliest QA arrival inside the week, when the full timeline is
         // unreadable. Then there is no "left" to pair with it and the record
         // runs on the open-ended clock below.
-        const from = enterIdx >= 0 ? events[enterIdx].t : entered[r.id as number];
+        const from = enterIdx >= 0 ? events[enterIdx].t : entered.at[r.id as number];
         if (from == null) continue;
         const left = enterIdx >= 0 && enterIdx + 1 < events.length ? events[enterIdx + 1].t : null;
+        // Read off the same QA entry `from` came from, whichever source supplied
+        // it, so the dwell and the person always describe one event.
+        const movedBy = authorPerformer(enterIdx >= 0 ? events[enterIdx].author : entered.by[r.id as number]);
+        if (!movedBy) noMover++;
 
         if (left != null) {
           // Both stamps come from one ascending timeline, with `left` the very
@@ -1894,13 +2287,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           // the same: the invariant is the check, not the assumption.
           const took = measured(from, left);
           if (took == null) { outOfOrder++; continue; }
-          push(16, r, took <= limitMs, ref);
+          push(16, r, took <= limitMs, ref, movedBy);
         }
         // Still in QA: business time only, so an overnight wait is not an overrun.
-        else if (elapsed(from, now) > limitMs) push(16, r, false, ref);  // still in QA, over the limit
+        else if (elapsed(from, now) > limitMs) push(16, r, false, ref, movedBy);  // still in QA, over the limit
       }
       if (outOfOrder) {
         notes.push(`QA duration left ${outOfOrder} repair order${outOfOrder === 1 ? '' : 's'} unjudged whose QA exit is recorded before its QA entry — the two stamps cannot both be right, so the dwell is not measurable and is not read as a pass.`);
+      }
+      if (noMover) {
+        notes.push(`QA duration could not identify who moved ${noMover} repair order${noMover === 1 ? '' : 's'} through QA — the chatter author is not an internal Odoo user, or could not be read. ${noMover === 1 ? 'That verdict names' : 'Those verdicts name'} nobody and ${noMover === 1 ? 'is' : 'are'} shared across this KPI's owners in the branch rather than charged to whoever opened the job card.`);
       }
     }
   }
@@ -2045,8 +2441,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // Where the field answered, this read is not made at all.
         const undatedIds = closed.filter((j) => j.closedAt == null).map((j) => j.id);
         if (undatedIds.length && tfClosed) {
+          // Only the clock is wanted here — this answers "was the job still open
+          // when the parts were ordered", which nobody is scored for.
           const closedAt = await stateEntryTimes(undatedIds, tfClosed.field, tfClosed.labels);
-          for (const [id, t] of Object.entries(closedAt)) {
+          for (const [id, t] of Object.entries(closedAt.at)) {
             const job = byId.get(Number(id));
             // Guarded: status_since already won wherever it had a value.
             if (job && job.closedAt == null) job.closedAt = t;
@@ -2133,7 +2531,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           // When each vehicle had a purchase order raised against it. Every state
           // counts: a draft — or even a later cancelled — RFQ was still raised.
           const fleetIds = [...new Set(ros.map((r) => m2o(r.fleet_id)?.[0]).filter((x): x is number => x != null))];
-          const rfqTimes: Record<number, number[]> = {};
+          // When, and by whom. The raiser is read off the same purchase order
+          // rows as the timestamp, so this KPI's performer costs no extra call.
+          const rfqTimes: Record<number, { t: number; by: Performer | null }[]> = {};
           // This query carried no company filter at all while 19 and 20 were
           // both scoped, so an RFQ raised through an uncounted company still
           // satisfied KPI 18 — 18 read high on purchasing the other two could not
@@ -2145,13 +2545,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             try {
               const pos = (await call('purchase.order', 'search_read', [[
                 ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
-              ]], { fields: ['fleet_id', 'create_date', 'company_id'], limit: 0 })) as Rec[];
+              ]], { fields: ['fleet_id', 'create_date', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
               for (const po of pos) {
                 const cid = m2o(po.company_id)?.[0];
                 if (cid == null || !kpiIds.includes(cid)) { offScopeRfqs++; continue; }
                 const fleet = m2o(po.fleet_id)?.[0];
                 const t = poTime(po.create_date);
-                if (fleet != null && t != null) (rfqTimes[fleet] ??= []).push(t);
+                const u = m2o(po.create_uid);
+                if (fleet != null && t != null) {
+                  (rfqTimes[fleet] ??= []).push({ t, by: u ? { id: u[0], name: u[1] } : null });
+                }
               }
             } catch { /* this chunk's vehicles simply have no RFQ times */ }
           }
@@ -2159,14 +2562,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             notes.push(`RFQ after approval no longer counts purchase orders raised outside the five scored companies, and ignored ${offScopeRfqs} of them this week. This query had no company filter while RFQ confirmed and Parts placed both had one, so all three now agree on which companies count. Where those purchases were the real RFQ for the job, this KPI will read lower than before — the scope narrowed, the purchasing did not change.`);
           }
 
-          // Attributed through the REPAIR ORDER: when the RFQ is the thing
-          // missing there is no purchase order to hang the miss on, so the job
-          // card's owner is the only stable subject — unless the branch has
-          // nominated the person who actually raises its RFQs, who is then a
-          // better subject for both the hit and the miss.
-          /** Branches whose coordinator really took a verdict, for the note below. */
-          const creditedTo = new Map<Branch, string>();
-          let noVehicle = 0;
+          // Performed by whoever raised the RFQ — the purchase order's creator,
+          // read from Odoo rather than nominated.
+          //
+          // This KPI used to be charged to a branch's single configured RFQ
+          // coordinator (`config.rfqCoordinators`), falling back to the job
+          // card's owner. That is no longer read at all: a nomination holds one
+          // name per branch, so a second and third raiser could not be scored,
+          // and the live data had the nominated Dubai name raising no RFQs
+          // whatsoever while taking every Dubai verdict. The derived raiser
+          // supersedes it, with no label and nobody to arbitrate.
+          //
+          // When the RFQ is the thing MISSING there is no purchase order and so
+          // no raiser: that verdict names nobody and is shared across this KPI's
+          // owners in the branch, which is exactly who should have raised it.
+          let noVehicle = 0, unraised = 0;
           for (const r of ros) {
             const soId = m2o(r.sale_order_id)?.[0];
             const approved = soId != null ? approvedAt[soId] : undefined;
@@ -2180,32 +2590,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             // A vehicle collects purchase orders over the years, so an RFQ counts
             // for THIS job only if it came after the job card existed — and one
             // raised before approval is early, not late.
-            const raised = (rfqTimes[fleet] ?? [])
-              .some((t) => t <= approved + limitMs && (roCreated == null || t >= roCreated));
+            // The EARLIEST qualifying RFQ, because that is the one that satisfied
+            // the rule and so the one whose raiser performed it.
+            const qualifying = (rfqTimes[fleet] ?? [])
+              .filter((x) => x.t <= approved + limitMs && (roCreated == null || x.t >= roCreated))
+              .sort((a, b) => a.t - b.t);
             const ref = (r.name as string) || '';
-            // Resolved per record: each branch has its own RFQ raiser, so a
-            // Dubai order must not land on Sharjah's coordinator.
-            const roBranch = (() => {
-              const cid = m2o(r.company_id)?.[0];
-              return cid != null ? idToBranch[cid] : undefined;
-            })();
-            const coordinator = roBranch ? config.rfqCoordinators?.[roBranch] : undefined;
-            const judged = raised || now - approved > limitMs;
-            if (raised) push(18, r, true, ref, coordinator);
-            else if (now - approved > limitMs) push(18, r, false, ref, coordinator);
+            if (qualifying.length) push(18, r, true, ref, qualifying[0].by);
+            else if (now - approved > limitMs) { unraised++; push(18, r, false, ref, null); }
             // still inside the window with no RFQ yet → not judged
-            if (judged && roBranch && coordinator) creditedTo.set(roBranch, coordinator.name);
           }
-          // A silent re-attribution looks like the KPI is broken, so say whose
-          // numbers moved — and only for branches that actually scored.
-          if (creditedTo.size) {
-            // KPI_BRANCHES, not the wider workshop list: creditedTo is keyed by
-            // the branch an RO resolved to, and only these five ever do now.
-            const who = KPI_BRANCHES
-              .filter((b) => creditedTo.has(b))
-              .map((b) => `${b} → ${creditedTo.get(b)}`)
-              .join(', ');
-            notes.push(`RFQ after approval is credited to each branch's nominated RFQ coordinator rather than the job card's owner: ${who}.`);
+          if (unraised) {
+            notes.push(`RFQ after approval found no RFQ at all on ${unraised} approved job${unraised === 1 ? '' : 's'} past the limit, so ${unraised === 1 ? 'that verdict names' : 'those verdicts name'} nobody: there is no purchase order and therefore no raiser. ${unraised === 1 ? 'It is' : 'They are'} shared across this KPI's owners in the branch — whoever does raise its RFQs — instead of being charged to whoever opened the job card. This KPI no longer reads the nominated RFQ coordinator at all; the raiser is derived from Odoo.`);
           }
           if (noVehicle) {
             notes.push(`RFQ after approval ignored ${noVehicle} repair order${noVehicle === 1 ? '' : 's'} with no vehicle set — the purchase order link runs through the vehicle, so an RFQ could not be seen either way.`);
@@ -2271,6 +2667,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             // limit and read as compliant. The business-clock KPIs route this
             // through measured(); this chain is calendar-timed, so it says so
             // here rather than handing out a free pass.
+            // No performer passed, meaning this record's creator — and the record
+            // here IS the purchase order, so that is the person who raised the
+            // RFQ this KPI is about. One of the two KPIs that already charged the
+            // right person before this change.
             if (confirmed != null && confirmed < created) outOfOrder++;
             else if (confirmed != null) push(19, po, confirmed - created <= limitMs, ref);
             else if (RFQ_STATES.includes(String(po.state))) {
@@ -2353,6 +2753,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           const lineInfo = await readPartsLines(parts, [...new Set(placements.flatMap((p) => p.lines))]);
 
           let noArrival = 0, outOfOrderArrival = 0;
+          // Every push below omits the performer, meaning the record's creator,
+          // and the record is the purchase order — whoever raised it. Correct as
+          // it stands: this KPI is about chasing the parts that order was for.
           for (const p of placements) {
             const ref = (p.po.name as string) || '';
             // Judged on the whole job card, not this order's own lines: one job's
@@ -2628,17 +3031,23 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const scoreWaiting = (kpiId: number, waiting: Map<number, Rec>, overdue: Map<number, Rec>) => {
       const seen = new Set<number>();
       let judged = 0;
+      // Both KPIs pass NO performer. A vehicle waiting is a state, not an act:
+      // nobody performs "awaiting parts", and the one person these verdicts used
+      // to be charged to — whoever opened the job card — is the person with least
+      // influence over whether the parts have arrived or the labour was clocked
+      // on. KPI 6's verdicts are shared across its owners in the branch; KPI 7 is
+      // in BRANCH_ONLY_KPI_IDS and reaches no card at all.
       for (const [id, r] of waiting) {
         if (!inWindow.has(id)) continue;   // older than the baseline window, unless it is overdue below
         seen.add(id);
         judged++;
-        push(kpiId, r, !overdue.has(id), (r.name as string) || '');
+        push(kpiId, r, !overdue.has(id), (r.name as string) || '', null);
       }
       // Stuck vehicles older than the window still count against us.
       for (const [id, r] of overdue) {
         if (seen.has(id)) continue;
         judged++;
-        push(kpiId, r, false, (r.name as string) || '');
+        push(kpiId, r, false, (r.name as string) || '', null);
       }
       return { judged, overdue: overdue.size };
     };
@@ -2663,8 +3072,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // that is the right reading: this asks how long a car has been sitting in
       // the state it is in NOW. Taking the first arrival would age a vehicle
       // from a wait it has already finished and overstate every one of them.
-      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels, 'last') : {};
-      if (Object.keys(entered).length) usedTrackingForAging = true;
+      // The author is not read here: KPIs 6 and 7 have no performer at all, so
+      // only the arrival time is used.
+      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels, 'last') : noTransitions();
+      if (Object.keys(entered.at).length) usedTrackingForAging = true;
       const limitMs = days * 86400_000;
       const waiting = new Map<number, Rec>();
       const overdue = new Map<number, Rec>();
@@ -2677,7 +3088,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // from a missing stamp. Every step of that chain moved toward more
         // elapsed time, so every ambiguity resolved against the branch. An RO
         // with no stamp is now unknown, not overdue.
-        const since = entered[r.id as number] ?? odooTime(r[ageField]);
+        const since = entered.at[r.id as number] ?? odooTime(r[ageField]);
         if (since == null) { noStamp++; continue; }
         waiting.set(r.id as number, r);
         if (now - since > limitMs) overdue.set(r.id as number, r);
@@ -3020,26 +3431,88 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   }
 
   /**
-   * The enabled KPIs a roster entry answers for: the union of their roles' KPIs
-   * plus the ones everybody is scored on.
+   * Has any ownership been derived yet?
    *
-   * One definition, used by the cards below and by the stranded-work note after
-   * them, so the note can never count work that would not have been on the card
-   * even in a branch the person is rostered in.
+   * `config.kpiOwners` is absent until the refresh has run once, and the honest
+   * reading of that is "nobody has been shown to own anything", not "fall back to
+   * a label". There is deliberately no fallback to roles or sections: a figure
+   * produced by one would be indistinguishable on the page from a derived one,
+   * and the whole point of deriving ownership is that nobody has to take the
+   * page's word for who answers for what.
    */
-  const scoredKpisFor = (r: SaRosterEntry): number[] => {
-    const owned = new Set<number>([
-      ...rosterRoles(r).flatMap((role) => ROLE_KPIS[role]),
-      ...KPI_IDS_FOR_EVERYONE,              // 17 — anyone can be @mentioned
-    ]);
-    return enabled.filter((id) => owned.has(id));
-  };
+  const ownershipDerived = KPI_BRANCHES.some(
+    (b) => KPI_DEFINITIONS.some((d) => ownersFor(config, b, d.id).length > 0),
+  );
+  if (!ownershipDerived) {
+    notes.push(`No KPI ownership has been derived from Odoo yet, so no individual card carries any KPI — every figure on this page is a branch or company reading. Who answers for a KPI is read from who performs its action in that branch, more than ${KPI_OWNER_FLOOR} times in ${KPI_OWNER_WINDOW_DAYS} days, and nothing stands in for that: a figure from a fallback would look exactly like a derived one on this page. Use "Refresh ownership now" under Admin → KPI Configuration to derive it. Individuals still appear with the work they personally performed, because that is observed rather than assumed.`);
+  }
+
+  /**
+   * The enabled KPIs a person's card carries in a branch.
+   *
+   * Two sources, and no label anywhere near either of them:
+   *
+   *   • the KPIs they OWN in that branch, derived from Odoo activity. This is
+   *     what decides whose card a KPI appears on at all.
+   *   • any KPI they were personally charged with in that branch, even if they do
+   *     not own it. They demonstrably performed the work, so dropping the verdict
+   *     would hide real activity — usually somebody below the ownership floor
+   *     whom the next refresh will pick up. It is disclosed in a note.
+   *
+   * A KPI in neither set gets NO cell, never a cell reading zero: aggregate()
+   * yields pct null for an empty population and null is excluded from every
+   * average, but an absent cell is also an absent row, which is the honest
+   * rendering of "not this person's KPI".
+   */
+  const cardKpisFor = (userId: number, branch: string, performed: Set<number>): number[] =>
+    enabled.filter((id) => (
+      // 7 and 9 are branch readings and must reach no card at all — not even as
+      // an empty row. They push no performer, so they can only arrive here
+      // through an ownership entry, and "must reach no individual card" has to
+      // hold whatever a future refresh writes.
+      !BRANCH_ONLY_KPI_IDS.includes(id)
+      && (performed.has(id) || ownsKpi(config, branch, id, userId))
+    ));
+
+  /** Rule-3 bookkeeping, for the disclosure note after the branches are built. */
+  const sharedOut: { branch: string; kpiId: number; verdicts: number; owners: number }[] = [];
 
   // Five nodes, not seven: the KPI section scores main branches only, so Qatar
   // and EV Hub build no node at all and no station figure is folded into one.
   const branches: BranchNode[] = KPI_BRANCHES.map((b) => {
     const branchEvals = evals.filter((e) => e.branch === b);
     const kpis = aggregate(branchEvals, enabled, snapshotNotes, displayNames, sectionById);
+
+    /**
+     * Rule 3: the verdicts with no performer, per KPI.
+     *
+     * These are the ones where the action never happened at all — no invoice was
+     * raised, no RFQ exists, nobody checked the car in — so there is no
+     * individual to charge and the engine refused to invent one. Each goes to
+     * every owner of that KPI in this branch, because collectively they are who
+     * should have done it. It is the only case in the engine where one event is
+     * counted against several people, which is why it is disclosed rather than
+     * applied quietly.
+     *
+     * BRANCH_ONLY_KPI_IDS are kept out: 7 and 9 are readings of the branch, and
+     * sharing them would fine individuals for a backlog nobody performs.
+     */
+    const unperformed = new Map<number, Evaluation[]>();
+    for (const e of branchEvals) {
+      if (e.userId != null) continue;
+      if (BRANCH_ONLY_KPI_IDS.includes(e.kpiId)) continue;
+      const list = unperformed.get(e.kpiId);
+      if (list) list.push(e); else unperformed.set(e.kpiId, [e]);
+    }
+    for (const [kpiId, list] of unperformed) {
+      // The owners who really take it: an owner has to have a card in this
+      // branch, so someone off the roster or excluded from scoring is not a
+      // recipient and must not be counted as one in the note.
+      const takers = scoredRoster.filter(
+        (r) => rosterBranches(r).includes(b) && ownsKpi(config, b, kpiId, r.odooUserId),
+      ).length;
+      sharedOut.push({ branch: b, kpiId, verdicts: list.length, owners: takers });
+    }
 
     // A person appears under every branch they cover, not only a primary one: one
     // user opens job cards and writes quotations in all five branches, and
@@ -3049,37 +3522,33 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const serviceAdvisors: SaNode[] = scoredRoster
       .filter((r) => rosterBranches(r).includes(b))
       .map((r) => {
-        // Scored on the KPIs their roles own, not on their section's. Eight KPIs
-        // — 3, 4, 6, 7, 9, 12, 15 and 16 — are charged to whoever created the
-        // repair order, which is the advisor, while all eight are tagged
-        // workshop; scoring a person only on their own section therefore sent
-        // those violations to no individual card at all. Roles are what people
-        // actually do, read from Odoo: an advisor answers for the quotation and
-        // invoicing KPIs, a controller for the stage timings, a parts man for the
-        // RFQ chain, and someone who does two of those jobs holds two roles and
-        // answers for both.
-        //
-        // A KPI no role owns (7 Awaiting labour, 9 Weekly closure rate — branch
-        // readings nobody performs) reaches no card by having no cell at all,
-        // never by having one that reads zero: aggregate() gives pct null for
-        // zero applicable and null is excluded from every average, but an absent
-        // cell is also an absent row, which is the honest rendering of "not this
-        // person's KPI".
-        const mineEnabled = scoredKpisFor(r);
-        // Unchanged, and no longer a grouping: `section` still comes from the
-        // legacy field because `sections` below — and through it the stored
-        // weekly history — is still filed under the two section keys. What the
-        // page groups by is `roles`, which is the same list scoredKpisFor() just
-        // read, so what a person is shown as and what they are scored on cannot
-        // drift apart.
-        const section: KpiSection = r.section ?? 'advisor';
         // Scoped to the branch this card sits under — `branchEvals`, not `evals`.
         // A branch figure is then the sum of the work booked there and a person's
         // figure is their share of it, so the two levels reconcile. Taking all of
         // their work in any branch drew the two cells from different populations,
         // and they could differ by the entire population of a KPI.
+        //
+        // `userId` is now the person who PERFORMED each action rather than
+        // whoever opened the job card, which is what finally lets the invoicing,
+        // stage and parts KPIs reach the people who do them.
         const mine = branchEvals.filter((e) => e.userId === r.odooUserId);
-        const cells = aggregate(mine, mineEnabled, snapshotNotes, displayNames, sectionById);
+        const performed = new Set(mine.map((e) => e.kpiId));
+        // No role and no section decides this any more: ownership is derived from
+        // Odoo, and work they are personally charged with is on their card
+        // whatever ownership says, because it is a fact about them.
+        const mineEnabled = cardKpisFor(r.odooUserId, b, performed);
+        // Rule 3, applied only to the KPIs they actually OWN here. A KPI that is
+        // on this card merely because they performed something on it does not
+        // make them answerable for the ones nobody performed.
+        const shared = mineEnabled.flatMap(
+          (id) => (ownsKpi(config, b, id, r.odooUserId) ? unperformed.get(id) ?? [] : []),
+        );
+        // Unchanged, and no longer a grouping: `section` still comes from the
+        // legacy field because `sections` below — and through it the stored
+        // weekly history — is still filed under the two section keys. Neither it
+        // nor `roles` has any part in deciding what this card is scored on.
+        const section: KpiSection = r.section ?? 'advisor';
+        const cells = aggregate([...mine, ...shared], mineEnabled, snapshotNotes, displayNames, sectionById);
         return {
           odooUserId: r.odooUserId,
           name: r.name || mine[0]?.userName || `User ${r.odooUserId}`,
@@ -3123,21 +3592,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // the roster reached no card before this change either, and an excluded
   // person's work is already reported by the exclusion note above.
   const entryById = new Map(scoredRoster.map((r) => [r.odooUserId, r]));
-  const ownKpis = new Map<number, Set<number>>();
   const strandedByUser = new Map<number, Map<string, number>>();
   for (const e of evals) {
     if (e.userId == null) continue;
     const entry = entryById.get(e.userId);
     if (!entry || rosterBranches(entry).includes(e.branch)) continue;
-    // Counted against the KPIs this person answers for, and no others: a KPI no
-    // role owns reaches no card in any branch, so counting it here would report
-    // a gap the roster cannot close and overstate the one it can.
-    let own = ownKpis.get(e.userId);
-    if (!own) {
-      own = new Set(scoredKpisFor(entry));
-      ownKpis.set(e.userId, own);
-    }
-    if (!own.has(e.kpiId)) continue;
+    // Every verdict naming them in a branch they have no card in is stranded, on
+    // any KPI. There is no longer a second test to apply: a KPI they did not own
+    // but demonstrably performed would still be on their card in a branch they
+    // are rostered in, so the branch is the only thing standing in the way here.
     const perBranch = strandedByUser.get(e.userId) ?? new Map<string, number>();
     perBranch.set(e.branch, (perBranch.get(e.branch) ?? 0) + 1);
     strandedByUser.set(e.userId, perBranch);
@@ -3148,50 +3611,82 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       return `${entryById.get(uid)?.name || `User ${uid}`} (${where})`;
     }).join('; ');
     const n = strandedByUser.size;
-    notes.push(`${n} rostered ${n === 1 ? 'person has' : 'people have'} work booked to a branch they are not rostered in, so that work counts for the branch and reaches no individual card — with the number of evaluations on their own KPIs per branch: ${who}. A card covers only the branch it appears under, which is what makes a branch's figure the sum of its people's work; until now this work was shown under the person's single rostered branch while counting against a different branch's figure. Add the branch to their roster entry in Admin → KPI Configuration to score it there.`);
+    notes.push(`${n} rostered ${n === 1 ? 'person has' : 'people have'} work booked to a branch they are not rostered in, so that work counts for the branch and reaches no individual card — with the number of evaluations per branch: ${who}. A card covers only the branch it appears under, which is what makes a branch's figure the sum of its people's work; until now this work was shown under the person's single rostered branch while counting against a different branch's figure. Add the branch to their roster entry in Admin → KPI Configuration to score it there.`);
   }
 
   /**
-   * The mirror of the gap above, and the one that bites hardest.
+   * Work performed by someone who does not own that KPI in that branch.
    *
-   * There the branch was wrong; here the branch is right but the KPI is not one
-   * this person's roles answer for, so the verdict still reaches no card. The
-   * way that happens in practice is a re-attribution: KPI 18 is charged by name
-   * to a branch's nominated RFQ coordinator, and if their roles do not include
-   * `parts`, every RFQ verdict for that branch lands on nobody. The role list
-   * and the coordinator list are edited in different places, so they drift
-   * silently — which is exactly the shape of the bug this whole batch exists to
-   * remove.
+   * This replaces the old role-mismatch note, which has no meaning now that
+   * ownership is derived rather than configured: there are no two lists left to
+   * drift apart. What remains is the real signal — somebody is doing work the
+   * derived ownership has not caught up with, almost always because they are
+   * below the KPI_OWNER_FLOOR actions per KPI_OWNER_WINDOW_DAYS that earn it, or
+   * because they have only just started doing it.
    *
-   * KPIs no role owns at all (7, 9) are skipped: they are branch readings by
-   * design, and reporting them here would be noise rather than a gap.
+   * Their verdict is NOT dropped: it is on their card, because they demonstrably
+   * did the work (see cardKpisFor). This note says so rather than leaving a
+   * reader to wonder why a KPI appears on a card the ownership list does not
+   * mention.
+   *
+   * Only people with a card in that branch are counted. Work in a branch they
+   * are not rostered in is the note above's business, and counting it twice would
+   * read as two separate problems.
    */
-  const roleGapByUser = new Map<number, Map<number, number>>();
+  const unownedByUser = new Map<number, Map<string, Map<number, number>>>();
   for (const e of evals) {
     if (e.userId == null) continue;
     const entry = entryById.get(e.userId);
-    if (!entry || entry.excluded) continue;
-    if (!rosterBranches(entry).includes(e.branch)) continue;   // the note above owns that case
-    if (!rolesForKpi(e.kpiId).length) continue;                // nobody's KPI by design
-    let own = ownKpis.get(e.userId);
-    if (!own) {
-      own = new Set(scoredKpisFor(entry));
-      ownKpis.set(e.userId, own);
-    }
-    if (own.has(e.kpiId)) continue;
-    const perKpi = roleGapByUser.get(e.userId) ?? new Map<number, number>();
+    if (!entry || !rosterBranches(entry).includes(e.branch)) continue;
+    if (ownsKpi(config, e.branch, e.kpiId, e.userId)) continue;
+    const perBranch = unownedByUser.get(e.userId) ?? new Map<string, Map<number, number>>();
+    const perKpi = perBranch.get(e.branch) ?? new Map<number, number>();
     perKpi.set(e.kpiId, (perKpi.get(e.kpiId) ?? 0) + 1);
-    roleGapByUser.set(e.userId, perKpi);
+    perBranch.set(e.branch, perKpi);
+    unownedByUser.set(e.userId, perBranch);
   }
-  if (roleGapByUser.size) {
-    const who = [...roleGapByUser].map(([uid, perKpi]) => {
-      const what = [...perKpi]
-        .map(([id, n]) => `${displayNames[id] ?? `KPI ${id}`}: ${n}`)
-        .join(', ');
+  // Silent until ownership exists: with no refresh yet NOBODY owns anything, so
+  // this would name every person on the page and repeat what the note above
+  // already says plainly.
+  if (ownershipDerived && unownedByUser.size) {
+    const who = [...unownedByUser].map(([uid, perBranch]) => {
+      const what = [...perBranch].map(([br, perKpi]) => {
+        const kpis = [...perKpi].map(([id, n]) => `${displayNames[id] ?? `KPI ${id}`}: ${n}`).join(', ');
+        return `${br} — ${kpis}`;
+      }).join('; ');
       return `${entryById.get(uid)?.name || `User ${uid}`} (${what})`;
-    }).join('; ');
-    const n = roleGapByUser.size;
-    notes.push(`${n} rostered ${n === 1 ? 'person is' : 'people are'} charged with work on a KPI their role does not answer for, so it counts for the branch and reaches no individual card: ${who}. This is usually a nominated RFQ coordinator whose roles do not include Parts & Purchasing — the name is set in one place and the role in another. Add the missing role on their roster entry in Admin → KPI Configuration, or clear the nomination, so the verdict lands somewhere.`);
+    }).join(' | ');
+    const n = unownedByUser.size;
+    notes.push(`${n} ${n === 1 ? 'person has' : 'people have'} performed work on a KPI they do not own in that branch, with the number of evaluations: ${who}. The verdicts are on their card, because they demonstrably did the work — nothing is dropped. Ownership is derived from Odoo activity and takes more than ${KPI_OWNER_FLOOR} actions in ${KPI_OWNER_WINDOW_DAYS} days to earn, so somebody who has just started doing this work, or who does it occasionally, shows up here until the next refresh picks them up.`);
+  }
+
+  /**
+   * Rule 3, disclosed wherever it fired.
+   *
+   * A shared non-compliance is the one case in this engine where several people
+   * are marked down for one event, so it cannot be applied silently: the CEO
+   * fines from this page, and two people fined for one missing invoice has to be
+   * visible as exactly that. The other half is disclosed too — a KPI with no
+   * owners in a branch keeps its unperformed verdicts at branch level and they
+   * reach nobody, which looks like a gap in the figures unless it is stated.
+   */
+  const shared = sharedOut.filter((s) => s.owners > 0);
+  const orphaned = sharedOut.filter((s) => s.owners === 0);
+  if (shared.length) {
+    const what = shared
+      .map((s) => `${displayNames[s.kpiId] ?? `KPI ${s.kpiId}`} in ${s.branch}: ${s.verdicts} ${s.verdicts === 1 ? 'verdict' : 'verdicts'} across ${s.owners} ${s.owners === 1 ? 'owner' : 'owners'}`)
+      .join('; ');
+    const total = shared.reduce((n, s) => n + s.verdicts, 0);
+    notes.push(`${total} ${total === 1 ? 'verdict' : 'verdicts'} had no performer at all — the action was never carried out, so no individual did it — and ${total === 1 ? 'was' : 'were'} shared across the owners of that KPI in that branch: ${what}. Each owner carries ${total === 1 ? 'it' : 'each of them'} on their own card, so one event can mark down several people. That is deliberate and it is the only place it happens: nobody performed the work, and the alternative was charging it to whoever opened the job card, who in general could not have done it.`);
+  }
+  // Same guard: before the first refresh every KPI is ownerless by definition,
+  // and listing all of them here would bury the one note that explains why.
+  if (ownershipDerived && orphaned.length) {
+    const what = orphaned
+      .map((s) => `${displayNames[s.kpiId] ?? `KPI ${s.kpiId}`} in ${s.branch}: ${s.verdicts}`)
+      .join('; ');
+    const total = orphaned.reduce((n, s) => n + s.verdicts, 0);
+    notes.push(`${total} ${total === 1 ? 'verdict' : 'verdicts'} had no performer and no owner to share with, so ${total === 1 ? 'it stays' : 'they stay'} a branch reading and ${total === 1 ? 'reaches' : 'reach'} no individual card: ${what}. Nobody in that branch has been shown to perform that KPI's action often enough to own it — either the work is not being done there, or whoever does it is below the floor or absent from the roster. The branch and company figures still count ${total === 1 ? 'it' : 'them'} in full.`);
   }
 
   const companyKpis = aggregate(evals, enabled, snapshotNotes, displayNames, sectionById);

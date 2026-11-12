@@ -8,10 +8,10 @@
  *   ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_API_KEY
  */
 
-import type { WipMetricKey, Branch, KpiConfig, StageSelector, KpiRole, SaRosterEntry } from './types';
+import type { WipMetricKey, Branch, KpiConfig, StageSelector, KpiOwners } from './types';
 import {
   BRANCHES, WORKSHOP_BRANCHES, KPI_BRANCHES, MAIN_STATION, subKey, SUB_BRANCH_COMPANY, resolveAgeField,
-  KPI_ROLE_ORDER, KPI_ROLE_LABELS, rosterBranches, rosterRoles,
+  KPI_OWNER_FLOOR, KPI_OWNER_WINDOW_DAYS,
 } from './types';
 
 // ── Env ────────────────────────────────────────────────────────────
@@ -1436,7 +1436,7 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   // Odoo calls against a 60-second limit, on EVERY Admin page load — the page the
   // owner configures everything from, including the thresholds the KPI engine
   // reads. It now lives behind its own button on its own 300-second route
-  // (app/api/kpi/role-proposal), so it is paid for when it is asked for and a
+  // (app/api/kpi/role-proposal, the ownership refresh), so it is paid for when it is asked for and a
   // slow Odoo can no longer take the Admin page down with it.
 
   return {
@@ -1816,23 +1816,28 @@ export async function fetchRosterSuggestion(): Promise<{ people: RosterSuggestio
  * advisor/workshop) nor `rfqCoordinators` (exactly one person per branch) can
  * express.
  *
- * What follows measures that from Odoo. It reads only, and it changes no
- * threshold, no stage mapping and no verdict — nothing in the KPI engine
- * consults it. Two things are built on top: the role proposal the owner approves
- * (fetchKpiRoleProposal, at the bottom of this file) and the plain-text
- * diagnostic that travels with it as its evidence.
+ * What follows measures that from Odoo, reading only. Two things are built on
+ * top: the derived KpiOwners (fetchKpiOwners, at the bottom of this file), which
+ * the KPI engine scores people by, and the plain-text diagnostic that travels
+ * with it as its evidence.
  *
  * It does NOT run on the Admin page load. It used to, inside
  * fetchKpiOdooOptions, and 28-36 Odoo calls against that route's 60-second limit
  * is why this was never deployed — a slow Odoo would have taken down the page
  * the owner configures everything from. It has its own route and its own
- * 300-second limit: app/api/kpi/role-proposal.
+ * 300-second limit (app/api/kpi/role-proposal, now the ownership refresh) and
+ * runs nightly from the sync cron.
  */
 
-/** Create-stamped evidence (create_uid) is aggregated by Odoo, so it can afford a long window. */
-const OWNERSHIP_DIRECT_DAYS = 90;
-/** Chatter-derived evidence is the expensive kind — a shorter window by design. */
-const OWNERSHIP_CHATTER_DAYS = 30;
+/**
+ * Both windows are KPI_OWNER_WINDOW_DAYS, so the count and the floor it is
+ * compared against (KPI_OWNER_FLOOR) always cover the same period. They used to
+ * differ — 90 days for create stamps, 30 for chatter — and a floor measured
+ * against two different windows means two different things.
+ */
+const OWNERSHIP_DIRECT_DAYS = KPI_OWNER_WINDOW_DAYS;
+/** Chatter-derived evidence. Narrowed to OWNERSHIP_CHATTER_DAYS_NARROW on a busy model, and then it is NOT comparable with the floor. */
+const OWNERSHIP_CHATTER_DAYS = KPI_OWNER_WINDOW_DAYS;
 /** Used where a model has too many touched records for the window above to be affordable. */
 const OWNERSHIP_CHATTER_DAYS_NARROW = 7;
 /** Most records whose branch we will resolve per model. Beyond this the window narrows, then the bucket is dropped with a note. */
@@ -1848,7 +1853,7 @@ const OWNERSHIP_NAME_CAP = 8;
  *
  * The map stops early and SAYS it stopped, naming the buckets it never reached,
  * rather than letting the request die with nothing in it. The dedicated route
- * passes ROLE_PROPOSAL_BUDGET_MS instead.
+ * passes its own, larger budget instead.
  */
 const OWNERSHIP_BUDGET_MS = 25_000;
 
@@ -1896,6 +1901,7 @@ class OwnershipSkip extends Error {}
 
 /** "KPIs 2, 3, 4" / "KPI 18". */
 function kpiTag(ids: number[]): string {
+  if (!ids.length) return 'no KPI';
   return `${ids.length === 1 ? 'KPI' : 'KPIs'} ${ids.join(', ')}`;
 }
 
@@ -1942,7 +1948,33 @@ const OWNERSHIP_ORDER = [
 /** One of the eleven activity buckets, by its stable key. */
 export type OwnershipBucketKey = typeof OWNERSHIP_ORDER[number];
 
-/** A bucket carrying its own key, so a consumer can map it to a role. */
+/**
+ * The KPIs each action makes a person answer for. The single source: the
+ * collector below stamps these onto its buckets, and the owner derivation reads
+ * them even for a bucket that was never reached.
+ *
+ *  - KPI 13 (Customer follow-up) is always whoever opened the repair order —
+ *    the owner's rule — so it rides on opensJobCards, and uploadsFollowUp maps
+ *    to no KPI at all (still measured, for the diagnostic).
+ *  - KPIs 20 (Parts placed) and 6 (Awaiting parts) sit on receivesParts: the
+ *    receipt is the only point in the parts chain where a person is recorded.
+ */
+export const OWNERSHIP_BUCKET_KPIS: Record<OwnershipBucketKey, readonly number[]> = {
+  opensJobCards: [5, 8, 13],
+  movesToInspection: [14, 15],
+  writesQuotations: [12, 21],
+  confirmsQuotations: [2, 3, 4],
+  raisesRfqs: [18],
+  confirmsPos: [19],
+  receivesParts: [20, 6],
+  movesThroughQa: [16],
+  marksRepaired: [22],
+  postsInvoices: [1, 11],
+  uploadsFollowUp: [],
+};
+const bucketKpis = (key: OwnershipBucketKey): number[] => [...OWNERSHIP_BUCKET_KPIS[key]];
+
+/** A bucket carrying its own key, so a consumer can map it to its KPIs. */
 export interface OwnershipBucketEntry extends OwnershipBucket {
   key: OwnershipBucketKey;
 }
@@ -1952,7 +1984,7 @@ export interface OwnershipBucketEntry extends OwnershipBucket {
  * the reason it is not.
  *
  * Returned as data rather than as text because two very different consumers read
- * it — the role proposal the owner approves, and the plain-text diagnostic below
+ * it — the KPI owner derivation, and the plain-text diagnostic below
  * — and only one of them can use a sentence.
  */
 export interface KpiOwnershipMap {
@@ -1993,7 +2025,7 @@ export interface KpiOwnershipMap {
  * out, and names the buckets it never reached.
  *
  * The meta, stage names and tracked-change counts are passed in so a caller that
- * has already paid for them does not pay twice; `fetchKpiRoleProposal` reads its
+ * has already paid for them does not pay twice; `fetchKpiOwners` reads its
  * own because it is the only thing in its request.
  */
 export async function collectKpiOwnership(args: {
@@ -2251,17 +2283,17 @@ export async function collectKpiOwnership(args: {
   /** The three create-stamped buckets, each one read_group and nothing more. */
   const directBuckets: { key: string; label: string; kpis: number[]; model: string; extra: OdooDomain; method: string }[] = [
     {
-      key: 'opensJobCards', label: 'Opens job cards', kpis: [5, 8], model: 'repair.order', extra: liveOnly,
+      key: 'opensJobCards', label: 'Opens job cards', kpis: bucketKpis('opensJobCards'), model: 'repair.order', extra: liveOnly,
       method: 'repair.order grouped by create_uid and company_id, Historical job cards excluded',
     },
     {
-      key: 'writesQuotations', label: 'Writes quotations', kpis: [12, 21], model: 'sale.order', extra: [],
+      key: 'writesQuotations', label: 'Writes quotations', kpis: bucketKpis('writesQuotations'), model: 'sale.order', extra: [],
       method: 'sale.order grouped by create_uid and company_id',
     },
     {
       // The bucket the owner's own example names, and the one rfqCoordinators can
       // hold only a single person per branch of.
-      key: 'raisesRfqs', label: 'Raises RFQs', kpis: [18], model: 'purchase.order', extra: [],
+      key: 'raisesRfqs', label: 'Raises RFQs', kpis: bucketKpis('raisesRfqs'), model: 'purchase.order', extra: [],
       method: 'purchase.order grouped by create_uid and company_id',
     },
   ];
@@ -2282,9 +2314,9 @@ export async function collectKpiOwnership(args: {
   // ── The three repair.order stage-change buckets, from the LIVE mapping ──
   // One branch map and one field lookup serve all three.
   const repairChatter: { key: string; label: string; kpis: number[]; sel: StageSelector | undefined }[] = [
-    { key: 'movesToInspection', label: 'Moves to Inspection', kpis: [14, 15], sel: config?.stageMap?.inspection },
-    { key: 'movesThroughQa', label: 'Moves through QA', kpis: [16], sel: config?.stageMap?.qa },
-    { key: 'marksRepaired', label: 'Marks Repaired', kpis: [22], sel: config?.stageMap?.repaired },
+    { key: 'movesToInspection', label: 'Moves to Inspection', kpis: bucketKpis('movesToInspection'), sel: config?.stageMap?.inspection },
+    { key: 'movesThroughQa', label: 'Moves through QA', kpis: bucketKpis('movesThroughQa'), sel: config?.stageMap?.qa },
+    { key: 'marksRepaired', label: 'Marks Repaired', kpis: bucketKpis('marksRepaired'), sel: config?.stageMap?.repaired },
   ];
   if (!config || !tvRefUsable) {
     const why = !config
@@ -2466,13 +2498,13 @@ export async function collectKpiOwnership(args: {
   // Confirms quotations (KPIs 2, 3, 4) — the service advisors, in the owner's
   // description: Wajid writes the quotation, somebody else approves it.
   await stateBucket({
-    key: 'confirmsQuotations', label: 'Confirms quotations', kpis: [2, 3, 4],
+    key: 'confirmsQuotations', label: 'Confirms quotations', kpis: bucketKpis('confirmsQuotations'),
     model: 'sale.order', code: 'sale', recordExtra: [], fallback: null,
   });
 
   // Confirms purchase orders (KPI 19).
   await stateBucket({
-    key: 'confirmsPos', label: 'Confirms purchase orders', kpis: [19],
+    key: 'confirmsPos', label: 'Confirms purchase orders', kpis: bucketKpis('confirmsPos'),
     model: 'purchase.order', code: 'purchase', recordExtra: [],
     fallback: { stamp: 'write_uid', dateField: 'date_approve', caveat: 'the LAST person to write the order, who is the confirmer only if nobody edited it afterwards' },
   });
@@ -2482,7 +2514,7 @@ export async function collectKpiOwnership(args: {
   // entries here would hand a service advisor's KPI to the accounts desk. That
   // narrowing is a judgement, so it is printed where the owner can overrule it.
   await stateBucket({
-    key: 'postsInvoices', label: 'Posts invoices', kpis: [1, 11],
+    key: 'postsInvoices', label: 'Posts invoices', kpis: bucketKpis('postsInvoices'),
     model: 'account.move', code: 'posted',
     recordExtra: [['move_type', 'in', ['out_invoice', 'out_refund']]],
     scopeNote: 'customer invoices and credit notes only, not vendor bills or journal entries',
@@ -2495,7 +2527,7 @@ export async function collectKpiOwnership(args: {
   // receipt is where a person can be found at all.
   {
     const label = 'Receives parts';
-    const kpis = [20, 6];
+    const kpis = bucketKpis('receivesParts');
     const pickMeta = await modelMeta('stock.picking');
     if (!pickMeta) {
       buckets.set('receivesParts', emptyBucket(label, kpis, 'partner', OWNERSHIP_CHATTER_DAYS, 'stock.picking',
@@ -2533,7 +2565,8 @@ export async function collectKpiOwnership(args: {
   // recorded anywhere; or real uploads. None of them may read as "nobody does it".
   {
     const label = 'Uploads the follow-up screenshot';
-    const kpis = [13];
+    // Maps to no KPI: KPI 13 belongs to whoever opened the repair order.
+    const kpis = bucketKpis('uploadsFollowUp');
     const method = 'ir.attachment.create_uid on the rows holding repair.order\'s follow-up screenshot field';
     const field = ['follow_up_screenshot', 'x_follow_up_screenshot'].find(hasRepairField);
     if (!field) {
@@ -2702,10 +2735,10 @@ export function kpiOwnershipLines(map: KpiOwnershipMap, config: KpiConfig | null
   const { ordered, neverReached, missingBranches, noteTracking } = map;
   const inScopeBranches = new Set<string>(map.inScopeBranches);
 
-  lines.push('═══ KPI OWNERSHIP MAP — who performs each KPI-bearing action, per branch. Diagnostic only: no KPI, threshold, stage mapping or score is affected by anything below. ═══');
+  lines.push('═══ KPI OWNERSHIP MAP — who performs each KPI-bearing action, per branch. A person answers for a KPI in a branch when they performed its action more than ${KPI_OWNER_FLOOR} times there in the last ${KPI_OWNER_WINDOW_DAYS} days. ═══');
   lines.push(`Ownership scope: ${[...inScopeBranches].join(', ')} — each branch's own workshop company, which is exactly the population the KPI section scores.`
     + `${missingBranches.length ? ` ⚠ LEFT OUT because its company did not resolve in Odoo: ${missingBranches.join(', ')} — those branches are blank below for that reason, not because nobody works there.` : ''}`);
-  lines.push(`Ownership windows: [${OWNERSHIP_DIRECT_DAYS}d] lines come from who created the record (Odoo aggregates those, so a long window costs nothing); the shorter windows are chatter-derived and are the expensive ones. A branch here is the company on the record the action touched, not where the person usually works.`);
+  lines.push(`Ownership windows: every action is read over ${KPI_OWNER_WINDOW_DAYS} days, the same period the ownership floor (more than ${KPI_OWNER_FLOOR}) is stated for; a chatter-derived line showing fewer days was narrowed on a busy model and is NOT comparable with the floor. A branch here is the company on the record the action touched, not where the person usually works.`);
 
   for (const branch of KPI_BRANCHES) {
     if (!inScopeBranches.has(branch)) continue;
@@ -2758,14 +2791,13 @@ export function kpiOwnershipLines(map: KpiOwnershipMap, config: KpiConfig | null
     .map(([name, s]) => `${name} (${KPI_BRANCHES.filter((b) => s.has(b)).join(', ')})`)
     .sort();
   lines.push(multi.length
-    ? `Appearing in more than one branch: ${multi.join(' · ')} — the saved roster holds one branch per person, so each of these needs a decision.`
+    ? `Appearing in more than one branch: ${multi.join(' · ')} — ownership is per branch, so each branch is judged on its own count.`
     : 'Appearing in more than one branch: nobody — every person listed above worked in a single branch during the window.');
 
   // The KPIs no individual performs, stated rather than left out: a KPI missing
   // from this report would otherwise look like one we failed to measure.
   lines.push('No individual actor: KPI 7 (Awaiting labour) and KPI 9 (Weekly closure rate) are branch-level — they measure a queue and a throughput ratio, so nobody performs them and they are attributed to no person.');
   lines.push('Not assigned: KPI 17 (Chatter response) falls on anyone who can be @mentioned, so it belongs to everybody rather than to one bucket.');
-  lines.push('⚠ OPEN QUESTION — KPIs 1 and 11 measure the gap between a car being marked Repaired and its invoice being posted, and two different people own those two ends ("Marks Repaired" and "Posts invoices" above). Both lists are printed; which of them should carry KPIs 1 and 11 is your call, not something Odoo can settle.');
   if (config?.rfqCoordinators && Object.keys(config.rfqCoordinators).length) {
     lines.push(`For comparison, the RFQ coordinators currently saved in Admin — one person per branch, which is what KPI 18 follows today: ${Object.entries(config.rfqCoordinators).map(([b, c]) => `${b} = ${c?.name ?? '?'}`).join(' · ')}.`);
   }
@@ -2781,108 +2813,29 @@ export function kpiOwnershipLines(map: KpiOwnershipMap, config: KpiConfig | null
   return lines;
 }
 
-// ── KPI roles: derive them from Odoo, propose them to the owner ────
+
+// ── KPI owners: derived from what people do in Odoo ────────────────
 /**
- * Ownership read from Odoo and turned into a role proposal the owner approves.
+ * Who answers for each KPI in each branch, purely from activity: a person owns a
+ * KPI in a branch when they performed that KPI's action more than
+ * KPI_OWNER_FLOOR times there in the last KPI_OWNER_WINDOW_DAYS. No labels, no
+ * approval step — the result is written straight into the stored KPI config by
+ * the refresh route and the nightly cron (lib/kpi-owners-refresh.ts).
  *
- * Why this exists at all: KPI ownership is maintained by hand and has gone
- * stale. On 12 November 2026 Dubai's RFQ target was charged to a man who raised
- * ZERO RFQs in 90 days while the man who raised 552 was scored on none of them;
- * Ajman's was charged to someone who raised 81 while another raised 413; and
- * Sharjah and Al Ain had nobody assigned at all, so KPI 18 fell on whoever
- * happened to open the job card. See docs/kpi-ownership-2026-11-12.md.
- *
- * So ownership is DERIVED from what people demonstrably do, PROPOSED here, and
- * saved only once the owner has approved it. Both halves matter: derived alone
- * is a machine deciding people's pay, approved alone is the stale list we have.
- * Every proposed role therefore travels with the counts that justified it — a
- * bare name is a guess, a name with a count beside it is a decision.
- *
- * Nothing here writes to Odoo, and nothing here changes a KPI, a threshold, a
- * stage mapping or a score. It proposes roster fields and stops.
+ * Reads Odoo only. The one rule that matters most: a bucket that could not be
+ * read is NOT zero. Its KPIs keep the owners stored by the previous refresh, and
+ * the bucket is reported, because an unreadable bucket and an idle person look
+ * identical once both are empty and reading the first as the second would strip
+ * ownership from people who hold it.
  */
 
-/** Which activity buckets make up each role, as the owner's description of the work. */
-const ROLE_BUCKETS: Record<KpiRole, readonly OwnershipBucketKey[]> = {
-  advisor:    ['opensJobCards', 'writesQuotations', 'confirmsQuotations', 'postsInvoices'],
-  controller: ['movesToInspection', 'movesThroughQa', 'marksRepaired'],
-  parts:      ['raisesRfqs', 'confirmsPos', 'receivesParts'],
-};
-
 /**
- * `uploadsFollowUp` belongs to no role, deliberately.
- *
- * KPI 13 sits with the advisor in ROLE_KPIS, but the audit found it cannot be
- * scored at all on this instance — its population filters on a computed,
- * readonly field and its uploader is not attributable — so an upload count is
- * not evidence that anybody should answer for it. It is still measured and
- * shown, because a bucket that vanished from the report would read as a bucket
- * nobody performs.
- */
-const UNMAPPED_BUCKET_NOTE =
-  'it drives no role proposal, because KPI 13 is not attributable on this instance (see the audit), so an upload count is not grounds for giving anyone a role';
-
-/**
- * The floor, in actions, over OWNERSHIP_DIRECT_DAYS.
- *
- * The owner's number, and his reason for it is specific: he personally raised 10
- * RFQs in that window while clearing a backlog, and must not thereby become
- * Dubai's RFQ owner. At or above it is somebody's job; below it is somebody
- * covering a shift.
- */
-const ROLE_FLOOR_ACTIONS = 10;
-
-/**
- * The threshold keys this floor will honour if one is ever saved.
- *
- * Read from the LIVE config only, and never added to DEFAULT_KPI_CONFIG: a
- * default would make the owner's decision look like a shipped constant that any
- * later edit of the defaults could move. A stored 0 — or a negative, or a
- * non-number — is REFUSED rather than used, because zero would admit a single
- * incidental click as proof of a role, which is the opposite of what the floor
- * is for, and an emptied Admin box is exactly how a 0 gets stored.
- */
-const ROLE_FLOOR_KEYS = ['roleProposalMinActions', 'ownershipMinActions'] as const;
-
-/**
- * Wall-clock budget for the map when it runs on its own route.
- *
- * The route is allowed 300 seconds (the heavy reports already are), so this
- * leaves a wide margin for the four reads above it, the login check after it and
- * serialising the answer, while still stopping and SAYING it stopped rather than
+ * Wall-clock budget for the map when it runs on its own 300-second route. Leaves
+ * a wide margin for the reads around it and the store write after it, while
+ * still stopping — and saying which buckets it never reached — rather than
  * letting the request die with nothing to show.
  */
-const ROLE_PROPOSAL_BUDGET_MS = 210_000;
-
-/** Where the floor in force came from, so the proposal can say. */
-export interface RoleFloor {
-  actions: number;
-  days: number;
-  source: 'config' | 'default';
-  /** The threshold key that supplied it, when one did. */
-  key: string | null;
-  /** Non-null when a key WAS present but unusable — never silently ignored. */
-  refused: string | null;
-}
-
-function resolveRoleFloor(config: KpiConfig | null): RoleFloor {
-  const base: RoleFloor = { actions: ROLE_FLOOR_ACTIONS, days: OWNERSHIP_DIRECT_DAYS, source: 'default', key: null, refused: null };
-  // Cast, because lib/types.ts declares no key for this and must not grow one:
-  // the floor is the owner's decision, not a shipped default.
-  const thresholds = (config?.thresholds ?? {}) as Record<string, unknown>;
-  for (const key of ROLE_FLOOR_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(thresholds, key)) continue;
-    const raw = thresholds[key];
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) {
-      return { ...base, actions: Math.floor(raw), source: 'config', key };
-    }
-    return {
-      ...base,
-      refused: `thresholds.${key} is saved as ${JSON.stringify(raw)}, which cannot be a floor — a floor of zero or less would hand someone a role off one stray click. Using ${ROLE_FLOOR_ACTIONS} instead.`,
-    };
-  }
-  return base;
-}
+export const KPI_OWNER_BUDGET_MS = 210_000;
 
 /**
  * Logins and names that mean "not a person".
@@ -2905,153 +2858,101 @@ function systemAccountReason(login: string | null, name: string): string | null 
   return null;
 }
 
-/** One bucket's contribution to one role in one branch, with the method behind it. */
-export interface RoleEvidence {
-  key: OwnershipBucketKey;
+/** One action's count behind one owner. */
+export interface KpiOwnerCount {
+  bucket: OwnershipBucketKey;
   /** 'Raises RFQs'. */
   label: string;
-  /** The KPIs that action carries. */
-  kpis: number[];
-  /** Actions this person performed in this branch. */
   count: number;
-  /** Days of history behind `count`. They differ per bucket, and the floor is written for 90. */
+  /** Days of history behind `count`. */
   days: number;
-  /** Exactly what was queried and how it was attributed, verbatim from the map. */
-  method: string;
   /** The read hit its row cap, so `count` is a floor. */
   truncated: boolean;
 }
 
-/** A bucket that could not be read, and therefore cannot be counted either way. */
-export interface RoleUnknownBucket {
+/** One owner of one KPI in one branch, with the evidence. */
+export interface KpiOwnerEntry {
+  userId: number;
+  name: string;
+  /** Every covering action this person performed here, zeroes left out. Empty for an owner carried over unmeasured. */
+  counts: KpiOwnerCount[];
+  /**
+   * Non-null when this owner was carried over from the previous refresh rather
+   * than earned on this one, holding why (an action behind the KPI could not be
+   * read, or only partly, or the branch did not resolve).
+   */
+  kept: string | null;
+}
+
+/** An action that could not be fully read, and so could not remove anybody. */
+export interface KpiOwnersUnreadable {
   key: OwnershipBucketKey;
   label: string;
   kpis: number[];
   reason: string;
+  /**
+   * True when it WAS read, but over a shorter window than the floor's or with a
+   * truncated count: anyone it shows above the floor still qualifies, but nobody
+   * can be dropped on its strength. False when it could not be read at all.
+   */
+  partial: boolean;
 }
 
-/**
- * One (person, branch, role) finding.
- *
- * Three verdicts, not two, and the third is the whole point: `belowFloor` says
- * we measured this person's work and it does not reach the floor, while
- * `indeterminate` says we could not measure it. Collapsing those two would
- * strip a role from someone who holds it, quietly, on the strength of a failed
- * Odoo read — the one outcome this feature must not be able to produce.
- */
-export interface ProposedBranchRole {
-  branch: string;
-  role: KpiRole;
-  /** Sum of the role's readable buckets in this branch — what met, or missed, the floor. */
-  total: number;
-  verdict: 'proposed' | 'belowFloor' | 'indeterminate';
-  /** Why it cannot be called a miss, in full. Empty for the other two verdicts. */
-  reasons: string[];
-  /** Every readable bucket of this role in this branch, zeroes included. */
-  evidence: RoleEvidence[];
-  /** Buckets of this role that could not be read at all here. */
-  unknown: RoleUnknownBucket[];
-}
-
-/** One person the proposal has something to say about. */
-export interface KpiRoleProposalPerson {
-  odooUserId: number;
-  name: string;
-  /** The Odoo login the system-account check matched on, when it could be read. */
-  login: string | null;
-  /** Branches where at least one role reached the floor. Proposed for `branches`. */
-  branches: string[];
-  /** Roles that reached the floor in at least one branch. Proposed for `roles`. */
-  roles: KpiRole[];
-  /** Every (branch, role) considered, misses and unknowns included. */
-  byBranch: ProposedBranchRole[];
-  /** Proposed `excluded: true`, with the reason. Null for a person. */
-  excludedReason: string | null;
-  /** Already on the saved roster (matched on odooUserId). */
-  rostered: boolean;
-  /** What the saved roster holds for them today, for comparison. Null when off-roster. */
-  current: { branches: string[]; roles: KpiRole[]; excluded: boolean } | null;
-  /** Total actions across every bucket and branch, misses included. */
-  totalActions: number;
-  /**
-   * Roles the saved roster gives them that this proposal does NOT propose, so
-   * applying it would take them away.
-   *
-   * Surfaced because applying REPLACES `roles` rather than adding to them, and
-   * the windows behind the buckets are not all 90 days long: a controller whose
-   * stage moves all fall outside the 30-day chatter window measures zero, and
-   * "measured zero over 30 days" is not grounds for removing a role granted over
-   * 90. Every one of these keeps a row of its own, with its pill unticked, so
-   * the owner can put it back with one click instead of discovering the loss on
-   * somebody's pay slip.
-   */
-  losesRoles: KpiRole[];
-  /** Branches the saved roster gives them that this proposal does not propose. */
-  losesBranches: string[];
-  /**
-   * False when there is nothing to apply — a rostered person the map found doing
-   * nothing. Shown rather than dropped, because that is a signal about the
-   * roster, but not tickable: applying an empty role set would read as a
-   * demotion nobody asked for.
-   */
-  applicable: boolean;
-  /**
-   * Whether this row is ticked when the proposal arrives. Only a row that
-   * ASSERTS something is on by default: a row that merely wants looking at
-   * (a near miss, an unreadable bucket, a role about to be dropped) starts off,
-   * so applying an untouched proposal can never take a role away by accident.
-   */
-  defaultChecked: boolean;
-}
-
-/** The whole proposal, as the Admin card renders it. */
-export interface KpiRoleProposalResult {
-  people: KpiRoleProposalPerson[];
-  floor: RoleFloor;
-  /** Buckets nobody can be credited from, named once: unknown, not empty. */
-  unknownBuckets: (RoleUnknownBucket & { roles: KpiRole[] })[];
-  /** Branches the map could not speak about at all. */
+/** The whole derivation, as the refresh route returns it and the Admin card renders it. */
+export interface KpiOwnersResult {
+  /** branch → KPI id → owner user ids. What gets written into kpiConfig.kpiOwners. */
+  owners: KpiOwners;
+  /** Same shape, with the name and counts behind every owner. */
+  detail: Record<string, Record<string, KpiOwnerEntry[]>>;
+  unreadable: KpiOwnersUnreadable[];
+  /** Branches whose company did not resolve: their previous owners are kept whole. */
   missingBranches: string[];
-  /** Non-null when the system-account check could not run — then NO exclusion is proposed. */
+  /** System accounts that would otherwise have qualified, and why they did not. */
+  excluded: { userId: number; name: string; reason: string }[];
+  /** Non-null when logins could not be read: only the NAME check ran. */
   systemCheckFailed: string | null;
-  /** The ownership map in its plain-text diagnostic form, plus this layer's own notes. */
+  floor: number;
+  windowDays: number;
+  /** The ownership map in its plain-text diagnostic form, plus this layer's notes. */
   notes: string[];
-  /** Non-null when nothing could be measured; `people` is then empty. */
+  /** Non-null when nothing could be measured; `owners` is then the previous set, untouched, and must not be written. */
   fatal: string | null;
+  computedAt: string;
 }
 
 /**
- * Read the activity map and propose roles from it.
+ * Derive KpiOwners from Odoo.
  *
- * Runs on its own route with its own 300-second limit, because it is 30-odd Odoo
- * calls and it used to run inside the 60-second Admin page load.
+ * `previous` is the set currently stored: it is what an unreadable bucket's KPIs
+ * (and a branch that did not resolve) fall back to.
  */
-export async function fetchKpiRoleProposal(config: KpiConfig | null): Promise<KpiRoleProposalResult> {
+export async function fetchKpiOwners(
+  config: KpiConfig | null,
+  previous: KpiOwners | undefined,
+  budgetMs: number = KPI_OWNER_BUDGET_MS,
+): Promise<KpiOwnersResult> {
   cachedUid = null;
   companyIdCache = null;
+  const prev: KpiOwners = previous ?? {};
+  const computedAt = new Date().toISOString();
 
-  const floor = resolveRoleFloor(config);
-  const empty = (fatalWhy: string): KpiRoleProposalResult => ({
-    people: [], floor, unknownBuckets: [], missingBranches: [...KPI_BRANCHES],
-    systemCheckFailed: null, notes: [fatalWhy], fatal: fatalWhy,
+  const fatalResult = (why: string): KpiOwnersResult => ({
+    owners: prev, detail: {}, unreadable: [], missingBranches: [], excluded: [], systemCheckFailed: null,
+    floor: KPI_OWNER_FLOOR, windowDays: KPI_OWNER_WINDOW_DAYS, notes: [why], fatal: why, computedAt,
   });
 
-  // ── The reads the map used to be handed for free ─────────────────
-  // fetchKpiOdooOptions paid for these as part of the field report. It no longer
-  // runs the map, so they are paid for here — which is the point: the Admin page
-  // load no longer pays for any of it.
+  // ── The reads the map needs ─────────────────────────────────────
   let repairMeta: OwnershipFieldMeta;
   try {
     repairMeta = (await call('repair.order', 'fields_get', [], {
       attributes: ['string', 'type', 'relation', 'selection', 'store', 'readonly'],
     })) as OwnershipFieldMeta;
   } catch (e) {
-    return empty(`⚠ The role proposal could not run — repair.order could not be read in Odoo: ${errText(e)}`);
+    return fatalResult(`⚠ KPI ownership could not be refreshed — repair.order could not be read in Odoo: ${errText(e)}`);
   }
   const has = (f: string) => Object.prototype.hasOwnProperty.call(repairMeta, f);
 
-  // Stage names, because the chatter stores the human LABEL of what changed, so a
-  // stage-mapped selector has to be resolved through its stage names first.
+  // Stage names, because the chatter stores the human LABEL of what changed.
   const preNotes: string[] = [];
   let stageNames: Record<number, string> = {};
   if (has('stage_id') && repairMeta.stage_id?.relation) {
@@ -3059,288 +2960,172 @@ export async function fetchKpiRoleProposal(config: KpiConfig | null): Promise<Kp
       const recs = (await call(repairMeta.stage_id.relation, 'search_read', [[]], { fields: ['display_name'], limit: 200 })) as { id: number; display_name?: string }[];
       stageNames = Object.fromEntries(recs.map((r) => [r.id, r.display_name || `#${r.id}`]));
     } catch (e) {
-      // Not fatal, and not silent: a stage-mapped bucket then reports that its
-      // mapping does not resolve, which is the truth about this run.
-      preNotes.push(`⚠ repair.order.stage_id exists but its stage model could not be read (${errText(e)}), so any stage-mapped bucket below reports an unresolved mapping rather than a name list.`);
+      preNotes.push(`⚠ repair.order.stage_id exists but its stage model could not be read (${errText(e)}), so any stage-mapped action below reports an unresolved mapping.`);
     }
   }
 
   const trackCounts = await chatterTrackingCounts(
     ['state', 'repair_state', 'priority_matrix_status', 'stage_id'].filter(has));
 
-  // ── The map ─────────────────────────────────────────────────────
   let map: KpiOwnershipMap;
   try {
-    map = await collectKpiOwnership({ config, repairMeta, stageNames, trackCounts, budgetMs: ROLE_PROPOSAL_BUDGET_MS });
+    map = await collectKpiOwnership({ config, repairMeta, stageNames, trackCounts, budgetMs });
   } catch (e) {
-    return empty(`⚠ The role proposal could not run — the ownership map failed: ${errText(e)}`);
+    return fatalResult(`⚠ KPI ownership could not be refreshed — the ownership map failed: ${errText(e)}`);
   }
-  if (map.fatal) return empty(map.fatal);
+  if (map.fatal) return fatalResult(map.fatal);
 
   const notes = [...preNotes, ...kpiOwnershipLines(map, config)];
   const byKey = new Map<OwnershipBucketKey, OwnershipBucketEntry>(map.ordered.map((b) => [b.key, b]));
 
-  /**
-   * A bucket's reason for being uncountable, or null when it can be counted.
-   *
-   * A bucket that was never reached at all is exactly as unreadable as one that
-   * errored, and the arithmetic below has to treat the two identically — an
-   * absent bucket silently contributing 0 is how a role gets stripped.
-   */
-  const unknownOf = (key: OwnershipBucketKey): RoleUnknownBucket | null => {
-    const b = byKey.get(key);
-    if (!b) {
-      return { key, label: key, kpis: [], reason: 'this bucket was never reached, so it is UNKNOWN rather than empty — nothing was measured for it at all' };
-    }
-    if (b.unavailable) return { key, label: b.label, kpis: b.kpis, reason: b.unavailable };
-    // A chatter bucket whose authors never resolved to users is counted by
-    // res.partner id. The diagnostic can still print those names, because a
-    // name is a name; a roster entry cannot use them, because it is keyed on
-    // res.users and a partner id is some OTHER person's user id. Crediting them
-    // would not merely lose a role, it would hand it to the wrong person.
-    if (map.partnerLookupFailed && b.actorKind === 'partner') {
-      return {
-        key, label: b.label, kpis: b.kpis,
-        reason: `the chatter authors behind this action could NOT be matched to Odoo users (${map.partnerLookupFailed}), so its counts are keyed on partner records instead of on the user ids the roster uses — attributing them to a person would credit the wrong person`,
-      };
-    }
-    return null;
-  };
-
-  // Every bucket nobody can be credited from, said once at the top rather than
-  // once per person — and with the roles it damages, because that is what tells
-  // the owner which of the proposals below are standing on one leg.
-  const unknownBuckets: (RoleUnknownBucket & { roles: KpiRole[] })[] = [];
+  // ── Classify every KPI-bearing action: readable, partial, or unreadable ──
+  const unreadable: KpiOwnersUnreadable[] = [];
+  /** Buckets whose counts may be credited (fully or partly read). */
+  const usable = new Map<OwnershipBucketKey, OwnershipBucketEntry>();
+  /** Buckets that block REMOVAL of a previous owner of their KPIs, with why. */
+  const blocking = new Map<OwnershipBucketKey, string>();
   for (const key of OWNERSHIP_ORDER) {
-    const u = unknownOf(key);
-    if (!u) continue;
-    unknownBuckets.push({ ...u, roles: KPI_ROLE_ORDER.filter((r) => ROLE_BUCKETS[r].includes(key)) });
-  }
-
-  // ── Everyone the map saw, plus everyone the roster holds ─────────
-  // Both directions matter. Someone doing the work who is not rostered gets no
-  // card, so their violations land on nobody; a rostered person the map finds
-  // doing nothing is a stale row. Neither is an error, both are signals, and
-  // dropping either is how the current list went stale in the first place.
-  const seen = new Map<number, { name: string }>();
-  for (const b of map.ordered) {
-    // Same reason as unknownOf above: when the author lookup failed, these keys
-    // are partner ids, and treating one as a user id would invent a person.
-    if (map.partnerLookupFailed && b.actorKind === 'partner') continue;
-    for (const [uid, a] of b.actors) {
-      const prev = seen.get(uid);
-      if (!prev || prev.name.startsWith('#')) seen.set(uid, { name: a.name });
+    const kpis = bucketKpis(key);
+    if (!kpis.length) continue;   // drives no KPI (uploadsFollowUp)
+    const b = byKey.get(key);
+    let reason: string | null = null;
+    if (!b) reason = 'this action was never reached on this run, so it is UNKNOWN rather than empty';
+    else if (b.unavailable) reason = b.unavailable;
+    else if (map.partnerLookupFailed && b.actorKind === 'partner') {
+      // Keyed on res.partner ids, which are some OTHER person's user ids:
+      // crediting them would hand the KPI to the wrong person.
+      reason = `the chatter authors behind this action could NOT be matched to Odoo users (${map.partnerLookupFailed}), so its counts cannot be credited to anyone`;
+    }
+    if (!b || reason) {
+      unreadable.push({ key, label: b?.label ?? key, kpis, reason: reason ?? 'unknown', partial: false });
+      blocking.set(key, `"${b?.label ?? key}" could not be read on this run`);
+      continue;
+    }
+    usable.set(key, b);
+    const partial: string[] = [];
+    if (b.days < KPI_OWNER_WINDOW_DAYS) partial.push(`it was read over only ${b.days} days (the model is too busy for ${KPI_OWNER_WINDOW_DAYS}), so a count below the floor is not a miss`);
+    if (b.truncated) partial.push('a read hit its row cap, so its counts are floors');
+    if (partial.length) {
+      unreadable.push({ key, label: b.label, kpis, reason: partial.join('; '), partial: true });
+      blocking.set(key, `"${b.label}" was only partly read on this run`);
     }
   }
-  const roster = new Map<number, SaRosterEntry>((config?.saRoster ?? []).map((r) => [r.odooUserId, r]));
-  const candidateIds = [...new Set([...seen.keys(), ...roster.keys()])];
+
+  // ── Everyone who reaches the floor somewhere, plus everyone stored ──
+  const scope: string[] = [...map.inScopeBranches];
+  const nameById = new Map<number, string>();
+  const candidates = new Set<number>();
+  for (const b of usable.values()) {
+    for (const [uid, a] of b.actors) {
+      if (!nameById.has(uid) || nameById.get(uid)!.startsWith('#')) nameById.set(uid, a.name);
+      for (const [br, n] of a.byBranch) if (n > KPI_OWNER_FLOOR && scope.includes(br)) candidates.add(uid);
+    }
+  }
+  for (const byKpi of Object.values(prev)) {
+    for (const ids of Object.values(byKpi ?? {})) for (const id of ids ?? []) candidates.add(id);
+  }
+  for (const r of config?.saRoster ?? []) if (!nameById.has(r.odooUserId)) nameById.set(r.odooUserId, r.name);
 
   // ── Logins, for the system-account check ────────────────────────
-  // active_test:false so a deactivated account still resolves. OdooBot is often
-  // inactive, and an inactive automation account that failed to resolve would be
-  // proposed as if it were a person.
+  // active_test:false so a deactivated account still resolves: OdooBot is often
+  // inactive, and an unresolved automation account would read as a person.
   const loginById = new Map<number, string>();
   let systemCheckFailed: string | null = null;
-  if (candidateIds.length) {
+  if (candidates.size) {
     try {
-      for (const chunk of idChunks(candidateIds)) {
+      for (const chunk of idChunks([...candidates])) {
         const us = (await call('res.users', 'search_read', [[['id', 'in', chunk]] as OdooDomain], {
           fields: ['login', 'name'], limit: 0, context: { active_test: false },
         })) as Record<string, unknown>[];
         for (const u of us) {
           if (typeof u.id !== 'number') continue;
           if (typeof u.login === 'string') loginById.set(u.id, u.login);
-          // A name from res.users beats one carried out of a read_group label.
-          if (typeof u.name === 'string' && u.name && seen.has(u.id)) seen.set(u.id, { name: u.name });
+          if (typeof u.name === 'string' && u.name) nameById.set(u.id, u.name);
         }
       }
     } catch (e) {
       systemCheckFailed = errText(e);
+      notes.push(`⚠ The Odoo logins could not be read (${systemCheckFailed}), so accounts were checked for being automation by NAME only — an automation account with an unusual name may appear as an owner on this run.`);
     }
   }
-  if (systemCheckFailed) {
-    // This check is the only thing keeping OdooBot off a KPI, so a failed check
-    // is announced as loudly as a failed bucket and NO exclusion is proposed:
-    // proposing none is honest, proposing some would imply the rest were checked.
-    notes.push(`⚠ The Odoo logins could not be read (${systemCheckFailed}), so NO account could be checked for being automation. Nothing below is proposed as excluded, and OdooBot and the Administrator — which the live map shows active in five branches and two respectively — may therefore appear as if they were people. Do not take this run's exclusions as complete; run it again.`);
+  const nameOf = (uid: number) => nameById.get(uid) ?? `#${uid}`;
+  const systemWhy = new Map<number, string>();
+  for (const uid of candidates) {
+    const why = systemAccountReason(loginById.get(uid) ?? null, nameOf(uid));
+    if (why) systemWhy.set(uid, why);
   }
 
-  // ── Role arithmetic, per person per branch ──────────────────────
-  const scope = map.inScopeBranches;
-  const people: KpiRoleProposalPerson[] = [];
+  // ── Derive, per branch, per KPI ─────────────────────────────────
+  const owners: KpiOwners = {};
+  const detail: Record<string, Record<string, KpiOwnerEntry[]>> = {};
+  const excludedSeen = new Map<number, string>();
+  const allKpis = [...new Set(OWNERSHIP_ORDER.flatMap((k) => bucketKpis(k)))].sort((a, b) => a - b);
+  const peak = (e: KpiOwnerEntry) => Math.max(0, ...e.counts.map((c) => c.count));
 
-  for (const uid of candidateIds) {
-    const entry = roster.get(uid);
-    const name = seen.get(uid)?.name ?? entry?.name ?? `#${uid}`;
-    const login = loginById.get(uid) ?? null;
-    const excludedReason = systemCheckFailed ? null : systemAccountReason(login, name);
-    // What the roster gives them today. A (branch, role) they already hold keeps
-    // a row even when it measures a clean zero, so applying cannot drop it
-    // unseen — see `losesRoles`.
-    const heldRoles = entry ? rosterRoles(entry) : [];
-    const heldBranches = entry ? rosterBranches(entry) : [];
-
-    const byBranch: ProposedBranchRole[] = [];
-    let totalActions = 0;
-
-    for (const branch of scope) {
-      for (const role of KPI_ROLE_ORDER) {
-        const heldToday = heldRoles.includes(role) && heldBranches.includes(branch);
-        const evidence: RoleEvidence[] = [];
-        const unknown: RoleUnknownBucket[] = [];
-        let total = 0;
-        let truncated = false;
-        /** The shortest window behind this role's readable buckets. */
-        let narrowestDays = OWNERSHIP_DIRECT_DAYS;
-
-        for (const key of ROLE_BUCKETS[role]) {
-          const u = unknownOf(key);
-          if (u) { unknown.push(u); continue; }
-          const b = byKey.get(key)!;
-          const count = b.actors.get(uid)?.byBranch.get(branch) ?? 0;
-          total += count;
-          if (b.truncated) truncated = true;
-          narrowestDays = Math.min(narrowestDays, b.days);
-          evidence.push({ key, label: b.label, kpis: b.kpis, count, days: b.days, method: b.method, truncated: b.truncated });
+  for (const branch of scope) {
+    for (const kpi of allKpis) {
+      const covering = OWNERSHIP_ORDER.filter((k) => OWNERSHIP_BUCKET_KPIS[k].includes(kpi));
+      const entries = new Map<number, KpiOwnerEntry>();
+      for (const key of covering) {
+        const b = usable.get(key);
+        if (!b) continue;
+        for (const [uid, a] of b.actors) {
+          const n = a.byBranch.get(branch) ?? 0;
+          if (n <= 0) continue;
+          const e = entries.get(uid) ?? { userId: uid, name: nameOf(uid), counts: [], kept: null };
+          e.counts.push({ bucket: key, label: b.label, count: n, days: b.days, truncated: b.truncated });
+          entries.set(uid, e);
         }
-        totalActions += total;
-
-        // Nothing counted and nothing unreadable: a clean, measured zero. Not
-        // worth a row — this person simply does not do this job in this branch.
-        // Unless the roster says they DO: then the zero is the claim being made
-        // against them, and it has to be visible and reversible.
-        if (total === 0 && !unknown.length && !heldToday) continue;
-
-        const reasons: string[] = [];
-        if (total < floor.actions) {
-          if (heldToday) {
-            reasons.push(`the saved roster gives them this role in this branch today, and this run does not reach the floor for it — applying without ticking it back would take the role away`);
-          }
-          for (const u of unknown) {
-            reasons.push(`"${u.label}" could not be read (${u.reason}), so the total beside this role is a floor and the role may well be met`);
-          }
-          // The floor is written for 90 days; the chatter buckets reach back 30,
-          // or 7 on a busy model. Summing a short window against a long floor
-          // UNDER-counts, and under-counting here strips a role. So below the
-          // floor on a short window is "cannot say", never "no".
-          if (narrowestDays < floor.days) {
-            reasons.push(`the floor is ${floor.actions} action(s) over ${floor.days} days, but this role's evidence reaches back only ${narrowestDays} day(s) — the chatter-derived buckets are read over a shorter window than the create-stamped ones, so this total is not comparable with the floor and cannot be called a miss`);
-          }
-        }
-        if (truncated) {
-          reasons.push('a read behind this role hit its row cap, so these counts are floors');
-        }
-
-        const verdict: ProposedBranchRole['verdict'] =
-          total >= floor.actions ? 'proposed'
-            : reasons.length ? 'indeterminate'
-              : 'belowFloor';
-
-        byBranch.push({
-          branch, role, total, verdict,
-          reasons: verdict === 'indeterminate' ? reasons : [],
-          evidence, unknown,
-        });
       }
+      // Union across covering actions: over the floor in ANY of them is enough.
+      const qualified: KpiOwnerEntry[] = [];
+      for (const e of entries.values()) {
+        if (!e.counts.some((c) => c.count > KPI_OWNER_FLOOR)) continue;
+        const why = systemWhy.get(e.userId);
+        if (why) { excludedSeen.set(e.userId, why); continue; }
+        qualified.push(e);
+      }
+      // An unreadable or partly read action: nobody stored before may be
+      // dropped on the strength of this run.
+      const blockers = covering.map((k) => blocking.get(k)).filter((x): x is string => !!x);
+      if (blockers.length) {
+        for (const uid of prev[branch]?.[String(kpi)] ?? []) {
+          if (qualified.some((q) => q.userId === uid)) continue;
+          const why = systemWhy.get(uid);
+          if (why) { excludedSeen.set(uid, why); continue; }
+          qualified.push({
+            userId: uid, name: nameOf(uid), counts: entries.get(uid)?.counts ?? [],
+            kept: `kept from the previous refresh — ${blockers.join('; ')}`,
+          });
+        }
+      }
+      if (!qualified.length) continue;
+      qualified.sort((x, y) => (x.kept ? 1 : 0) - (y.kept ? 1 : 0) || peak(y) - peak(x) || x.name.localeCompare(y.name));
+      (owners[branch] ??= {})[String(kpi)] = qualified.map((q) => q.userId).sort((a, b) => a - b);
+      (detail[branch] ??= {})[String(kpi)] = qualified;
     }
-
-    const met = byBranch.filter((r) => r.verdict === 'proposed');
-    // Branch and role order follow the dashboards', not whatever order the
-    // queries happened to run in, so the same evidence always reads the same way.
-    const branches = scope.filter((b) => met.some((r) => r.branch === b));
-    const roles = KPI_ROLE_ORDER.filter((r) => met.some((m) => m.role === r));
-
-    // Nothing measured, nothing unreadable, nothing saved: not a signal, just an
-    // Odoo user who does none of this work. That is most of the instance.
-    if (!byBranch.length && !entry && !excludedReason) continue;
-
-    // An excluded account is never scored, so applying leaves its roles and
-    // branches alone — it takes nothing away and so loses nothing.
-    // Compared as plain strings: a saved branch need not be one of the five the
-    // KPI section scores (the audit found an 'EV Hub' entry getting no card
-    // anywhere), and such a branch is exactly one worth reporting as lost.
-    const proposedBranches = new Set<string>(branches);
-    const losesRoles = excludedReason ? [] : heldRoles.filter((r) => !roles.includes(r));
-    const losesBranches = excludedReason ? [] : heldBranches.filter((b) => !proposedBranches.has(b));
-
-    people.push({
-      odooUserId: uid,
-      name,
-      login,
-      branches,
-      roles,
-      byBranch,
-      excludedReason,
-      rostered: !!entry,
-      current: entry ? { branches: heldBranches, roles: heldRoles, excluded: entry.excluded === true } : null,
-      totalActions,
-      losesRoles,
-      losesBranches,
-      // Something to assert, something we cannot rule out, or something about to
-      // be taken away. A rostered person with none of those is still listed —
-      // see `applicable`.
-      applicable: roles.length > 0 || !!excludedReason
-        || byBranch.some((r) => r.verdict === 'indeterminate') || losesRoles.length > 0,
-      // Only an assertion is ticked on arrival.
-      defaultChecked: roles.length > 0 || !!excludedReason,
-    });
   }
 
-  // Busiest first, so the people whose pay this decides most are read first;
-  // name breaks the tie, so the list is stable between runs.
-  people.sort((a, b) => b.totalActions - a.totalActions || a.name.localeCompare(b.name));
+  // A branch the map could not speak about keeps its previous owners whole.
+  for (const branch of map.missingBranches) {
+    const was = prev[branch];
+    if (!was) continue;
+    owners[branch] = was;
+    detail[branch] = Object.fromEntries(Object.entries(was).map(([kpi, ids]) => [kpi, (ids ?? []).map((uid) => ({
+      userId: uid, name: nameOf(uid), counts: [],
+      kept: `kept from the previous refresh — ${branch}'s Odoo company did not resolve on this run`,
+    }))]));
+  }
 
-  // ── Proposal-level notes, on top of the map's own ───────────────
-  notes.push(`Role floor in force: ${floor.actions} action(s) over ${floor.days} days, counted per role per branch`
-    + (floor.source === 'config' ? `, read from thresholds.${floor.key}.` : " — the owner's decision, deliberately not a shipped default, so editing the KPI defaults cannot move it."));
-  if (floor.refused) notes.push(`⚠ ${floor.refused}`);
-  notes.push(`Role buckets: ${KPI_ROLE_ORDER.map((r) => `${KPI_ROLE_LABELS[r]} = ${ROLE_BUCKETS[r].map((k) => byKey.get(k)?.label ?? k).join(' + ')}`).join(' · ')}.`);
-  const unmapped = OWNERSHIP_ORDER.filter((k) => !KPI_ROLE_ORDER.some((r) => ROLE_BUCKETS[r].includes(k)));
-  if (unmapped.length) {
-    notes.push(`Measured but mapped to no role: ${unmapped.map((k) => `"${byKey.get(k)?.label ?? k}"`).join(' · ')} — ${UNMAPPED_BUCKET_NOTE}.`);
+  const excluded = [...excludedSeen].map(([userId, reason]) => ({ userId, name: nameOf(userId), reason }));
+  if (excluded.length) notes.push(`Left out as system accounts: ${excluded.map((x) => x.name).join(' · ')}.`);
+  if (unreadable.length) {
+    notes.push(`⚠ ${unreadable.length} action(s) could not be fully read: ${unreadable.map((u) => `"${u.label}" (${kpiTag(u.kpis)})`).join(' · ')}. Their KPIs keep the owners stored by the previous refresh, plus anyone this run shows above the floor.`);
   }
-  if (map.partnerLookupFailed) {
-    notes.push(`⚠ Odoo's chatter records an author as a PARTNER, and the lookup that turns those partners into users failed (${map.partnerLookupFailed}). Every chatter-derived action — the three stage moves, quotation confirmation, purchase-order confirmation, invoice posting and parts receipt — is therefore counted against a partner record rather than against the user id a roster entry is keyed on, so it is reported as unreadable above rather than credited to anybody. The names still appear in the diagnostic; they just cannot safely become roles. Run it again before applying anything that depends on them.`);
-  }
-  if (unknownBuckets.length) {
-    notes.push(`⚠ ${unknownBuckets.length} of the ${OWNERSHIP_ORDER.length} activity buckets could NOT be read on this run: ${unknownBuckets.map((u) => `"${u.label}"`).join(' · ')}. Every role resting on one of them is marked "cannot say" rather than scored against the floor, because an unreadable bucket and an inactive person look identical once both are empty — and reading the first as the second would take a role off someone who has it.`);
-  }
-  const idle = people.filter((p) => p.rostered && p.totalActions === 0);
-  if (idle.length) {
-    notes.push(`On the saved roster but doing none of this work in the window: ${idle.map((p) => p.name).join(' · ')} — listed below with nothing to apply. They may have left, changed job, or work only on records outside the five KPI branches.`);
-  }
-  const offRoster = people.filter((p) => !p.rostered && !p.excludedReason && p.roles.length > 0);
-  if (offRoster.length) {
-    notes.push(`Doing KPI-bearing work but NOT on the saved roster: ${offRoster.map((p) => p.name).join(' · ')} — their work counts toward their branch today and reaches nobody's card.`);
-  }
-  // Applying REPLACES roles, so every removal is named here as well as on the
-  // row. A role lost quietly is a change to somebody's pay that nobody decided.
-  // A roster entry holds ONE flat set of roles and ONE flat set of branches, so
-  // somebody who is an advisor in Dubai and a parts man in Ajman can only be
-  // saved as both roles in both branches. That over-grants, and it is a property
-  // of the saved shape rather than of this reading, so it is named rather than
-  // quietly resolved: nobody should discover it from a KPI they never touch.
-  const crossRole = people.filter((p) => {
-    if (p.roles.length < 2 || p.branches.length < 2) return false;
-    const met = p.byBranch.filter((r) => r.verdict === 'proposed');
-    const perBranch = p.branches.map((b) => met.filter((r) => r.branch === b).map((r) => r.role).sort().join('+'));
-    return new Set(perBranch).size > 1;
-  });
-  if (crossRole.length) {
-    notes.push(`⚠ Different roles in different branches, which a roster entry cannot express — it holds one set of roles and one set of branches, so these people are saved as EVERY proposed role in EVERY proposed branch: ${crossRole.map((p) => `${p.name} (${p.byBranch.filter((r) => r.verdict === 'proposed').map((r) => `${r.branch}: ${KPI_ROLE_LABELS[r.role]}`).join('; ')})`).join(' · ')}. They will therefore be scored on KPIs they do not touch in one of their branches. Untick the branch or the role you do not want scored.`);
-  }
-  const losing = people.filter((p) => p.losesRoles.length > 0);
-  if (losing.length) {
-    notes.push(`⚠ Applying this proposal as it stands would REMOVE a role the saved roster gives today: ${losing.map((p) => `${p.name} loses ${p.losesRoles.map((r) => KPI_ROLE_LABELS[r]).join(' + ')}`).join(' · ')}. Each one has an unticked pill below — tick it to keep the role. A removal is sometimes right (that is the whole point of re-deriving ownership) but it is never automatic.`);
-  }
+  notes.push(`Ownership rule in force: more than ${KPI_OWNER_FLOOR} actions in ${KPI_OWNER_WINDOW_DAYS} days, per KPI per branch.`);
 
   return {
-    people,
-    floor,
-    unknownBuckets,
-    missingBranches: map.missingBranches,
-    systemCheckFailed,
-    notes,
-    fatal: null,
+    owners, detail, unreadable, missingBranches: map.missingBranches, excluded, systemCheckFailed,
+    floor: KPI_OWNER_FLOOR, windowDays: KPI_OWNER_WINDOW_DAYS, notes, fatal: null, computedAt,
   };
 }
