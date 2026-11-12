@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  WORKSHOP_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
+  KPI_BRANCHES, KPI_DEFINITIONS, KpiConfig, StageSelector, StageSelectorKind, withKpiDefaults, kpiDisplayName,
   KpiSection, KPI_SECTION_ORDER, KPI_SECTION_LABELS, sectionOf, Branch,
 } from '@/lib/types';
 
@@ -64,14 +64,14 @@ function evidenceLine(s: RosterSuggestion): string {
 
 /**
  * Normalise one API suggestion into an editable row. A branch the dropdown cannot
- * offer — null, or outside WORKSHOP_BRANCHES — falls back to the first workshop
+ * offer — null, or outside KPI_BRANCHES — falls back to the first KPI-scored
  * branch and is flagged, so applying can never write a null or unlisted branch.
  */
 function toSuggestedPerson(s: RosterSuggestion, alreadyTracked: boolean): SuggestedPerson {
-  const usable = !!s.branch && (WORKSHOP_BRANCHES as readonly string[]).includes(s.branch);
+  const usable = !!s.branch && (KPI_BRANCHES as readonly string[]).includes(s.branch);
   return {
     ...s,
-    branchPick: usable ? (s.branch as string) : WORKSHOP_BRANCHES[0],
+    branchPick: usable ? (s.branch as string) : KPI_BRANCHES[0],
     sectionPick: s.section === 'workshop' ? 'workshop' : 'advisor',
     checked: !alreadyTracked,
     weakBranch: !usable,
@@ -228,7 +228,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         ...p,
         saRoster: exists
           ? p.saRoster.filter((r) => r.odooUserId !== user.id)
-          : [...p.saRoster, { odooUserId: user.id, name: user.name, branch: WORKSHOP_BRANCHES[0] }],
+          : [...p.saRoster, { odooUserId: user.id, name: user.name, branch: KPI_BRANCHES[0] }],
       };
     });
   }
@@ -638,7 +638,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
         name that person here and the branch&rsquo;s verdicts, hits and misses alike, move onto them.
       </p>
       <div className="flex flex-col gap-2 mb-6">
-        {WORKSHOP_BRANCHES.map((b) => {
+        {KPI_BRANCHES.map((b) => {
           const chosen = cfg.rfqCoordinators?.[b];
           const entry = chosen ? rosterById.get(chosen.id) : undefined;
           // A stored person Odoo no longer lists (archived, or options failed to
@@ -749,7 +749,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                   </div>
                   <select value={s.branchPick} aria-label={`Branch for ${s.name}`}
                     onChange={(e) => setSuggestionBranch(s.odooUserId, e.target.value)} className={suggestSelectCls}>
-                    {WORKSHOP_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                    {KPI_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                   </select>
                   <select value={s.sectionPick} aria-label={`Section for ${s.name}`}
                     onChange={(e) => setSuggestionSection(s.odooUserId, e.target.value as KpiSection)} className={suggestSelectCls}>
@@ -807,7 +807,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
                     <td className="py-1.5 px-3">
                       <select disabled={!entry} value={entry?.branch ?? ''} onChange={(e) => setSaBranch(u.id, e.target.value)}
                         className="text-sm border border-border rounded px-2 py-1 text-ink bg-white disabled:opacity-40">
-                        {WORKSHOP_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
+                        {KPI_BRANCHES.map((b) => <option key={b} value={b}>{b}</option>)}
                       </select>
                     </td>
                     <td className="py-1.5 px-3">
