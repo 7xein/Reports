@@ -798,7 +798,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     write_date: 'time since last modification — any edit resets this clock',
   };
   const baselineDaysNote = thresholds.snapshotBaselineDays ?? 90;
-  let snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
+  let snapshotNote = `Counts only the vehicles actually waiting, among open ROs created in the last ${baselineDaysNote} days (closed work is excluded): compliant means still inside the limit, non-compliant means waiting beyond it, and a vehicle that is not waiting is not in the count at all. One with no usable stamp to age from is left out rather than counted either way. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   let usedTrackingForAging = false;
   let awaitingPartsMethod = 'outstanding parts lines (Done qty below Demand)';
   // Resolved here, not inside KPI 13's block, so the limit the KPI applies and
@@ -849,34 +849,51 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   };
 
   /**
-   * Quotations whose every repair order has been moved to Historical — dead work
-   * nobody should be scored on.
+   * Quotations that belong to no job card in the Orders tab — i.e. that have no
+   * live (non-historical) repair order behind them at all.
    *
-   * The KPIs built from sale.order never meet the historical filter on
-   * repair.order, so they ask here instead. "No repair order at all" is a
-   * quotation in its own right and one live order means the work is still live,
-   * so this query must see BOTH sides: adding `notHist` would hide the historical
-   * rows and make the two cases indistinguishable. Ids it does not return stay
-   * scored, which is why a failed chunk costs nothing.
+   * The owner's rule for this section: "ignore orders in the historical orders
+   * tab. We are starting fresh, so only read orders and their quotations and
+   * invoices which are in the orders tab." So a quotation is in scope only while
+   * some live repair order points at it. That covers two populations at once —
+   * quotations whose job cards have all been moved to Historical, and sale orders
+   * that are not workshop work in the first place (counter parts sales, retail),
+   * which were inflating the approval rate with jobs no advisor was scored for.
+   *
+   * This REPLACES the earlier rule, which deliberately kept a quotation with no
+   * repair order at all as "a quotation in its own right". The owner has decided
+   * otherwise, so the historical rows no longer need to be read back and told
+   * apart: `notHist` goes into the query and anything it returns is proof of a
+   * live job card.
+   *
+   * A failed chunk must never quietly shrink a scored population, so its
+   * quotations stay scored and are counted back for the caller to disclose.
    */
-  const deadQuotations = async (soIds: number[]): Promise<Set<number>> => {
-    const dead = new Set<number>();
-    if (!has('sale_order_id') || !histField.length || !soIds.length) return dead;
-    const live = new Map<number, boolean>();
+  const quotationsOutOfScope = async (soIds: number[]): Promise<{ out: Set<number>; unchecked: number }> => {
+    const out = new Set<number>();
+    if (!soIds.length) return { out, unchecked: 0 };
+    // With no link from repair.order to sale.order the question cannot be asked
+    // at all. Excluding every quotation on the strength of a field this instance
+    // does not have would empty both KPIs, so nothing is excluded and the caller
+    // says how many went unchecked.
+    if (!has('sale_order_id')) return { out, unchecked: soIds.length };
+    let unchecked = 0;
     for (let i = 0; i < soIds.length; i += 2000) {
+      const chunk = soIds.slice(i, i + 2000);
       try {
         const ros = (await call('repair.order', 'search_read', [[
-          ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
-        ]], { fields: ['sale_order_id', ...histField], limit: 0 })) as Rec[];
+          ['sale_order_id', 'in', chunk],
+          ...notHist,
+        ]], { fields: ['sale_order_id'], limit: 0 })) as Rec[];
+        const live = new Set<number>();
         for (const r of ros) {
           const id = m2o(r.sale_order_id)?.[0];
-          // OR-accumulated, so the order the rows arrive in cannot matter.
-          if (id != null) live.set(id, (live.get(id) ?? false) || !isHistorical(r));
+          if (id != null) live.add(id);
         }
-      } catch { /* a failed chunk leaves its quotations out of the map, so they stay scored rather than vanishing from the KPI */ }
+        for (const id of chunk) if (!live.has(id)) out.add(id);
+      } catch { unchecked += chunk.length; }
     }
-    for (const [id, isLive] of live) if (!isLive) dead.add(id);
-    return dead;
+    return { out, unchecked };
   };
 
   // Shared by every weekly repair.order query, so the historical clause lands on
@@ -889,6 +906,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   ];
   const enabled = config.enabledKpis ?? [];
   const on = (id: number) => enabled.includes(id);
+
+  // The QA stage, as the chatter records it. Resolved here rather than beside
+  // tfInspection further down because two KPIs now need it: KPI 16 times the
+  // dwell in QA, and KPI 13's population is the repair orders that actually
+  // entered QA. One definition, so the two can never disagree about what QA is.
+  const tfQa = trackedField(config.stageMap.qa, meta, stageNames);
 
   // ── KPIs 1 & 11 — time from "Repaired" to the invoice being posted ──
   // Same measurement, two thresholds: KPI 1 is the prompt-invoicing rule, KPI 11
@@ -906,19 +929,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ? ['follow_up_screenshot', 'x_follow_up_screenshot'].find(has)
       : undefined;
     if (followUpField) roFields.push(followUpField);
-    // Odoo makes the screenshot read-only unless repair_is_qa is set, so the flag
-    // decides who the KPI can fairly apply to.
-    const qaFlagField = on(13) && has('repair_is_qa') ? 'repair_is_qa' : undefined;
-    if (qaFlagField) roFields.push(qaFlagField);
     if (on(13) && !followUpField) {
       notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
     }
-    // The guard above is the whole fairness basis of KPI 13, and it used to
-    // evaporate: with the flag absent, `eligible` fell back to every repaired RO
-    // — scoring exactly the records whose screenshot box Odoo would not unlock.
-    // A missing flag now costs the KPI, not the advisors.
-    if (on(13) && followUpField && !qaFlagField) {
-      notes.push('Customer follow-up was skipped: repair.order carries no repair_is_qa flag on this instance, so the repair orders Odoo would actually let an advisor upload the screenshot on cannot be identified. Judging the rest would mark advisors down for a box Odoo never let them fill.');
+    // The population needs a QA stage it can recognise. Without one there is no
+    // record-based way to tell which jobs went through QA, and the whole point of
+    // the new population is that it is a fact about the job card rather than
+    // about whoever happens to be reading it — so the KPI is skipped, not widened.
+    if (on(13) && followUpField && !tfQa) {
+      notes.push('Customer follow-up was skipped: QA is not mapped to a tracked state under Admin → KPI Configuration, so the repair orders that actually went through QA cannot be identified. Judging every repaired vehicle instead would score jobs that never reached QA at all.');
     }
     roFields.push(...histField);   // the chatter branch below reads by id, past any domain
     const roCtx = { bin_size: true };
@@ -979,29 +998,46 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // Follow-up is the one KPI here that is not a stopwatch: a vehicle either has
     // the screenshot or it does not.
     //
-    // Scope matters more than timing here. Odoo makes follow_up_screenshot
-    // read-only unless repair_is_qa is set, so an RO that never went through QA
-    // CANNOT carry one. Judging those would mark advisors down for a box Odoo
-    // never let them fill — so without the flag the KPI is skipped outright
-    // (noted where the flag is resolved, above) rather than widened to everyone.
+    // Scope matters more than timing here, and the population is the owner's
+    // decision: the follow-up belongs to the jobs that actually went through QA,
+    // charged to the service advisor who opened the job card.
+    //
+    // It used to filter on repair_is_qa. That field is labelled "QA Access" and
+    // is computed, non-stored and readonly — button visibility, which Odoo
+    // recomputes for whoever reads the record. So the population was a statement
+    // about our integration user's permissions, not about the job, and it would
+    // pass either everything or nothing. The record-based fact is the QA stage
+    // transition in the chatter, which is the same signal KPI 16 times its QA
+    // dwell from — so the two KPIs now agree on which jobs reached QA.
+    //
+    // A job whose QA entry cannot be found is skipped rather than judged: the
+    // chatter may simply not reach back that far, and an unobserved QA is not a
+    // missed follow-up.
     //
     // It is not instantaneous either. The advisor is owed a grace period in which
     // to call the customer back and upload the proof; without one, a car repaired
     // ten minutes before the page loads was already a named violation with its RO
     // number against it.
-    if (on(13) && followUpField && qaFlagField) {
+    if (on(13) && followUpField && tfQa) {
       // Calendar days, not business hours: the grace is a window on the customer
       // being called back, and it runs over a weekend too.
       const graceMs = followUpGraceDays * 86400_000;
-      const eligible = repaired.filter((r) => !!r[qaFlagField]);
-      let insideGrace = 0, noRepairedAt = 0;
-      for (const r of eligible) {
+      // Same by-id chatter lookup the stage KPIs use; unwindowed on purpose, since
+      // a job repaired this week may well have passed QA in an earlier one.
+      const qaEntry = await stateEntryTimes(repaired.map((r) => r.id as number), tfQa.field, tfQa.labels);
+      let insideGrace = 0, noRepairedAt = 0, noQaEntry = 0, eligible = 0;
+      for (const r of repaired) {
+        // Judged only if this job card is KNOWN to have entered QA.
+        if (qaEntry[r.id as number] == null) { noQaEntry++; continue; }
+        eligible++;
         const rep = deliveredAt[r.id as number];
         // Without the Repaired moment there is no way to know the grace has run
         // out. The job card's own create_date would say it always has — the same
         // ambiguity-resolved-as-a-fine this engine no longer accepts anywhere.
         if (rep == null) { noRepairedAt++; continue; }
         if (now - rep < graceMs) { insideGrace++; continue; }
+        // No attributeTo: this is the service advisor's KPI, and push()'s default
+        // subject is the repair order's create_uid — whoever opened the job card.
         push(13, r, !!r[followUpField], (r.name as string) || '');
       }
       if (thresholds.followUpGraceDays == null) {
@@ -1011,10 +1047,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         notes.push(`Customer follow-up left ${insideGrace} repaired RO${insideGrace === 1 ? '' : 's'} unjudged, still inside the ${limitLabel(followUpGraceDays, 'day')} grace period — the follow-up is not due on them yet.`);
       }
       if (noRepairedAt) {
-        notes.push(`Customer follow-up left ${noRepairedAt} QA-flagged RO${noRepairedAt === 1 ? '' : 's'} unjudged with no Repaired timestamp in the chatter — without it the grace period cannot be measured, and nothing here will stand in for it.`);
+        notes.push(`Customer follow-up left ${noRepairedAt} QA'd RO${noRepairedAt === 1 ? '' : 's'} unjudged with no Repaired timestamp in the chatter — without it the grace period cannot be measured, and nothing here will stand in for it.`);
       }
-      if (repaired.length && !eligible.length) {
-        notes.push(`None of this week's ${repaired.length} repaired ROs were flagged for QA, so the follow-up screenshot could not be uploaded on any of them.`);
+      if (noQaEntry) {
+        notes.push(`Customer follow-up is scored on the jobs that actually went through QA, which it reads from the QA stage changes in the chatter. ${noQaEntry} of this week's ${repaired.length} repaired RO${repaired.length === 1 ? '' : 's'} ${noQaEntry === 1 ? 'was' : 'were'} left unjudged because no QA entry could be found for ${noQaEntry === 1 ? 'it' : 'them'} — either the job never reached QA, or it did so before that stage was being tracked. Neither is a missed follow-up, so neither is counted. The figure covers fewer vehicles than before for that reason, not because the branches got worse.`);
+      }
+      if (repaired.length && !eligible) {
+        notes.push(`None of this week's ${repaired.length} repaired ROs could be shown to have entered QA, so Customer follow-up has nobody to score this week. It no longer uses the "QA Access" flag, which described our Odoo login's permissions rather than the job.`);
       }
     }
 
@@ -1235,13 +1274,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     }
 
-    // Quotations whose every repair order has gone to Historical are dead work.
-    const dead = await deadQuotations(soIds);
+    // Only quotations attached to a job card in the Orders tab are scored.
+    const { out: outOfScope, unchecked } = await quotationsOutOfScope(soIds);
 
     let historicalSkipped = 0;
     for (const q of open) {
       if (insuranceExempt.has(q.id as number)) continue;
-      if (dead.has(q.id as number)) { historicalSkipped++; continue; }
+      if (outOfScope.has(q.id as number)) { historicalSkipped++; continue; }
       const created = odooTime(q.create_date);
       if (created == null) continue;
       // Still open, so the clock is still running — on business time, or a
@@ -1250,7 +1289,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
     for (const q of confirmed) {
       if (insuranceExempt.has(q.id as number)) continue;
-      if (dead.has(q.id as number)) { historicalSkipped++; continue; }
+      if (outOfScope.has(q.id as number)) { historicalSkipped++; continue; }
       const created = odooTime(q.create_date);
       const approved = odooTime(q.date_order);
       if (created == null || approved == null) continue;
@@ -1260,7 +1299,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       notes.push(`Quote approval excluded ${insuranceExempt.size} insurance quotation${insuranceExempt.size === 1 ? '' : 's'} — approval there is the insurer's to give.`);
     }
     if (historicalSkipped) {
-      notes.push(`Quote approval excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} whose repair orders have all been moved to Historical — that work is out of the working set.`);
+      notes.push(`Quote approval now counts only quotations attached to a job card in the Orders tab, and excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} that ${historicalSkipped === 1 ? 'is' : 'are'} not: either every repair order behind ${historicalSkipped === 1 ? 'it' : 'them'} has been moved to Historical, or ${historicalSkipped === 1 ? 'it is' : 'they are'} not workshop work at all — a counter parts sale or a retail order carries no job card. The figure moves because the scope narrowed, not because approval got slower.`);
+    }
+    if (unchecked) {
+      notes.push(`Quote approval could not check ${unchecked} quotation${unchecked === 1 ? '' : 's'} against ${unchecked === 1 ? 'its' : 'their'} repair orders — the check could not be run, so ${unchecked === 1 ? 'it is' : 'they are'} still scored rather than dropped from the figure on the strength of a check that did not happen.`);
     }
   }
 
@@ -1274,13 +1316,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['company_id', 'in', kpiIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'state'], limit: 0 })) as Rec[];
 
-    // Same dead-work rule as Quote approval — nobody is scored on a quotation
-    // whose every repair order has been moved to Historical.
-    const dead = await deadQuotations(quotes.map((q) => q.id as number));
+    // Same scope rule as Quote approval — only quotations attached to a job card
+    // in the Orders tab are scored. This is also what keeps counter parts sales
+    // and retail orders out of the rate: they carry no repair order, and they
+    // were approved on the spot, so they read as a near-perfect approval rate
+    // for work no advisor was ever being judged on.
+    const { out: outOfScope, unchecked } = await quotationsOutOfScope(quotes.map((q) => q.id as number));
     let historicalSkipped = 0;
     const byState: Record<string, number> = {};
     for (const q of quotes) {
-      if (dead.has(q.id as number)) { historicalSkipped++; continue; }
+      if (outOfScope.has(q.id as number)) { historicalSkipped++; continue; }
       const st = String(q.state ?? 'unknown');
       byState[st] = (byState[st] ?? 0) + 1;
       // Confirmed into a sale order is what "the customer approved it" looks like.
@@ -1302,7 +1347,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       notes.push(`Quotation approval rate — this week's quotations by state: ${parts.join(' \u00b7 ')}.`);
     }
     if (historicalSkipped) {
-      notes.push(`Quotation approval rate excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} whose repair orders have all been moved to Historical.`);
+      notes.push(`Quotation approval rate now counts only quotations attached to a job card in the Orders tab, and excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} that ${historicalSkipped === 1 ? 'is' : 'are'} not: either every repair order behind ${historicalSkipped === 1 ? 'it' : 'them'} has been moved to Historical, or ${historicalSkipped === 1 ? 'it is' : 'they are'} not workshop work at all — counter parts sales and retail orders carry no job card and were approved on the spot, which lifted this rate for work nobody here is scored on. Expect the figure to move for that reason rather than because the week changed.`);
+    }
+    if (unchecked) {
+      notes.push(`Quotation approval rate could not check ${unchecked} quotation${unchecked === 1 ? '' : 's'} against ${unchecked === 1 ? 'its' : 'their'} repair orders — the check could not be run, so ${unchecked === 1 ? 'it is' : 'they are'} still counted rather than dropped from the rate on the strength of a check that did not happen.`);
     }
   }
 
@@ -1338,7 +1386,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // milestone lands, failed once the window elapses without it, and left
   // unjudged while the clock is still legitimately running.
   const tfInspection = trackedField(config.stageMap.inspection, meta, stageNames);
-  const tfQa = trackedField(config.stageMap.qa, meta, stageNames);
+  // tfQa is resolved before the first KPI block: KPI 13's population is now the
+  // same QA transition KPI 16 times its dwell from, so both read one definition.
 
   if ((on(12) || on(14) || on(15)) && !tfInspection) {
     notes.push('Check-in, inspection and quote-after-inspection need the Inspection state mapped in Admin → KPI Configuration.');
@@ -1508,6 +1557,164 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         return Number.isNaN(t) ? null : t;
       };
 
+      // ── The job card a purchase belongs to — shared by KPIs 19 and 20 ──
+      //
+      // The owner's rule for this whole section: "ignore orders in the historical
+      // orders tab. We are starting fresh, so only read orders and their
+      // quotations and invoices which are in the orders tab." A purchase order
+      // carries no link back to a repair order, so the vehicle is the only route
+      // to the job card it was bought for — and both KPIs must take that route
+      // the same way, or the chain is back to measuring two populations under one
+      // heading. One lookup, two moments: creation for 19, confirmation for 20.
+      type Job = {
+        id: number; created: number; lines: number[];
+        closedNow: boolean; closedAt: number | null; statusSince: number | null;
+      };
+      const tfClosed = trackedField(config.stageMap.closed, meta, stageNames);
+      // status_since is a stored datetime holding when the vehicle entered its
+      // CURRENT status, so for a job whose current status is closed it is the
+      // closure moment — no chatter required. Guarded because asking Odoo for a
+      // field it does not have fails the whole read.
+      const statusSinceField = has('status_since') ? 'status_since' : undefined;
+
+      /**
+       * Was this job card still open at `at`? 'unknown' means closed now with no
+       * datable closure, which is a different fact from "closed before `at`" and
+       * is counted and disclosed separately by the callers.
+       *
+       * "Closed now" says nothing about last week on its own, so the closure has
+       * to be dated. status_since answers it from a stored field; the chatter is
+       * only the fallback, because on this instance Closed is mapped to
+       * priority_matrix_status, which carries no tracked changes at all — so
+       * relying on the chatter alone dated no closure whatsoever and dropped
+       * every purchase whose job has since closed. That is not a neutral loss: a
+       * job that got its parts is exactly the job that closes, and a job still
+       * waiting is exactly the one that stays open, so it would have judged both
+       * KPIs almost entirely on the slow work and read materially worse than
+       * reality. A bias toward failure is the one direction a KPI the CEO fines
+       * on must not have.
+       */
+      const openAt = (job: Job, at: number): 'open' | 'closed' | 'unknown' =>
+        !job.closedNow ? 'open'
+          : job.closedAt == null ? 'unknown'
+          : job.closedAt > at ? 'open' : 'closed';
+
+      /**
+       * Every non-historical job card for these vehicles, oldest first, with
+       * enough state to answer openAt. `lineField` is only asked for by KPI 20,
+       * which judges a purchase against the whole job card's parts.
+       */
+      const jobsForFleets = async (fleetIds: number[], lineField?: string): Promise<Record<number, Job[]>> => {
+        const jobsByFleet: Record<number, Job[]> = {};
+        const byId = new Map<number, Job>();
+        for (let i = 0; i < fleetIds.length; i += 2000) {
+          try {
+            const ros = (await call('repair.order', 'search_read', [[
+              ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
+              ['create_date', '<', wEnd],
+              ...notHist,
+            ]], {
+              // status_since rides along on the query that was already running,
+              // so dating the closures costs no extra call to Odoo.
+              fields: [
+                'fleet_id', 'create_date',
+                ...(statusSinceField ? [statusSinceField] : []),
+                ...(lineField ? [lineField] : []),
+              ],
+              limit: 0,
+            })) as Rec[];
+            for (const r of ros) {
+              const fleet = m2o(r.fleet_id)?.[0];
+              const created = odooTime(r.create_date);
+              if (fleet == null || created == null) continue;
+              const job: Job = {
+                id: r.id as number,
+                created,
+                lines: lineField ? ((r[lineField] as number[] | undefined) ?? []) : [],
+                closedNow: false,
+                closedAt: null,
+                statusSince: statusSinceField ? odooTime(r[statusSinceField]) : null,
+              };
+              (jobsByFleet[fleet] ??= []).push(job);
+              byId.set(job.id, job);
+            }
+          } catch { /* this chunk's vehicles stay unlinked rather than dropping the KPI */ }
+        }
+
+        // Which of them are closed today. Asked as its own query so the Closed
+        // mapping stays the single definition of closed, whichever field it names.
+        const ids = [...byId.keys()];
+        for (let i = 0; i < ids.length; i += 2000) {
+          try {
+            const closed = (await call('repair.order', 'search_read', [[
+              ['id', 'in', ids.slice(i, i + 2000)],
+              ...selectorDomain(config.stageMap.closed),
+            ]], { fields: ['id'], limit: 0 })) as Rec[];
+            for (const r of closed) {
+              const job = byId.get(r.id as number);
+              if (job) job.closedNow = true;
+            }
+          } catch { /* a failed chunk leaves its job cards reading as open, which is the looser behaviour this read replaced — a lost RPC must not narrow a scored population */ }
+        }
+
+        // When the closed ones closed. status_since is the primary source: it is
+        // stored on the record, so it answers for every closed job card without
+        // depending on a field anyone remembered to track.
+        //
+        // It holds the LATEST status change, so a job that moved status again
+        // after closing carries a stamp later than its true closure. That errs
+        // toward reading the job as still open at the purchase moment, which is
+        // the fair direction here — the purchase keeps its job card and stays
+        // judged — so it is accepted rather than corrected for.
+        const closed = [...byId.values()].filter((j) => j.closedNow);
+        for (const job of closed) job.closedAt = job.statusSince;
+
+        // Chatter only for the leftovers: closed, but status_since was empty.
+        // Where the field answered, this read is not made at all.
+        const undatedIds = closed.filter((j) => j.closedAt == null).map((j) => j.id);
+        if (undatedIds.length && tfClosed) {
+          const closedAt = await stateEntryTimes(undatedIds, tfClosed.field, tfClosed.labels);
+          for (const [id, t] of Object.entries(closedAt)) {
+            const job = byId.get(Number(id));
+            // Guarded: status_since already won wherever it had a value.
+            if (job && job.closedAt == null) job.closedAt = t;
+          }
+        }
+
+        for (const list of Object.values(jobsByFleet)) list.sort((a, b) => a.created - b.created);
+        return jobsByFleet;
+      };
+
+      /**
+       * The job this purchase order was bought for: the newest live repair order
+       * already open at `at`. Matching on the vehicle alone would just as happily
+       * pick a visit from two years ago.
+       *
+       * `closedOut` and `undated` separate the three ways of finding nothing —
+       * this vehicle has no job card in the Orders tab at all; it has some, but
+       * every one of them had already closed by `at`; or it has some that are
+       * closed with no closure moment on record either way. The third is the one
+       * to watch: it is the only case where a purchase is dropped for want of
+       * data rather than for being out of scope, so the callers count and
+       * disclose it on its own.
+       */
+      const jobFor = (
+        jobsByFleet: Record<number, Job[]>, fleet: number | null, at: number,
+      ): { job: Job | null; closedOut: boolean; undated: boolean } => {
+        if (fleet == null) return { job: null, closedOut: false, undated: false };
+        let best: Job | null = null;
+        let closedOut = false;
+        let undated = false;
+        for (const job of jobsByFleet[fleet] ?? []) {
+          if (job.created > at) break;   // ascending, so nothing later can qualify
+          const verdict = openAt(job, at);
+          if (verdict === 'open') { best = job; continue; }
+          if (verdict === 'closed') closedOut = true; else undated = true;
+        }
+        // A job was found, so neither reason cost this purchase anything.
+        return { job: best, closedOut: best == null && closedOut, undated: best == null && undated };
+      };
+
       // ── KPI 18 — RFQ raised within N days of the quotation being approved ──
       if (on(18)) {
         const limitMs = (thresholds.rfqAfterApprovalDays ?? 1) * 86400_000;
@@ -1555,17 +1762,29 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           // counts: a draft — or even a later cancelled — RFQ was still raised.
           const fleetIds = [...new Set(ros.map((r) => m2o(r.fleet_id)?.[0]).filter((x): x is number => x != null))];
           const rfqTimes: Record<number, number[]> = {};
+          // This query carried no company filter at all while 19 and 20 were
+          // both scoped, so an RFQ raised through an uncounted company still
+          // satisfied KPI 18 — 18 read high on purchasing the other two could not
+          // see. The scope is now the same five companies, applied here in JS
+          // rather than in the domain purely so the rows it removes can be
+          // counted and disclosed below.
+          let offScopeRfqs = 0;
           for (let i = 0; i < fleetIds.length; i += 2000) {
             try {
               const pos = (await call('purchase.order', 'search_read', [[
                 ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
-              ]], { fields: ['fleet_id', 'create_date'], limit: 0 })) as Rec[];
+              ]], { fields: ['fleet_id', 'create_date', 'company_id'], limit: 0 })) as Rec[];
               for (const po of pos) {
+                const cid = m2o(po.company_id)?.[0];
+                if (cid == null || !kpiIds.includes(cid)) { offScopeRfqs++; continue; }
                 const fleet = m2o(po.fleet_id)?.[0];
                 const t = poTime(po.create_date);
                 if (fleet != null && t != null) (rfqTimes[fleet] ??= []).push(t);
               }
             } catch { /* this chunk's vehicles simply have no RFQ times */ }
+          }
+          if (offScopeRfqs) {
+            notes.push(`RFQ after approval no longer counts purchase orders raised outside the five scored companies, and ignored ${offScopeRfqs} of them this week. This query had no company filter while RFQ confirmed and Parts placed both had one, so all three now agree on which companies count. Where those purchases were the real RFQ for the job, this KPI will read lower than before — the scope narrowed, the purchasing did not change.`);
           }
 
           // Attributed through the REPAIR ORDER: when the RFQ is the thing
@@ -1626,6 +1845,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (on(19)) {
         if (!poHas('date_approve')) {
           notes.push('purchase.order has no Confirmation Date (date_approve), so RFQ confirmed (KPI 19) was skipped.');
+        } else if (!poHas('fleet_id') || !has('fleet_id')) {
+          // Without the vehicle on both sides there is no way to tell a workshop
+          // purchase from a consumables order, and scoring every purchase in the
+          // week is exactly the defect being fixed here. The KPI goes, not the
+          // scope.
+          notes.push('RFQ confirmed (KPI 19) needs fleet_id on purchase.order and on repair.order to tell a purchase raised for a job card from shop consumables, and one of them is missing on this instance — so the KPI was skipped rather than scoring every purchase order raised this week.');
         } else {
           const limitMs = (thresholds.rfqConfirmDays ?? 1) * 86400_000;
           let raised: Rec[] = [];
@@ -1637,15 +1862,36 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
               ['create_date', '>=', wStart], ['create_date', '<', wEnd],
               ['state', '!=', 'cancel'],
               ['company_id', 'in', kpiIds],
-            ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'state', 'date_approve'], limit: 0 })) as Rec[];
+            ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', 'state', 'date_approve', 'fleet_id'], limit: 0 })) as Rec[];
           } catch {
             notes.push('RFQ confirmed (KPI 19) could not read the purchase orders raised this week.');
           }
 
-          let undated = 0;
+          // The same job-card test KPI 20 applies, evaluated at the moment the
+          // purchase order was CREATED — which is the moment this KPI starts its
+          // clock from. Without it the population was every purchase order raised
+          // in the week: parts for job cards from before the clean slate, parts
+          // for vehicles with no open job, and shop consumables and stationery
+          // raised by central procurement, who are not parts staff at all.
+          const fleetIds = [...new Set(raised.map((po) => m2o(po.fleet_id)?.[0]).filter((x): x is number => x != null))];
+          const jobsByFleet = await jobsForFleets(fleetIds);
+
+          let undated = 0, noVehicle = 0, noJob = 0, closedJob = 0, undatedJob = 0, scoped = 0;
           for (const po of raised) {
             const created = poTime(po.create_date);
             if (created == null) continue;
+            const fleet = m2o(po.fleet_id)?.[0] ?? null;
+            // No vehicle at all: consumables, tooling, stationery. There is no job
+            // card behind it and no parts clock it belongs to.
+            if (fleet == null) { noVehicle++; continue; }
+            const { job, closedOut, undated: undatedClosure } = jobFor(jobsByFleet, fleet, created);
+            if (!job) {
+              if (closedOut) closedJob++;
+              else if (undatedClosure) undatedJob++;   // dropped for want of data, not for being out of scope
+              else noJob++;
+              continue;
+            }
+            scoped++;
             const ref = (po.name as string) || '';
             const confirmed = poTime(po.date_approve);
             if (confirmed != null) push(19, po, confirmed - created <= limitMs, ref);
@@ -1659,6 +1905,17 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           }
           if (undated) {
             notes.push(`RFQ confirmed left ${undated} confirmed purchase order${undated === 1 ? '' : 's'} unjudged — they carry no confirmation date, so there is nothing to time.`);
+          }
+          const dropped = noVehicle + noJob + closedJob;
+          if (dropped) {
+            const why: string[] = [];
+            if (noVehicle) why.push(`${noVehicle} with no vehicle on the order — shop consumables, tooling and stationery look like this`);
+            if (noJob) why.push(`${noJob} whose vehicle has no job card in the Orders tab that was open when the purchase was raised — a job card moved to Historical looks like this`);
+            if (closedJob) why.push(`${closedJob} whose job cards for that vehicle had already closed before the purchase was raised, so the parts belong to a later visit, not to that job`);
+            notes.push(`RFQ confirmed now counts only purchases that belong to a job card in the Orders tab: ${scoped} of this week's ${raised.length} purchase order${raised.length === 1 ? '' : 's'} qualified, and ${dropped} ${dropped === 1 ? 'was' : 'were'} left out — ${why.join('; ')}. All of those were being scored against the branches until now, so this figure will move sharply. It moves because the scope narrowed to the work the rule is about, not because the parts desk got worse.`);
+          }
+          if (undatedJob) {
+            notes.push(`RFQ confirmed left ${undatedJob} purchase order${undatedJob === 1 ? '' : 's'} unjudged whose job cards are closed and carry no record of WHEN they closed — neither a status timestamp nor a tracked stage change — so whether the job was still open when the parts were ordered cannot be established either way. This is the one exclusion here that is a gap in the data rather than a rule: because a job that got its parts is also the job that closes, a large number on this line would quietly push the KPI toward the slower work that stays open, and the figure would read worse than reality. If this count is not small, say so rather than reading the percentage.`);
           }
         }
       }
@@ -1686,54 +1943,29 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           }
 
           // Every live repair order for the vehicles involved, oldest first. The
-          // job is chosen per purchase order below, not per vehicle.
+          // job is chosen per purchase order below, not per vehicle — the shared
+          // lookup KPI 19 uses, asked at confirmation time instead of creation.
           const fleetIds = [...new Set(confirmedPos.map((po) => m2o(po.fleet_id)?.[0]).filter((x): x is number => x != null))];
-          type Job = { id: number; created: number; lines: number[] };
-          const jobsByFleet: Record<number, Job[]> = {};
-          for (let i = 0; i < fleetIds.length; i += 2000) {
-            try {
-              const ros = (await call('repair.order', 'search_read', [[
-                ['fleet_id', 'in', fleetIds.slice(i, i + 2000)],
-                ['create_date', '<', wEnd],
-                ...notHist,
-              ]], { fields: ['fleet_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
-              for (const r of ros) {
-                const fleet = m2o(r.fleet_id)?.[0];
-                const created = odooTime(r.create_date);
-                if (fleet == null || created == null) continue;
-                (jobsByFleet[fleet] ??= []).push({
-                  id: r.id as number,
-                  created,
-                  lines: (r[parts.lineField] as number[] | undefined) ?? [],
-                });
-              }
-            } catch { /* this chunk's vehicles stay unlinked rather than dropping the KPI */ }
-          }
-          for (const list of Object.values(jobsByFleet)) list.sort((a, b) => a.created - b.created);
-
-          /**
-           * The job this purchase order was bought for: the newest live repair
-           * order already open when it was confirmed. Matching on the vehicle
-           * alone would just as happily pick a visit from two years ago and judge
-           * today's parts against a job that closed long before them.
-           */
-          const jobFor = (fleet: number | null, at: number): Job | null => {
-            if (fleet == null) return null;
-            let best: Job | null = null;
-            for (const job of jobsByFleet[fleet] ?? []) {
-              if (job.created > at) break;   // ascending, so nothing later can qualify
-              best = job;
-            }
-            return best;
-          };
+          const jobsByFleet = await jobsForFleets(fleetIds, parts.lineField);
 
           const placements: { po: Rec; at: number; lines: number[] }[] = [];
-          let unlinked = 0;
+          let unlinked = 0, closedJob = 0, undatedJob = 0;
           for (const po of confirmedPos) {
             const at = poTime(po.date_approve);
             if (at == null) continue;
-            const job = jobFor(m2o(po.fleet_id)?.[0] ?? null, at);
-            if (!job) { unlinked++; continue; }   // no job card to receive against
+            // The lookup used to require only "non-historical", so a purchase
+            // order confirmed last week could be judged against a job card that
+            // closed in March. Its own docstring already promised the newest LIVE
+            // job card; it now has to have been open at this moment to qualify.
+            const { job, closedOut, undated } = jobFor(jobsByFleet, m2o(po.fleet_id)?.[0] ?? null, at);
+            if (!job) {
+              // No job card to receive against — for one of three reasons, kept
+              // apart because only the third is a data gap.
+              if (closedOut) closedJob++;
+              else if (undated) undatedJob++;
+              else unlinked++;
+              continue;
+            }
             placements.push({ po, at, lines: job.lines });
           }
 
@@ -1759,7 +1991,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             notes.push(`Parts placed accepted ${noArrival} purchase order${noArrival === 1 ? '' : 's'} as on time whose parts are complete but which carry no Arrival date, so the receipt itself could not be timed.`);
           }
           if (unlinked) {
-            notes.push(`Parts placed skipped ${unlinked} confirmed purchase order${unlinked === 1 ? '' : 's'} with no live repair order open for that vehicle at the moment of confirmation.`);
+            notes.push(`Parts placed skipped ${unlinked} confirmed purchase order${unlinked === 1 ? '' : 's'} with no job card in the Orders tab for that vehicle at the moment of confirmation — nothing to receive the parts against.`);
+          }
+          if (closedJob) {
+            notes.push(`Parts placed skipped ${closedJob} confirmed purchase order${closedJob === 1 ? '' : 's'} whose job cards for that vehicle had already closed before the order was confirmed — until now these were timed against the closed job card, which is a different visit's parts.`);
+          }
+          if (undatedJob) {
+            notes.push(`Parts placed left ${undatedJob} confirmed purchase order${undatedJob === 1 ? '' : 's'} unjudged whose job cards are closed and carry no record of WHEN they closed — neither a status timestamp nor a tracked stage change — so whether the job was still open at confirmation cannot be established either way. This is the one exclusion here that is a gap in the data rather than a rule: because a job whose parts arrived is also the job that closes, a large number on this line would quietly push the KPI toward the slower work that stays open, and the figure would read worse than reality. If this count is not small, say so rather than reading the percentage.`);
           }
         }
       }
@@ -1965,10 +2203,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPIs 6 & 7 — time spent awaiting parts / labour (point-in-time) ──
   if (on(6) || on(7)) {
-    // Baseline population: OPEN ROs created in the last N days. Closed work is
-    // excluded deliberately — a car that has already left cannot be waiting on
-    // anything, and counting thousands of them buried the signal: a few hundred
-    // genuinely stuck vehicles read as a comfortable 98%.
+    // The outer bound, not the population: OPEN ROs created in the last N days.
+    // Closed work is excluded deliberately — a car that has already left cannot
+    // be waiting on anything. Narrowing to open work was the first half of this;
+    // the denominator itself is now the vehicles actually waiting, below, because
+    // the open ones waiting on nothing were still carrying the figure.
     const baselineDays = thresholds.snapshotBaselineDays ?? 90;
     const sinceIso = new Date(now - baselineDays * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
     const baseROs = (await call('repair.order', 'search_read', [[
@@ -1977,22 +2216,53 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       ['company_id', 'in', kpiIds],
       ...notHist,
     ]], { fields: ['name', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
+    // The baseline is now only the outer bound on the window, not the
+    // denominator: it says which job cards are recent enough to be scored at all.
+    const inWindow = new Set(baseROs.map((r) => r.id as number));
 
-/** Every open RO in the window counts; the stuck ones are the violations. */
-    const scoreAgainstBaseline = (kpiId: number, overdue: Map<number, Rec>) => {
+    /**
+     * Score only the vehicles actually waiting — the owner's decision.
+     *
+     * The denominator used to be every open repair order in the window, each one
+     * compliant unless it appeared in the overdue set. With 500 open jobs of
+     * which 60 are short of parts and 20 of those overdue, that reads 96% where
+     * the rule — an open RO with parts still outstanding may not wait beyond the
+     * limit — means 67%. The 440 vehicles waiting on nothing were carrying the
+     * figure.
+     *
+     * So `waiting` is the denominator: compliant means waiting but inside the
+     * limit, non-compliant means waiting beyond it, and a vehicle not waiting at
+     * all is not in the KPI. Timing is untouched — these stay snapshot KPIs,
+     * `snapshotBaselineDays` is still the outer bound, and a vehicle stuck past
+     * the limit from before the window still counts against us exactly as before.
+     */
+    const scoreWaiting = (kpiId: number, waiting: Map<number, Rec>, overdue: Map<number, Rec>) => {
       const seen = new Set<number>();
-      for (const r of baseROs) {
-        const id = r.id as number;
+      let judged = 0;
+      for (const [id, r] of waiting) {
+        if (!inWindow.has(id)) continue;   // older than the baseline window, unless it is overdue below
         seen.add(id);
+        judged++;
         push(kpiId, r, !overdue.has(id), (r.name as string) || '');
       }
       // Stuck vehicles older than the window still count against us.
       for (const [id, r] of overdue) {
-        if (!seen.has(id)) push(kpiId, r, false, (r.name as string) || '');
+        if (seen.has(id)) continue;
+        judged++;
+        push(kpiId, r, false, (r.name as string) || '');
       }
+      return { judged, overdue: overdue.size };
     };
 
-    /** Currently-open ROs held past `days` in a mapped state (used for labour). */
+    /**
+     * The ROs currently sitting in a mapped state, split into the ones that are
+     * waiting (the denominator) and the ones held past `days` (the violations).
+     *
+     * An RO in the state with no usable stamp is in neither: we know it is
+     * waiting but not for how long, and under the new denominator that cannot be
+     * answered as compliant any more — before, it was simply one of the open ROs
+     * nothing was wrong with. Unknown is left unjudged, as everywhere else here.
+     */
     const overdueByState = async (sel: StageSelector, days: number, kpiLabel: string) => {
       const recs = (await call('repair.order', 'search_read', [[
         ...selectorDomain(sel),
@@ -2003,6 +2273,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
       if (Object.keys(entered).length) usedTrackingForAging = true;
       const limitMs = days * 86400_000;
+      const waiting = new Map<number, Rec>();
       const overdue = new Map<number, Rec>();
       let noStamp = 0;
       for (const r of recs) {
@@ -2015,12 +2286,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // with no stamp is now unknown, not overdue.
         const since = entered[r.id as number] ?? odooTime(r[ageField]);
         if (since == null) { noStamp++; continue; }
+        waiting.set(r.id as number, r);
         if (now - since > limitMs) overdue.set(r.id as number, r);
       }
       if (noStamp) {
-        notes.push(`${kpiLabel} could not age ${noStamp} open repair order${noStamp === 1 ? '' : 's'} in that state — no chatter transition and no ${ageField} on the record. None of them is counted as overdue, rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait.`);
+        notes.push(`${kpiLabel} could not age ${noStamp} open repair order${noStamp === 1 ? '' : 's'} in that state — no chatter transition and no ${ageField} on the record. ${noStamp === 1 ? 'It is' : 'They are'} left out of the count entirely rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait: ${noStamp === 1 ? 'that vehicle is' : 'those vehicles are'} waiting, but for how long is unknown, and now that only the waiting vehicles are counted an unknown wait cannot be read as a compliant one.`);
       }
-      return overdue;
+      return { waiting, overdue };
     };
 
     // ── KPI 6 — open ROs held up waiting for parts ──
@@ -2031,6 +2303,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const days = thresholds.awaitingPartsDays ?? 14;
       const useParts = (config.awaitingPartsSource ?? 'parts') === 'parts';
       const parts = useParts ? await resolvePartsFields(meta) : null;
+      // The vehicles actually waiting on parts, and the subset of them past the
+      // limit. Both paths below fill both maps, so which one reached a vehicle
+      // cannot change what the denominator means.
+      let waiting: Map<number, Rec>;
       let overdue: Map<number, Rec>;
 
       if (parts) {
@@ -2044,6 +2320,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         const lineInfo = await readPartsLines(parts, lineIds);
 
         const limitMs = days * 86400_000;
+        waiting = new Map<number, Rec>();
         overdue = new Map<number, Rec>();
         let noRequestDate = 0;
         for (const r of openROs) {
@@ -2063,32 +2340,40 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             if (t != null && (waitingSince == null || t < waitingSince)) waitingSince = t;
           }
           if (!anyShort) continue;            // nothing outstanding — not waiting on parts
-          // Outstanding, but nothing says since when: unknown, not overdue.
+          // Outstanding, but nothing says since when: unknown, so it is left out
+          // of the count rather than read either way.
           if (waitingSince == null) { noRequestDate++; continue; }
+          waiting.set(r.id as number, r);
           if (now - waitingSince > limitMs) overdue.set(r.id as number, r);
         }
         if (noRequestDate) {
-          notes.push(`Awaiting parts could not age ${noRequestDate} open repair order${noRequestDate === 1 ? '' : 's'} with parts still outstanding — none of their short lines carries a request date. None of them is counted as overdue, rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait.`);
+          notes.push(`Awaiting parts could not age ${noRequestDate} open repair order${noRequestDate === 1 ? '' : 's'} with parts still outstanding — none of their short lines carries a request date. ${noRequestDate === 1 ? 'It is' : 'They are'} left out of the count entirely rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait: the parts are outstanding, but since when is unknown, and now that only the waiting vehicles are counted an unknown wait cannot be read as a compliant one.`);
         }
       } else {
         if (useParts) {
           notes.push('Could not read the parts lines (Demand/Done), so "Awaiting parts" fell back to the mapped state.');
         }
         awaitingPartsMethod = 'the mapped state';
-        overdue = await overdueByState(config.stageMap.awaitingParts, days, 'Awaiting parts');
+        ({ waiting, overdue } = await overdueByState(config.stageMap.awaitingParts, days, 'Awaiting parts'));
       }
-      scoreAgainstBaseline(6, overdue);
+      const { judged } = scoreWaiting(6, waiting, overdue);
+      // The denominator changed, and the figure drops by roughly thirty points
+      // because of it. Said in full, because a drop nobody can account for reads
+      // as the branches collapsing.
+      notes.push(`Awaiting parts is scored against the vehicles actually waiting on parts — ${judged} open job card${judged === 1 ? '' : 's'} with parts still outstanding, detected from ${awaitingPartsMethod} — and no longer against all ${inWindow.size} open repair order${inWindow.size === 1 ? '' : 's'} of the last ${baselineDays} days. The vehicles waiting on nothing used to sit in the count as compliant and carried the figure up by roughly thirty points; the rule has always been about the ones that are waiting. A lower number here means the denominator narrowed to the rule, not that the branches got worse.`);
     }
 
     // ── KPI 7 — awaiting labour (mapped state) ──
     if (on(7)) {
-      scoreAgainstBaseline(7, await overdueByState(config.stageMap.awaitingLabour, thresholds.awaitingLabourDays ?? 2, 'Awaiting labour'));
+      const { waiting, overdue } = await overdueByState(config.stageMap.awaitingLabour, thresholds.awaitingLabourDays ?? 2, 'Awaiting labour');
+      const { judged } = scoreWaiting(7, waiting, overdue);
+      notes.push(`Awaiting labour is scored against the vehicles actually waiting on labour — ${judged} open job card${judged === 1 ? '' : 's'} in the awaiting-labour state — and no longer against all ${inWindow.size} open repair order${inWindow.size === 1 ? '' : 's'} of the last ${baselineDays} days. The vehicles waiting on nothing used to sit in the count as compliant and carried the figure up by roughly thirty points. A lower number here means the denominator narrowed to the rule, not that the branches got worse.`);
     }
 
   }
 
   if (usedTrackingForAging) {
-    snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured from when it actually entered the state (Odoo chatter log).`;
+    snapshotNote = `Counts only the vehicles actually waiting, among open ROs created in the last ${baselineDaysNote} days (closed work is excluded): compliant means still inside the limit, non-compliant means waiting beyond it, and a vehicle that is not waiting is not in the count at all. One with no usable stamp to age from is left out rather than counted either way. Ageing measured from when it actually entered the state (Odoo chatter log).`;
   }
   // Labels carry the configured thresholds, e.g. "Delivered within 48 business hrs".
   // Resolved once here so every level agrees, and so the client never has to
@@ -2112,10 +2397,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // KPI 6 states which method decided a vehicle is waiting on parts.
   const snapshotNotes: Record<number, string> = {
     1: `Measured from the moment the RO became Repaired to the moment its linked invoice was posted. ${CLOCK}`,
-    2: `Measured from the quotation being created to its approval; one still awaiting approval past the limit counts against you. ${CLOCK}`,
+    2: `Measured from the quotation being created to its approval; one still awaiting approval past the limit counts against you. Only quotations attached to a job card in the Orders tab are counted — a quotation whose repair orders have all been moved to Historical, or which has no repair order at all (a counter parts sale, a retail order), is out of scope. Insurance jobs are exempt. ${CLOCK}`,
     3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
     12: `Measured from the RO entering Inspection to its quotation being created — the promise on getting a quote out, tighter than the inspection limit itself. ${CLOCK}`,
-    13: `A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest — and with that flag missing from the instance the KPI is skipped rather than widened to everyone. An RO is judged only once ${limitLabel(followUpGraceDays, 'day')} has passed since it was marked Repaired, so a car just handed over is not already a violation; one with no Repaired timestamp is not judged at all, since the grace cannot be measured without it.`,
+    13: `A straight yes/no: was the follow-up screenshot uploaded. The population is the jobs that actually went through QA, read from the QA stage changes recorded on the job card — not the "QA Access" flag, which describes the permissions of whoever reads the record rather than the job itself. The person scored is the service advisor who opened the job card. A job whose QA entry cannot be found is not judged at all, and neither is one with no Repaired timestamp, since the grace cannot be measured without it. An RO is judged only once ${limitLabel(followUpGraceDays, 'day')} has passed since it was marked Repaired, so a car just handed over is not already a violation.`,
     14: `Check-in counts as complete the moment the RO reaches Inspection. ${CLOCK}`,
     15: `Measured from the RO entering Inspection to its quotation being created. ${CLOCK}`,
     17: `Time from being @mentioned to your next comment on that RO. Tagging several people is one request — whoever answers first settles it, and if nobody does it falls to the person tagged first. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. ${CLOCK}`,
@@ -2125,13 +2410,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     5: 'Checks whether the RO carries a tag now — not when the tag was added. Odoo records no timestamp of its own for a tag here, so one added late still reads as present. ROs younger than the limit are left out of the count, so the figure covers only ROs that have had their full window.',
     8: 'A straight yes/no: does the RO carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site. No time limit of its own applies, but ROs younger than the Tag on creation limit are left out of the count alongside that KPI\'s. Inactive until CAR-IN / CAR-OUT tags are picked in Admin.',
     9: 'ROs received this week that were also closed this week (closed ÷ received). A job opened on Thursday has little of the week left to close in, so this figure is structurally low — which is why it is shown for reference and left out of the overall achievement.',
-    18: 'Measured from the quotation being approved to a purchase order being raised against the vehicle — Odoo records no link from a purchase order back to a repair order, so the vehicle is the only way to see that an RFQ exists. Counted only for ROs still short of parts; ones with no vehicle set are skipped, because without one an RFQ cannot be seen either way. An RFQ raised before approval counts as early, not late. Timed in calendar days, not business hours.',
-    19: 'Measured from a purchase order being created to its Confirmation Date. Counted for every purchase order raised this week in a tracked company — purchase orders carry no link to a repair order, so this includes ones raised against historical job cards, against vehicles with no open job, and ones with no vehicle at all. Cancelled requests are left out, and so are confirmed ones carrying no confirmation date, since there is nothing to measure to. Timed in calendar days, not business hours.',
-    20: 'Measured from a purchase order\'s Confirmation Date to its Arrival date, judged against the whole job card\'s parts rather than this order\'s own lines — one job\'s parts routinely arrive across several orders, and the vehicle is only unblocked when the last of them is in. The job is matched through the vehicle: the newest job card already open when the order was confirmed. Orders with no such job card are skipped, and ones whose parts are complete but which carry no Arrival date are accepted as on time. Timed in calendar days, not business hours.',
-    21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
+    18: 'Measured from the quotation being approved to a purchase order being raised against the vehicle — Odoo records no link from a purchase order back to a repair order, so the vehicle is the only way to see that an RFQ exists. Counted only for ROs still short of parts; ones with no vehicle set are skipped, because without one an RFQ cannot be seen either way. Purchase orders raised outside the five scored companies do not count as the RFQ, which is the same company scope RFQ confirmed and Parts placed use. An RFQ raised before approval counts as early, not late. Timed in calendar days, not business hours.',
+    19: 'Measured from a purchase order being created to its Confirmation Date. Counted only for purchases that belong to a job card in the Orders tab: the order must carry a vehicle, and that vehicle must have a non-historical job card that was already open when the order was raised — the same test Parts placed uses, asked at creation instead of confirmation. That leaves out shop consumables and stationery, purchases for job cards moved to Historical, and purchases for vehicles with no open job. Cancelled requests are left out, and so are confirmed ones carrying no confirmation date, since there is nothing to measure to. Timed in calendar days, not business hours.',
+    20: 'Measured from a purchase order\'s Confirmation Date to its Arrival date, judged against the whole job card\'s parts rather than this order\'s own lines — one job\'s parts routinely arrive across several orders, and the vehicle is only unblocked when the last of them is in. The job is matched through the vehicle: the newest non-historical job card that was already open when the order was confirmed — a job card already closed by then belongs to a different visit and cannot receive these parts. Orders with no such job card are skipped, and ones whose parts are complete but which carry no Arrival date are accepted as on time. Timed in calendar days, not business hours.',
+    21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Only quotations attached to a job card in the Orders tab are counted — one whose repair orders have all been moved to Historical, or which has no repair order at all, is out of scope, which is what keeps counter parts sales and retail orders out of the rate. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
     22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A date-only promise falls due as that day closes. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
-    6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
-    7: snapshotNote,
+    6: `Open ROs with parts still outstanding, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
+    7: `Open ROs in the awaiting-labour state. ${snapshotNote}`,
   };
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');
