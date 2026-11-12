@@ -190,10 +190,18 @@ export function selectorDomainNot(sel: StageSelector): OdooDomain {
  * The caller reads a missing entry as still-uninvoiced and eventually overdue, so
  * without the flag one failed RPC would report every repaired vehicle as never
  * invoiced and fine the whole branch for it.
+ *
+ * `dayOnly` lists the moves whose only stamp was invoice_date — a date, not a
+ * datetime. Parsed at midnight UTC that is 04:00 Gulf, five hours before the
+ * working day opens, so an invoice genuinely posted days late but dated the
+ * repair day landed BEFORE the Repaired stamp and passed unconditionally. A
+ * date-only stamp cannot time a one-business-hour limit either way, so the
+ * caller leaves those jobs unjudged instead of counting them compliant.
  */
-async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<number, number>; failed: boolean }> {
-  if (!moveIds.length) return { posted: {}, failed: false };
+async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<number, number>; dayOnly: Set<number>; failed: boolean }> {
+  if (!moveIds.length) return { posted: {}, dayOnly: new Set(), failed: false };
   const out: Record<number, number> = {};
+  const dayOnly = new Set<number>();
   try {
     const mm = (await call('account.move', 'fields_get', [], { attributes: ['selection'] })) as FieldsMeta;
     const postedLabel = (mm.state?.selection ?? []).find(([v]) => v === 'posted')?.[1];
@@ -217,7 +225,12 @@ async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<n
         if (m.state !== 'posted') continue;
         const d = typeof m.invoice_date === 'string' ? Date.parse(`${m.invoice_date}T00:00:00Z`) : NaN;
         const t = Number.isNaN(d) ? odooTime(m.create_date) : d;
-        if (t != null) out[m.id as number] = t;
+        if (t == null) continue;
+        out[m.id as number] = t;
+        // Flagged, not discarded: a day is still enough to rule out an invoice
+        // dated well before the repair as the quotation-time deposit it is. It
+        // is only within the repair day itself that a date says nothing.
+        if (!Number.isNaN(d)) dayOnly.add(m.id as number);
       }
     } catch {
       // This read is the only thing that can tell an unposted move from an
@@ -225,20 +238,42 @@ async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<n
       failed = true;
     }
   }
-  return { posted: out, failed };
+  return { posted: out, dayOnly, failed };
 }
 
 /**
- * RO id → when its earliest linked invoice was posted.
+ * RO id → when the invoice that bills the repair was posted.
  *
  * Two link shapes exist depending on the Odoo version: a direct invoice_id on the
  * repair order, and the sale order's invoice_ids. Both are followed.
  *
+ * It used to be the EARLIEST posted invoice on the job, flat. Odoo posts a
+ * down-payment invoice at quotation time, so on any job that took a deposit the
+ * earliest invoice predates the Repaired stamp, the interval goes negative,
+ * businessMsBetween clamps it to zero and the job reads compliant forever —
+ * whenever the real closing invoice was actually posted.
+ *
+ * The rule now: among the job's posted invoices, the earliest posted at or after
+ * `repairedAt − graceMs`. Earlier than that is a deposit, not the invoice that
+ * bills the repair. The grace is wall-clock, not business time, and it is what
+ * stops the fix creating its own injustice: an advisor who invoices at 15:00 and
+ * marks the car Repaired at 15:05 did invoice it, and without a grace would read
+ * as never having done so.
+ *
  * `failed` means the lookup itself broke, not that nothing was invoiced — see
  * invoicePostedTimes. A failed lookup leaves KPIs 1 and 11 unjudged rather than
  * scoring every repaired RO as uninvoiced.
+ *
+ * `depositOnly` counts the jobs whose only posted invoices predate that cutoff:
+ * they are not yet invoiced and go through the caller's tri-state. `dayOnly`
+ * names the jobs whose billing invoice carries a date but no time, which cannot
+ * be timed at all — the caller leaves those unjudged.
  */
-async function invoiceTimesForRos(ros: Rec[]): Promise<{ times: Record<number, number>; failed: boolean }> {
+async function invoiceTimesForRos(
+  ros: Rec[],
+  repairedAt: Record<number, number>,
+  graceMs: number,
+): Promise<{ times: Record<number, number>; failed: boolean; depositOnly: number; dayOnly: Set<number> }> {
   const roMoves: Record<number, number[]> = {};
   for (const r of ros) {
     const direct = m2o(r.invoice_id)?.[0];
@@ -266,13 +301,43 @@ async function invoiceTimesForRos(ros: Rec[]): Promise<{ times: Record<number, n
     if (ids.size) roMoves[r.id as number] = [...ids];
   }
 
-  const { posted, failed } = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
+  const { posted, dayOnly: dayOnlyMoves, failed } = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
   const out: Record<number, number> = {};
-  for (const [roId, moves] of Object.entries(roMoves)) {
-    const times = moves.map((id) => posted[id]).filter((t): t is number => t != null);
-    if (times.length) out[Number(roId)] = Math.min(...times);
+  const dayOnly = new Set<number>();
+  let depositOnly = 0;
+  for (const [key, moves] of Object.entries(roMoves)) {
+    const roId = Number(key);
+    const stamps = moves
+      .map((id) => ({ id, t: posted[id] }))
+      .filter((s): s is { id: number; t: number } => s.t != null)
+      .sort((a, b) => a.t - b.t);
+    if (!stamps.length) continue;             // nothing posted on this job yet
+    const rep = repairedAt[roId];
+    if (rep == null) {
+      // No Repaired moment, so there is no cutoff to apply and nothing to
+      // measure from either — the caller skips this job. The earliest stamp
+      // stands in so a deposit is never counted against a job nobody judges.
+      out[roId] = stamps[0].t;
+      continue;
+    }
+    const cutoff = rep - graceMs;
+    const billing = stamps.find((s) => {
+      // A date-only stamp names a day, not a moment, and a day is only enough to
+      // rule an invoice out as a deposit when the WHOLE of that Gulf day is
+      // already behind the cutoff. One dated the repair day itself could be
+      // either the morning's deposit or the afternoon's closing invoice: it
+      // qualifies here and is then refused as not measurable below. Ordering
+      // matters — testing `t >= cutoff` on it instead would read every date-only
+      // invoice dated the repair day as a deposit, which fines the job for an
+      // invoice that may well have been posted on time.
+      if (dayOnlyMoves.has(s.id)) return s.t + GULF_DAY_END_AFTER_UTC_MIDNIGHT > cutoff;
+      return s.t >= cutoff;
+    });
+    if (!billing) { depositOnly++; continue; } // deposits only → not yet invoiced
+    if (dayOnlyMoves.has(billing.id)) { dayOnly.add(roId); continue; }
+    out[roId] = billing.t;
   }
-  return { times: out, failed: soFailed || failed };
+  return { times: out, failed: soFailed || failed, depositOnly, dayOnly };
 }
 
 // ── Engine ─────────────────────────────────────────────────────────
@@ -487,17 +552,21 @@ async function resolveStageNames(config: KpiConfig, meta: FieldsMeta): Promise<R
 
 /**
  * When each RO actually entered the given state, read from Odoo's chatter/tracking
- * log (mail.message + mail.tracking.value). Returns roId → epoch ms of the most
- * recent transition into one of `labels`. Returns {} if tracking isn't readable,
- * so callers fall back to a date proxy.
+ * log (mail.message + mail.tracking.value). Returns roId → epoch ms of a
+ * transition into one of `labels`, over all of history. Returns {} if tracking
+ * isn't readable, so callers fall back to a date proxy.
+ *
+ * `pick` is trackedTransitions'. It stays 'last' here because the callers that
+ * do not state otherwise are the ones asking how long a car has been in the
+ * state it is in now; anything measured FROM the arrival passes 'first'.
  */
-async function stateEntryTimes(roIds: number[], field: string, labels: string[]): Promise<Record<number, number>> {
+async function stateEntryTimes(roIds: number[], field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Record<number, number>> {
   if (!roIds.length || !labels.length) return {};
   return trackedTransitions('repair.order', [
     ['model', '=', 'repair.order'],
     ['res_id', 'in', roIds],
     ['tracking_value_ids', '!=', false],
-  ], field, labels);
+  ], field, labels, pick);
 }
 
 /**
@@ -601,15 +670,40 @@ async function roIdsEnteringStateInWindow(
   field: string, labels: string[], from: string, to: string,
 ): Promise<Record<number, number>> {
   if (!labels.length) return {};
+  // The EARLIEST qualifying arrival inside the window, not the latest. The
+  // population here is "entered the state during the scoring week", so the week
+  // it is being scored for is the week the clock has to start in: a car that
+  // arrived on Saturday and again on Wednesday is measured from Saturday, which
+  // is the arrival this week's figure is about. Transitions outside [from, to)
+  // are not in the message domain at all, so no other week can reach in.
   return trackedTransitions('repair.order', [
     ['model', '=', 'repair.order'],
     ['date', '>=', from], ['date', '<', to],
     ['tracking_value_ids', '!=', false],
-  ], field, labels);
+  ], field, labels, 'first');
 }
 
-/** Shared chatter-log reader: message domain → { roId: epoch ms of transition }. */
-async function trackedTransitions(model: string, msgDomain: OdooDomain, field: string, labels: string[]): Promise<Record<number, number>> {
+/**
+ * Shared chatter-log reader: message domain → { roId: epoch ms of transition }.
+ *
+ * `pick` decides which qualifying transition survives when a record entered the
+ * same state more than once, and it is the difference between measuring a KPI
+ * and laundering it:
+ *
+ *   • 'first' is for anything measured FROM entering a state. Keeping the most
+ *     recent entry measured from the latest time a car arrived, so ordinary
+ *     rework turned a real failure into a pass: a car bounced back to Inspection
+ *     on Wednesday, with its quotation raised on Sunday, gave a negative
+ *     interval, businessMsBetween clamps a negative interval to zero, and zero
+ *     is inside every limit. A genuinely unquoted re-inspection could not fail.
+ *   • 'last' is for "how long has it been sitting in the state it is in NOW" —
+ *     KPIs 6 and 7. There the earliest arrival would age a car from a wait it
+ *     has already finished and overstate every one of them.
+ *
+ * Nothing here defaults to 'first': the two readings are both correct for their
+ * own question, so each caller states which question it is asking.
+ */
+async function trackedTransitions(model: string, msgDomain: OdooDomain, field: string, labels: string[], pick: 'first' | 'last' = 'last'): Promise<Record<number, number>> {
   try {
     const msgs = (await call('mail.message', 'search_read', [msgDomain], {
       fields: ['res_id', 'date', 'tracking_value_ids'], limit: 0,
@@ -652,7 +746,7 @@ async function trackedTransitions(model: string, msgDomain: OdooDomain, field: s
       const t = odooTime(m.date);
       const rid = m.res_id as number;
       if (t == null) continue;
-      if (out[rid] == null || t > out[rid]) out[rid] = t; // most recent entry
+      if (out[rid] == null || (pick === 'first' ? t < out[rid] : t > out[rid])) out[rid] = t;
     }
     return out;
   } catch {
@@ -685,6 +779,36 @@ export async function readFieldsMeta(model: string): Promise<FieldsMeta | null> 
  */
 const FOLLOW_UP_GRACE_DEFAULT_DAYS = 1;
 
+/**
+ * How long before the Repaired stamp an invoice may have been posted and still
+ * count as the invoice that bills the repair (KPIs 1 & 11). Wall-clock minutes,
+ * not business time: it exists to absorb the few minutes between invoicing a car
+ * and marking it Repaired, which is clerical order, not working time.
+ *
+ * `invoiceGraceMinutes: 60` is already stored in the live config and has never
+ * been read by anything — the same situation `followUpGraceDays` was in. It is
+ * read through the threshold sanitiser below like every other limit, so a stored
+ * `0` cannot defeat it: a zero grace is the naive version of this fix, and it
+ * reads an advisor who invoiced five minutes early as never having invoiced.
+ */
+const INVOICE_GRACE_DEFAULT_MINUTES = 60;
+
+/**
+ * `${invoice_date}T00:00:00Z` lands at 04:00 Gulf, so the Gulf day that date
+ * names still has 20 hours to run from there. That is the only question a
+ * date-only stamp can answer: is this invoice's whole day already behind us.
+ */
+const GULF_DAY_END_AFTER_UTC_MIDNIGHT = 20 * 3600_000;
+
+/**
+ * Thresholds as the engine reads them.
+ *
+ * `invoiceGraceMinutes` is stored in Redis but is not in KpiConfig's own
+ * threshold list yet, so it is declared here rather than being read with a cast
+ * — the sanitiser and the KPI then handle it exactly like every other limit.
+ */
+type EngineThresholds = KpiConfig['thresholds'] & { invoiceGraceMinutes?: number };
+
 export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): Promise<KpiTree> {
   const notes: string[] = [];
   const start = weekStartFor(weekStartIso, config.weekStartDay ?? 6);
@@ -696,6 +820,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const holidays = config.publicHolidays ?? [];
   /** Elapsed time as the appendix counts it: working hours only. */
   const elapsed = (from: number, to: number) => businessMsBetween(from, to, holidays);
+  /**
+   * The same clock, but null when the two stamps cannot be an interval at all.
+   *
+   * businessMsBetween returns 0 for `endMs <= startMs`, and zero is inside every
+   * limit, so an end event recorded before its start used to read as a clean
+   * pass. That is not a fast job, it is evidence the two stamps do not belong
+   * together — a quotation raised before the inspection it is being timed from,
+   * a check-in logged before the job card existed. Not measurable, so the record
+   * is left unjudged, counted, and disclosed in a note; never scored as a pass.
+   *
+   * Equal stamps stay measurable: same-second work is real, and zero elapsed is
+   * then the honest answer rather than an artefact of the clamp.
+   */
+  const measured = (from: number, to: number): number | null => (to < from ? null : elapsed(from, to));
 
   // ── Thresholds, defended against a non-positive stored value ──────
   //
@@ -715,7 +853,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // sourcing them means the limit, the label and the config can no longer drift.
   // `def` is used only for a key DEFAULT_KPI_CONFIG does not carry.
   const limitLabel = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
-  const THRESHOLD_RULES: { key: keyof KpiConfig['thresholds']; def?: number; label: string; unit: string }[] = [
+  const THRESHOLD_RULES: { key: keyof EngineThresholds; def?: number; label: string; unit: string }[] = [
     { key: 'invoiceHours',          label: 'Invoice on delivery',       unit: 'business hr' },
     { key: 'deliveryHours',         label: 'Delivered after repair',    unit: 'business hr' },
     { key: 'quoteApprovalHours',    label: 'Quote approval',            unit: 'business hr' },
@@ -734,8 +872,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // The one key DEFAULT_KPI_CONFIG deliberately omits, so that "absent" can
     // still mean "nobody has set it" once Admin offers the field.
     { key: 'followUpGraceDays',     def: FOLLOW_UP_GRACE_DEFAULT_DAYS, label: 'Customer follow-up grace', unit: 'day' },
+    // Stored in Redis, absent from DEFAULT_KPI_CONFIG, so it carries its own
+    // default too — see INVOICE_GRACE_DEFAULT_MINUTES.
+    { key: 'invoiceGraceMinutes',   def: INVOICE_GRACE_DEFAULT_MINUTES, label: 'Invoice grace before Repaired', unit: 'minute' },
   ];
-  const thresholds = { ...config.thresholds };
+  const thresholds: EngineThresholds = { ...config.thresholds };
+  // Typed as the engine's view so the two keys Admin has no field for yet can be
+  // looked up here; an object of the narrower stored type is assignable to it.
+  const shippedDefaults: EngineThresholds = DEFAULT_KPI_CONFIG.thresholds;
   const replacedLimits: string[] = [];
   for (const { key, def, label, unit } of THRESHOLD_RULES) {
     const v = thresholds[key];
@@ -745,7 +889,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     if (typeof v === 'number' && Number.isFinite(v) && v > 0) continue;
     // Guarded rather than trusted: a non-positive value shipped in
     // DEFAULT_KPI_CONFIG would otherwise be copied straight back in.
-    const shipped = DEFAULT_KPI_CONFIG.thresholds[key];
+    const shipped = shippedDefaults[key];
     const fallback = typeof shipped === 'number' && Number.isFinite(shipped) && shipped > 0 ? shipped : def;
     if (fallback == null) continue;   // no default anywhere to fall back to
     thresholds[key] = fallback;
@@ -804,6 +948,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Resolved here, not inside KPI 13's block, so the limit the KPI applies and
   // the limit its ⓘ tooltip states are the same number by construction.
   const followUpGraceDays = thresholds.followUpGraceDays ?? FOLLOW_UP_GRACE_DEFAULT_DAYS;
+  // Same reason: KPIs 1 and 11 state this grace in their ⓘ tooltips, and the
+  // tooltip is what a fined person is shown, so it must be the number the KPI
+  // actually applied rather than a second copy of it.
+  const invoiceGraceMinutes = thresholds.invoiceGraceMinutes ?? INVOICE_GRACE_DEFAULT_MINUTES;
   if (ageField === 'write_date') {
     notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
@@ -960,13 +1108,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         ...selectorDomain(config.stageMap.repaired), ...weekDomain,
       ]], { fields: roFields, limit: 0, context: roCtx })) as Rec[];
       if (tfRepaired) {
-        deliveredAt = await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels);
+        // 'first', like the windowed lookup above: everything here is measured
+        // FROM the car becoming Repaired, and Repaired is mapped to three codes
+        // (Labour Complete / QC Complete / Vehicle Ready). Taking the last of
+        // them failed a car finished at 16:00 on its promised day because
+        // somebody ticked Vehicle Ready the next morning. These ROs were created
+        // this week, so their first Repaired stamp is inside the week anyway.
+        deliveredAt = await stateEntryTimes(repaired.map((r) => r.id as number), tfRepaired.field, tfRepaired.labels, 'first');
       }
     }
 
+    // Wall-clock minutes, deliberately: the grace absorbs the clerical gap
+    // between posting an invoice and ticking the car Repaired, not working time.
     const invoices = (on(1) || on(11))
-      ? await invoiceTimesForRos(repaired)
-      : { times: {} as Record<number, number>, failed: false };
+      ? await invoiceTimesForRos(repaired, deliveredAt, invoiceGraceMinutes * 60_000)
+      : { times: {} as Record<number, number>, failed: false, depositOnly: 0, dayOnly: new Set<number>() };
     const invoicedAt = invoices.times;
 
     /** Judge repaired → invoice-posted against a time limit. */
@@ -974,8 +1130,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       for (const r of repaired) {
         const rep = deliveredAt[r.id as number];
         if (rep == null) continue;                 // no repaired timestamp → not measurable
+        // Billing invoice found, but it carries a date and no time. An hour
+        // cannot be timed from a date, and the old parse put it at 04:00 Gulf,
+        // before the working day — which passed every late invoice dated the
+        // repair day. Unjudged, counted, and disclosed in the note below.
+        if (invoices.dayOnly.has(r.id as number)) continue;
         const inv = invoicedAt[r.id as number];
         const ref = (r.name as string) || '';
+        // No `measured` guard here, and that is the point of the grace: an
+        // invoice posted inside the grace is EARLIER than the Repaired stamp on
+        // purpose, clamps to zero elapsed and is compliant — the advisor did
+        // invoice the car. Anything earlier than the grace is a deposit and was
+        // never selected as the billing invoice, so it cannot reach this line.
         if (inv != null) push(kpiId, r, elapsed(rep, inv) <= limitMs, ref);
         // The running clock is business time too, or a Thursday repair would be
         // failed by the weekend before anyone could invoice it.
@@ -993,6 +1159,16 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     } else {
       if (on(1)) judgeInvoiceTiming(1, businessHours(thresholds.invoiceHours ?? 1));
       if (on(11)) judgeInvoiceTiming(11, businessHours(thresholds.deliveryHours ?? 48));
+      if (on(1) || on(11)) {
+        notes.push(`Invoice on delivery and Delivered after repair are timed to the invoice that bills the repair: the earliest invoice posted no more than ${limitLabel(invoiceGraceMinutes, 'minute')} before the car was marked Repaired, or at any time after it. Anything posted earlier than that is a down-payment invoice — Odoo posts those at quotation time, and taking the earliest invoice on the job meant a deposit timed the repair, gave a negative interval, and marked the job compliant forever whenever the real closing invoice was posted. The grace is wall-clock time, so invoicing a car a few minutes before ticking it Repaired still counts as invoicing it.`);
+      }
+      if (invoices.depositOnly) {
+        notes.push(`Invoice on delivery and Delivered after repair found only pre-Repaired invoices on ${invoices.depositOnly} repaired RO${invoices.depositOnly === 1 ? '' : 's'} — a deposit, with no invoice yet billing the repair. ${invoices.depositOnly === 1 ? 'It is' : 'They are'} treated as not yet invoiced: still unjudged while inside the limit, non-compliant once past it. ${invoices.depositOnly === 1 ? 'It was' : 'They were'} reading as compliant until now.`);
+      }
+      if (invoices.dayOnly.size) {
+        const n = invoices.dayOnly.size;
+        notes.push(`Invoice on delivery and Delivered after repair left ${n} repaired RO${n === 1 ? '' : 's'} unjudged whose billing invoice carries an invoice date but no posting time — Odoo tracked no posting for ${n === 1 ? 'it' : 'them'}, and a date alone cannot time a limit measured in business hours. ${n === 1 ? 'It is' : 'They are'} left out rather than counted compliant: the date used to be read as 04:00 Gulf, before the working day, so an invoice posted days late but dated the repair day passed unconditionally.`);
+      }
     }
 
     // Follow-up is the one KPI here that is not a stopwatch: a vehicle either has
@@ -1024,6 +1200,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const graceMs = followUpGraceDays * 86400_000;
       // Same by-id chatter lookup the stage KPIs use; unwindowed on purpose, since
       // a job repaired this week may well have passed QA in an earlier one.
+      // Only existence is read from this, never the moment, so which arrival it
+      // keeps cannot change a verdict — the grace runs from the Repaired stamp.
       const qaEntry = await stateEntryTimes(repaired.map((r) => r.id as number), tfQa.field, tfQa.labels);
       let insideGrace = 0, noRepairedAt = 0, noQaEntry = 0, eligible = 0;
       for (const r of repaired) {
@@ -1064,21 +1242,48 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // would move the promise itself.
     if (on(22) && scheduleField) {
       // A date-only promise means "that day", so it falls due as the day closes.
-      const dateOnly = meta[scheduleField]?.type === 'date';
-      let unpromised = 0;
+      //
+      // The 23:59:59 treatment used to depend on the FIELD's type being `date`.
+      // On this instance schedule_date is a datetime, so the branch never fired:
+      // a promise entered as a day stores midnight, and every car ready at any
+      // hour of its promised day was scored late. The test is therefore on the
+      // VALUE, not on the field — and on the Gulf-converted value, because the
+      // stamp is stored UTC and Gulf is UTC+4: a promise for "15 Nov" is stored
+      // as 2026-11-14 20:00:00Z, whose UTC clock is 20:00 and whose Gulf clock
+      // is the midnight that reveals it as a day, not a time.
+      const fieldIsDate = meta[scheduleField]?.type === 'date';
+      let unpromised = 0, dayPromises = 0;
       for (const r of repaired) {
         const rep = deliveredAt[r.id as number];
         if (rep == null) continue;                 // no repaired timestamp → not measurable
         const raw = r[scheduleField];
-        const due = dateOnly && typeof raw === 'string'
-          ? Date.parse(`${raw}T23:59:59+04:00`)
-          : odooTime(raw);
+        let due: number | null;
+        if (fieldIsDate && typeof raw === 'string') {
+          // A real Date field: 'YYYY-MM-DD', with no clock to inspect.
+          due = Date.parse(`${raw}T23:59:59+04:00`);
+          if (Number.isFinite(due)) dayPromises++;
+        } else {
+          due = odooTime(raw);
+          if (due != null) {
+            // Gulf clock reads exactly 00:00:00 → a day was promised, not a
+            // moment, so it falls due at 23:59:59 Gulf the same day. Adding one
+            // day less one second gets there without re-formatting the date.
+            const gulf = new Date(due + GULF_OFFSET_MS);
+            if (gulf.getUTCHours() === 0 && gulf.getUTCMinutes() === 0 && gulf.getUTCSeconds() === 0) {
+              due += 86_400_000 - 1000;
+              dayPromises++;
+            }
+          }
+        }
         // Nothing promised, so nothing can be late.
         if (due == null || !Number.isFinite(due)) { unpromised++; continue; }
         push(22, r, rep <= due, (r.name as string) || '');
       }
       if (unpromised) {
         notes.push(`Ready by promised time skipped ${unpromised} repaired RO${unpromised === 1 ? '' : 's'} with no scheduled delivery date — nothing was promised, so nothing can be late.`);
+      }
+      if (dayPromises) {
+        notes.push(`Ready by promised time read ${dayPromises} promise${dayPromises === 1 ? '' : 's'} as a whole day rather than an exact time, falling due at 23:59 Gulf on the promised day: ${dayPromises === 1 ? 'its scheduled delivery date carries' : 'their scheduled delivery dates carry'} no time of day. Until now those were timed to midnight at the START of the day, which failed every car made ready at any hour of the day it was promised for. If this is most of the week's promises, the branch is promising by day and not by hour, and the KPI should be read that way.`);
       }
     }
     if (on(22) && !scheduleField) {
@@ -1112,7 +1317,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       inRepair = (await call('repair.order', 'search_read', [[
         ...selectorDomain(config.stageMap.underRepair), ...weekDomain,
       ]], { fields: roFields, limit: 0 })) as Rec[];
-      if (tf) entered = await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels);
+      // 'first': both KPIs ask whether the quotation came BEFORE repair started,
+      // so the start is the first time this job went under repair. Measuring
+      // from the latest entry let a rework pass — the quote predated the second
+      // start, so a job repaired once with no approved quote still read clean.
+      if (tf) entered = await stateEntryTimes(inRepair.map((r) => r.id as number), tf.field, tf.labels, 'first');
     }
 
     // Quotation creation and approval times. date_order is when Odoo confirms a
@@ -1233,12 +1442,43 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // ── KPI 2 — quotation approval within the configured business hours ──
   if (on(2)) {
     const limitMs = businessHours(thresholds.quoteApprovalHours ?? 48);
+    // The open population needs a time bound. This query filtered on state and
+    // company only — no date window at all — so every draft quotation ever
+    // written was re-scored every week, forever: a two-year-old abandoned quote
+    // from a departed advisor failed this week, next week and every week until
+    // somebody confirmed it. And because the open clock runs to `now`, selecting
+    // a PAST week still judged today's drafts against today's clock, so last
+    // month's report changed every time the backlog grew.
+    //
+    // The bound is snapshotBaselineDays, the window KPIs 6 and 7 already use for
+    // exactly this job, rather than a new knob nobody would know to set. A draft
+    // older than that is treated as dead, not as pending.
+    //
+    // Read from the same resolved number KPI 2's ⓘ tooltip prints, so the bound
+    // the page describes and the bound the query applies cannot drift apart.
+    const openBaselineDays = baselineDaysNote;
+    const openSinceIso = new Date(now - openBaselineDays * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
     // (a) Still-open quotations: compliant while they're inside the window.
     const open = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['draft', 'sent']],
+      ['create_date', '>=', openSinceIso],
       ['company_id', 'in', kpiIds],
     ]], { fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0 })) as Rec[];
+    // Counted, not scored — the page has to be able to say how big the dead
+    // backlog is. Null if the count itself failed, so the note can say so rather
+    // than print a zero it did not establish.
+    let staleOpen: number | null = null;
+    try {
+      staleOpen = (await call('sale.order', 'search_count', [[
+        ['state', 'in', ['draft', 'sent']],
+        ['create_date', '<', openSinceIso],
+        ['company_id', 'in', kpiIds],
+      ]])) as number;
+    } catch { staleOpen = null; }
     // (b) Quotations confirmed during the week: was approval inside the window?
+    // Deliberately NOT bounded the same way: approval is an event that happened
+    // inside the scored week, so however old the quotation was, the measurement
+    // is of something that really did take that long.
     const confirmed = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['sale', 'done']],
       ['date_order', '>=', wStart], ['date_order', '<', wEnd],
@@ -1287,13 +1527,25 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       // quotation raised on Thursday would fail over a weekend nobody worked.
       push(2, q, elapsed(created, now) <= limitMs, (q.name as string) || '');
     }
+    let outOfOrder = 0;
     for (const q of confirmed) {
       if (insuranceExempt.has(q.id as number)) continue;
       if (outOfScope.has(q.id as number)) { historicalSkipped++; continue; }
       const created = odooTime(q.create_date);
       const approved = odooTime(q.date_order);
       if (created == null || approved == null) continue;
-      push(2, q, elapsed(created, approved) <= limitMs, (q.name as string) || '');
+      // date_order is editable in Odoo, so it can be set earlier than the
+      // quotation was created. A negative interval clamps to zero elapsed and
+      // would read as instant approval.
+      const took = measured(created, approved);
+      if (took == null) { outOfOrder++; continue; }
+      push(2, q, took <= limitMs, (q.name as string) || '');
+    }
+    notes.push(staleOpen == null
+      ? `Quote approval now scores only quotations created in the last ${openBaselineDays} days. Older ones that are still open are excluded — a draft nobody has confirmed after that long is treated as dead rather than as still pending, instead of failing this KPI every week forever. How many were excluded could not be counted this time. The window is the "Awaiting parts / labour baseline window" under Admin → KPI Configuration, shared with KPIs 6 and 7.`
+      : `Quote approval now scores only quotations created in the last ${openBaselineDays} days, and excluded ${staleOpen} older open quotation${staleOpen === 1 ? '' : 's'} — a draft nobody has confirmed after that long is treated as dead rather than as still pending, instead of failing this KPI every week forever and making a past week's report change as the backlog grew. Quotations APPROVED this week are still counted however old they were, because that approval really did take that long. The window is the "Awaiting parts / labour baseline window" under Admin → KPI Configuration, shared with KPIs 6 and 7.`);
+    if (outOfOrder) {
+      notes.push(`Quote approval left ${outOfOrder} quotation${outOfOrder === 1 ? '' : 's'} unjudged whose approval is dated before the quotation was created — the order date is editable in Odoo, so the two stamps cannot both be right and the time taken is not measurable. ${outOfOrder === 1 ? 'It was' : 'They were'} reading as approved instantly.`);
     }
     if (insuranceExempt.size) {
       notes.push(`Quote approval excluded ${insuranceExempt.size} insurance quotation${insuranceExempt.size === 1 ? '' : 's'} — approval there is the insurer's to give.`);
@@ -1414,7 +1666,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // apart from one that genuinely skipped check-in.
     const timeline = await stateTimeline(weekROs.map((r) => r.id as number), tfInspection.field);
 
-    let unobserved = 0, judged = 0;
+    let unobserved = 0, judged = 0, outOfOrder = 0;
     for (const r of weekROs) {
       const roAt = odooTime(r.create_date);
       if (roAt == null) continue;
@@ -1423,8 +1675,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const hits = events.filter((e) => tfInspection.labels.includes(e.label));
 
       if (hits.length) {
+        // FIRST arrival is the check-in. A chatter entry dated before the job
+        // card itself cannot time it, so that pair is not measurable.
+        const took = measured(roAt, hits[0].t);
+        if (took == null) { outOfOrder++; continue; }
         judged++;
-        push(14, r, elapsed(roAt, hits[0].t) <= limitMs, ref);   // FIRST arrival is the check-in
+        push(14, r, took <= limitMs, ref);
         continue;
       }
       // No Inspection on record. Only a failure if we have some other stage change
@@ -1436,6 +1692,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     }
     if (unobserved) {
       notes.push(`Check-in ignored ${unobserved} of ${weekROs.length} ROs with no stage history at all — they moved before tracking was switched on, so their check-in was never recorded. Judged ${judged}.`);
+    }
+    if (outOfOrder) {
+      notes.push(`Check-in after RO left ${outOfOrder} RO${outOfOrder === 1 ? '' : 's'} unjudged whose first Inspection entry is dated before the repair order was created — the two stamps cannot both be right, so the time taken is not measurable and is not read as a pass.`);
     }
   }
 
@@ -1473,7 +1732,8 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       }
 
-      const judgeQuoteTiming = (kpiId: number, limitMs: number) => {
+      const judgeQuoteTiming = (kpiId: number, limitMs: number, label: string) => {
+        let outOfOrder = 0;
         for (const r of ros) {
           const from = entered[r.id as number];
           if (from == null) continue;
@@ -1484,15 +1744,28 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           // fact came from the repair order, which read fine.
           if (soId != null && quotesUnreadable) continue;
           const quotedAt = soId != null ? soCreated[soId] : undefined;
-          if (quotedAt != null) push(kpiId, r, elapsed(from, quotedAt) <= limitMs, ref);
+          if (quotedAt != null) {
+            // `from` is now the first Inspection entry inside this week, so a
+            // quotation dated before it was not raised for this inspection —
+            // typically the re-inspection case, where the quote belongs to the
+            // first pass. A negative interval clamped to zero used to pass every
+            // one of them, which is how an unquoted re-inspection became
+            // impossible to fail.
+            const took = measured(from, quotedAt);
+            if (took == null) { outOfOrder++; continue; }
+            push(kpiId, r, took <= limitMs, ref);
+          }
           // The unquoted clock runs on business time as well — otherwise the
           // weekend, not the workshop, decides the overrun.
           else if (elapsed(from, now) > limitMs) push(kpiId, r, false, ref);  // still unquoted, window gone
         }
+        if (outOfOrder) {
+          notes.push(`${label} left ${outOfOrder} repair order${outOfOrder === 1 ? '' : 's'} unjudged whose quotation was created before the inspection it is timed from — the quotation belongs to an earlier pass through Inspection, so there is no interval to measure here. ${outOfOrder === 1 ? 'It used' : 'They used'} to read as quoted instantly, which is how a re-inspection that was never re-quoted could not fail.`);
+        }
       };
 
-      if (on(15)) judgeQuoteTiming(15, businessHours(thresholds.inspectionHours ?? 27));
-      if (on(12)) judgeQuoteTiming(12, businessHours(thresholds.quoteSentHours ?? 4));
+      if (on(15)) judgeQuoteTiming(15, businessHours(thresholds.inspectionHours ?? 27), 'Inspection duration');
+      if (on(12)) judgeQuoteTiming(12, businessHours(thresholds.quoteSentHours ?? 4), 'Quote sent to customer');
       if (quotesUnreadable) {
         const skipped = ros.filter((r) => m2o(r.sale_order_id)?.[0] != null).length;
         notes.push(`Inspection duration and Quote sent to customer left ${skipped} repair order${skipped === 1 ? '' : 's'} unjudged — their quotations could not be read from Odoo, so an RO still waiting for a quote cannot be told apart from one whose quote we failed to fetch. Repair orders with no quotation linked at all are still counted.`);
@@ -1515,20 +1788,49 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         fields: ['name', 'create_uid', 'company_id', ...histField],
       })) as Rec[]).filter((r) => !isHistorical(r));
       const timeline = await stateTimeline(ids, tfQa.field);
+      // The population is window-scoped — these ROs entered QA during the week
+      // on screen — but the timeline scan was not, so it took the last QA
+      // arrival in ALL of history. A week-45 overrun was unreachable while a
+      // week-47 dwell was scored into week 45. The scan is bounded to the same
+      // week the population came from.
+      const weekFromMs = odooTime(wStart) ?? -Infinity;
+      const weekToMs = odooTime(wEnd) ?? Infinity;
 
+      let outOfOrder = 0;
       for (const r of ros) {
         const ref = (r.name as string) || '';
         const events = timeline[r.id as number] ?? [];
-        // The last arrival in QA, and whatever state change followed it.
+        // The FIRST arrival in QA inside the scored week, and whatever state
+        // change followed it.
         let enterIdx = -1;
-        for (let i = 0; i < events.length; i++) if (tfQa.labels.includes(events[i].label)) enterIdx = i;
+        for (let i = 0; i < events.length; i++) {
+          const e = events[i];
+          if (!tfQa.labels.includes(e.label)) continue;
+          if (e.t < weekFromMs || e.t >= weekToMs) continue;
+          enterIdx = i;
+          break;
+        }
+        // Falls back to the windowed chatter lookup, which is already the
+        // earliest QA arrival inside the week, when the full timeline is
+        // unreadable. Then there is no "left" to pair with it and the record
+        // runs on the open-ended clock below.
         const from = enterIdx >= 0 ? events[enterIdx].t : entered[r.id as number];
         if (from == null) continue;
         const left = enterIdx >= 0 && enterIdx + 1 < events.length ? events[enterIdx + 1].t : null;
 
-        if (left != null) push(16, r, elapsed(from, left) <= limitMs, ref);
+        if (left != null) {
+          // Both stamps come from one ascending timeline, with `left` the very
+          // next entry, so this cannot go negative. Routed through the guard all
+          // the same: the invariant is the check, not the assumption.
+          const took = measured(from, left);
+          if (took == null) { outOfOrder++; continue; }
+          push(16, r, took <= limitMs, ref);
+        }
         // Still in QA: business time only, so an overnight wait is not an overrun.
         else if (elapsed(from, now) > limitMs) push(16, r, false, ref);  // still in QA, over the limit
+      }
+      if (outOfOrder) {
+        notes.push(`QA duration left ${outOfOrder} repair order${outOfOrder === 1 ? '' : 's'} unjudged whose QA exit is recorded before its QA entry — the two stamps cannot both be right, so the dwell is not measurable and is not read as a pass.`);
       }
     }
   }
@@ -1876,7 +2178,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           const fleetIds = [...new Set(raised.map((po) => m2o(po.fleet_id)?.[0]).filter((x): x is number => x != null))];
           const jobsByFleet = await jobsForFleets(fleetIds);
 
-          let undated = 0, noVehicle = 0, noJob = 0, closedJob = 0, undatedJob = 0, scoped = 0;
+          let undated = 0, noVehicle = 0, noJob = 0, closedJob = 0, undatedJob = 0, scoped = 0, outOfOrder = 0;
           for (const po of raised) {
             const created = poTime(po.create_date);
             if (created == null) continue;
@@ -1894,7 +2196,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             scoped++;
             const ref = (po.name as string) || '';
             const confirmed = poTime(po.date_approve);
-            if (confirmed != null) push(19, po, confirmed - created <= limitMs, ref);
+            // A confirmation dated before the order was created cannot time
+            // anything: raw subtraction would go negative, land inside any
+            // limit and read as compliant. The business-clock KPIs route this
+            // through measured(); this chain is calendar-timed, so it says so
+            // here rather than handing out a free pass.
+            if (confirmed != null && confirmed < created) outOfOrder++;
+            else if (confirmed != null) push(19, po, confirmed - created <= limitMs, ref);
             else if (RFQ_STATES.includes(String(po.state))) {
               if (now - created > limitMs) push(19, po, false, ref);   // still an RFQ, window gone
             } else {
@@ -1905,6 +2213,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           }
           if (undated) {
             notes.push(`RFQ confirmed left ${undated} confirmed purchase order${undated === 1 ? '' : 's'} unjudged — they carry no confirmation date, so there is nothing to time.`);
+          }
+          if (outOfOrder) {
+            notes.push(`RFQ confirmed left ${outOfOrder} purchase order${outOfOrder === 1 ? '' : 's'} unjudged whose confirmation is dated before the order was created. Those two stamps cannot both be right, so neither a pass nor a failure can be read from them — and the subtraction would otherwise go negative, land inside any limit and score as on time.`);
           }
           const dropped = noVehicle + noJob + closedJob;
           if (dropped) {
@@ -1971,7 +2282,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
           const lineInfo = await readPartsLines(parts, [...new Set(placements.flatMap((p) => p.lines))]);
 
-          let noArrival = 0;
+          let noArrival = 0, outOfOrderArrival = 0;
           for (const p of placements) {
             const ref = (p.po.name as string) || '';
             // Judged on the whole job card, not this order's own lines: one job's
@@ -1980,7 +2291,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             const complete = p.lines.every((id) => !lineInfo[id]?.short);
             if (complete) {
               const landed = poTime(p.po.effective_date);
-              if (landed != null) push(20, p.po, landed - p.at <= limitMs, ref);
+              // An arrival dated before the confirmation cannot time the
+              // receipt: the raw subtraction goes negative, falls inside any
+              // limit and reads as compliant. Calendar-timed, so measured()
+              // does not cover it — refuse it here instead.
+              if (landed != null && landed < p.at) outOfOrderArrival++;
+              else if (landed != null) push(20, p.po, landed - p.at <= limitMs, ref);
               else { noArrival++; push(20, p.po, true, ref); }   // generous, and counted below
             } else if (now - p.at > limitMs) {
               push(20, p.po, false, ref);   // still short, window gone
@@ -1989,6 +2305,9 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           }
           if (noArrival) {
             notes.push(`Parts placed accepted ${noArrival} purchase order${noArrival === 1 ? '' : 's'} as on time whose parts are complete but which carry no Arrival date, so the receipt itself could not be timed.`);
+          }
+          if (outOfOrderArrival) {
+            notes.push(`Parts placed left ${outOfOrderArrival} purchase order${outOfOrderArrival === 1 ? '' : 's'} unjudged whose Arrival is dated before the confirmation. Those two stamps cannot both be right, so the receipt cannot be timed either way — and the subtraction would otherwise go negative and score as on time.`);
           }
           if (unlinked) {
             notes.push(`Parts placed skipped ${unlinked} confirmed purchase order${unlinked === 1 ? '' : 's'} with no job card in the Orders tab for that vehicle at the moment of confirmation — nothing to receive the parts against.`);
@@ -2270,7 +2589,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         ...notHist,
       ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
       const tf = trackedField(sel, meta, stageNames);
-      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels) : {};
+      // The LATEST arrival, on purpose, and the one place in the engine where
+      // that is the right reading: this asks how long a car has been sitting in
+      // the state it is in NOW. Taking the first arrival would age a vehicle
+      // from a wait it has already finished and overstate every one of them.
+      const entered = tf ? await stateEntryTimes(recs.map((r) => r.id as number), tf.field, tf.labels, 'last') : {};
       if (Object.keys(entered).length) usedTrackingForAging = true;
       const limitMs = days * 86400_000;
       const waiting = new Map<number, Rec>();
@@ -2396,17 +2719,17 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // KPI 6 states which method decided a vehicle is waiting on parts.
   const snapshotNotes: Record<number, string> = {
-    1: `Measured from the moment the RO became Repaired to the moment its linked invoice was posted. ${CLOCK}`,
-    2: `Measured from the quotation being created to its approval; one still awaiting approval past the limit counts against you. Only quotations attached to a job card in the Orders tab are counted — a quotation whose repair orders have all been moved to Historical, or which has no repair order at all (a counter parts sale, a retail order), is out of scope. Insurance jobs are exempt. ${CLOCK}`,
-    3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
-    12: `Measured from the RO entering Inspection to its quotation being created — the promise on getting a quote out, tighter than the inspection limit itself. ${CLOCK}`,
+    1: `Measured from the first moment the RO became Repaired this week to the moment the invoice that bills the repair was posted. That invoice is the earliest one posted no more than ${limitLabel(invoiceGraceMinutes, 'minute')} before the car was marked Repaired, or at any time after it — an invoice posted earlier is a down-payment invoice, which Odoo posts at quotation time, and it does not count as billing the repair. A job with nothing but deposits is treated as not yet invoiced. One whose billing invoice carries a date but no posting time is not judged at all: a date cannot time an hour. ${CLOCK}`,
+    2: `Measured from the quotation being created to its approval; one still awaiting approval past the limit counts against you. Only quotations created in the last ${baselineDaysNote} days are counted while they are still open — a draft nobody has confirmed after that long is treated as dead rather than as still pending, so it stops failing this KPI every week. A quotation APPROVED during the week shown is counted however old it was. Only quotations attached to a job card in the Orders tab are counted — a quotation whose repair orders have all been moved to Historical, or which has no repair order at all (a counter parts sale, a retail order), is out of scope. Insurance jobs are exempt. ${CLOCK}`,
+    3: 'Checks the quotation was approved (confirmed into a sale order) before the RO FIRST moved into Under Repair this week. The first entry, not the latest: a job that bounced back into Under Repair used to be measured from the later entry, which the original quotation always predated, so a second pass with no fresh approval could not fail.',
+    12: `Measured from the RO first entering Inspection during the week shown to its quotation being created — the promise on getting a quote out, tighter than the inspection limit itself. The first entry of that week, not the latest in all history: measuring from the latest one meant a quotation raised for an earlier pass through Inspection satisfied a re-inspection nobody re-quoted. A quotation dated before that entry is not judged at all, since it belongs to the earlier pass. ${CLOCK}`,
     13: `A straight yes/no: was the follow-up screenshot uploaded. The population is the jobs that actually went through QA, read from the QA stage changes recorded on the job card — not the "QA Access" flag, which describes the permissions of whoever reads the record rather than the job itself. The person scored is the service advisor who opened the job card. A job whose QA entry cannot be found is not judged at all, and neither is one with no Repaired timestamp, since the grace cannot be measured without it. An RO is judged only once ${limitLabel(followUpGraceDays, 'day')} has passed since it was marked Repaired, so a car just handed over is not already a violation.`,
     14: `Check-in counts as complete the moment the RO reaches Inspection. ${CLOCK}`,
-    15: `Measured from the RO entering Inspection to its quotation being created. ${CLOCK}`,
+    15: `Measured from the RO first entering Inspection during the week shown to its quotation being created. The first entry of that week, not the latest in all history, so a re-inspection is timed from the re-inspection; a quotation dated before it belongs to the earlier pass and is not judged here. ${CLOCK}`,
     17: `Time from being @mentioned to your next comment on that RO. Tagging several people is one request — whoever answers first settles it, and if nobody does it falls to the person tagged first. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. ${CLOCK}`,
-    16: `Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you. ${CLOCK}`,
-    11: `Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery. ${CLOCK}`,
-    4: 'Checks that a quotation exists for the job before repair work starts. If the quotation\'s own dates cannot be read, the check falls back to existence alone, which is more generous than the rule.',
+    16: `Measured from the RO first entering QA during the week shown to the next state change after it; an RO still in QA past the limit counts against you. Both ends are read inside that week: the scan used to take the last QA arrival in all of history, so a later week's dwell could be scored into an earlier week and that earlier week's overrun was unreachable. ${CLOCK}`,
+    11: `Delivery is inferred from invoicing — measured from the first moment the RO became Repaired this week to the invoice that bills the repair being posted, on a longer timeline than Invoice on delivery. It reads the invoice the same way: the earliest one posted no more than ${limitLabel(invoiceGraceMinutes, 'minute')} before Repaired or at any time after it, so a quotation-time deposit does not stand in for the closing invoice. ${CLOCK}`,
+    4: 'Checks that a quotation exists for the job and was created before repair work FIRST started this week. The first entry into Under Repair, not the latest: measuring from the latest one let any earlier quotation satisfy a job that went back under repair. If the quotation\'s own dates cannot be read, the check falls back to existence alone, which is more generous than the rule.',
     5: 'Checks whether the RO carries a tag now — not when the tag was added. Odoo records no timestamp of its own for a tag here, so one added late still reads as present. ROs younger than the limit are left out of the count, so the figure covers only ROs that have had their full window.',
     8: 'A straight yes/no: does the RO carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site. No time limit of its own applies, but ROs younger than the Tag on creation limit are left out of the count alongside that KPI\'s. Inactive until CAR-IN / CAR-OUT tags are picked in Admin.',
     9: 'ROs received this week that were also closed this week (closed ÷ received). A job opened on Thursday has little of the week left to close in, so this figure is structurally low — which is why it is shown for reference and left out of the overall achievement.',
@@ -2414,7 +2737,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     19: 'Measured from a purchase order being created to its Confirmation Date. Counted only for purchases that belong to a job card in the Orders tab: the order must carry a vehicle, and that vehicle must have a non-historical job card that was already open when the order was raised — the same test Parts placed uses, asked at creation instead of confirmation. That leaves out shop consumables and stationery, purchases for job cards moved to Historical, and purchases for vehicles with no open job. Cancelled requests are left out, and so are confirmed ones carrying no confirmation date, since there is nothing to measure to. Timed in calendar days, not business hours.',
     20: 'Measured from a purchase order\'s Confirmation Date to its Arrival date, judged against the whole job card\'s parts rather than this order\'s own lines — one job\'s parts routinely arrive across several orders, and the vehicle is only unblocked when the last of them is in. The job is matched through the vehicle: the newest non-historical job card that was already open when the order was confirmed — a job card already closed by then belongs to a different visit and cannot receive these parts. Orders with no such job card are skipped, and ones whose parts are complete but which carry no Arrival date are accepted as on time. Timed in calendar days, not business hours.',
     21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Only quotations attached to a job card in the Orders tab are counted — one whose repair orders have all been moved to Historical, or which has no repair order at all, is out of scope, which is what keeps counter parts sales and retail orders out of the rate. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
-    22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A date-only promise falls due as that day closes. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
+    22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. Repaired means the FIRST of the Repaired codes it reached that week (Labour Complete / QC Complete / Vehicle Ready) — the last of them failed a car finished at 16:00 on its promised day because Vehicle Ready was ticked the next morning. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A promise whose Gulf clock reads exactly midnight is a promise for that whole day and falls due at 23:59 Gulf on it, so a car ready at any hour of its promised day is on time. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
     6: `Open ROs with parts still outstanding, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
     7: `Open ROs in the awaiting-labour state. ${snapshotNote}`,
   };
