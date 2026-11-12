@@ -952,8 +952,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // tooltip is what a fined person is shown, so it must be the number the KPI
   // actually applied rather than a second copy of it.
   const invoiceGraceMinutes = thresholds.invoiceGraceMinutes ?? INVOICE_GRACE_DEFAULT_MINUTES;
+  // KPI 6 only. KPI 7 no longer ages from the configured basis at all: the owner
+  // fixed its anchor at status_since, so `ageBasis` cannot move its clock and a
+  // note naming it here would be false for the one KPI whose figure it does not
+  // touch. `ageField` reaches KPI 6 through overdueByState, which is now only
+  // the parts fallback path.
   if (ageField === 'write_date') {
-    notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
+    notes.push('KPI 6 is measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
   if (!has('sale_order_id')) {
     notes.push('repair.order has no sale_order_id — KPIs 1, 3 and 4 cannot be evaluated.');
@@ -2686,11 +2691,166 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       notes.push(`Awaiting parts is scored against the vehicles actually waiting on parts — ${judged} open job card${judged === 1 ? '' : 's'} with parts still outstanding, detected from ${awaitingPartsMethod} — and no longer against all ${inWindow.size} open repair order${inWindow.size === 1 ? '' : 's'} of the last ${baselineDays} days. The vehicles waiting on nothing used to sit in the count as compliant and carried the figure up by roughly thirty points; the rule has always been about the ones that are waiting. A lower number here means the denominator narrowed to the rule, not that the branches got worse.`);
     }
 
-    // ── KPI 7 — awaiting labour (mapped state) ──
+    // ── KPI 7 — awaiting labour (clocked on, not the matrix flag) ──
     if (on(7)) {
-      const { waiting, overdue } = await overdueByState(config.stageMap.awaitingLabour, thresholds.awaitingLabourDays ?? 2, 'Awaiting labour');
-      const { judged } = scoreWaiting(7, waiting, overdue);
-      notes.push(`Awaiting labour is scored against the vehicles actually waiting on labour — ${judged} open job card${judged === 1 ? '' : 's'} in the awaiting-labour state — and no longer against all ${inWindow.size} open repair order${inWindow.size === 1 ? '' : 's'} of the last ${baselineDays} days. The vehicles waiting on nothing used to sit in the count as compliant and carried the figure up by roughly thirty points. A lower number here means the denominator narrowed to the rule, not that the branches got worse.`);
+      /**
+       * The owner's redefinition: "Awaiting labour should be judged by clocking
+       * on and off. If a repair order's parts are delivered or does not need
+       * parts, the KPI system should check if the labour lines are started or
+       * not. This is measured with timestamps in Odoo."
+       *
+       * So the population is no longer `priority_matrix_status = I`
+       * ("Awaiting Labour - I"). That is a flag somebody sets by hand, the owner
+       * has told us it is unreliable, and §4 of the audit notes the KPI reads a
+       * clean 100% if the code ever stops matching anything in Odoo. The two
+       * objective signals replace it:
+       *
+       *  - `is_parts_available` ("All Parts are available"), a stored boolean,
+       *    true both when the parts have arrived AND when the job needs none —
+       *    exactly the owner's "delivered or does not need parts".
+       *  - `start_time` on the labour lines (`repair.order.service_ids` →
+       *    `repair.service.line`), the clock-on Odoo stamps itself.
+       *
+       * The clock is anchored on `status_since`, the owner's choice, and not on
+       * the moment the car became ready for labour: `is_parts_available` has
+       * tracking = 0 on this instance, so it leaves no chatter entry and that
+       * moment simply cannot be read back from history.
+       */
+      notes.push('Awaiting labour is now judged by whether labour has been clocked on — an open job card whose parts are ready, or which needs none, with no labour line carrying a start time — and no longer by the manual "Awaiting Labour - I" priority-matrix flag. The figure moves because the rule changed, not because the branches did: the clock-on is a timestamp Odoo writes itself, the flag was set by hand, and the two populations only partly overlap.');
+
+      // Both halves of the rule have to exist on this instance before the KPI
+      // can mean anything. `service_ids` is read through fields_get rather than
+      // hard-coded to repair.service.line, the same way resolvePartsFields
+      // discovers the parts relation — the comodel is customisable.
+      const labourModel = has('service_ids') ? meta.service_ids?.relation : undefined;
+      let startField: string | undefined;
+      if (labourModel && has('is_parts_available')) {
+        try {
+          const lm = (await call(labourModel, 'fields_get', [], { attributes: ['type'] })) as Record<string, unknown>;
+          if (Object.prototype.hasOwnProperty.call(lm, 'start_time')) startField = 'start_time';
+        } catch { /* comodel unreadable — treated as a missing structure below */ }
+      }
+      // Which half is absent, named precisely, because the note has to tell the
+      // reader what to go and look at.
+      const missingStructure = !labourModel ? 'repair.order.service_ids, the labour lines'
+        : !has('is_parts_available') ? 'repair.order.is_parts_available, "All Parts are available"'
+        : !startField ? `${labourModel}.start_time, the clock-on`
+        : undefined;
+
+      if (missingStructure || !startField || !labourModel) {
+        /**
+         * Degrade loudly, never quietly. Falling back to the old
+         * priority_matrix_status rule would put a number on the page that looks
+         * like the new definition and was produced by the old one, and nothing
+         * on the page — not the figure, not the tooltip — would let a reader
+         * tell which rule fined them. An absent figure with a reason is the
+         * honest failure; a plausible wrong figure is not.
+         */
+        notes.push(`Awaiting labour was not computed: ${missingStructure ?? 'the labour-line structure'} is missing from this Odoo instance, and the KPI is now defined entirely by it. The manual "Awaiting Labour - I" priority-matrix flag is no longer used for this KPI and was deliberately NOT used as a fallback — a figure from the old rule would be indistinguishable on the page from a figure from the new one.`);
+      } else {
+        const days = thresholds.awaitingLabourDays ?? 2;
+        const limitMs = days * 86400_000;
+        // status_since is the anchor the owner chose. Requested only when the
+        // field exists: asking Odoo for a field it does not have fails the whole
+        // call, taking the KPI down with it.
+        const anchorField = has('status_since') ? 'status_since' : undefined;
+
+        // Open, non-historical, in the five scored companies, and the job card
+        // says its parts are ready. The parts test goes into the domain rather
+        // than being filtered in memory so that only the few dozen candidates
+        // come back — which is what keeps the labour-line read below small.
+        const candidates = (await call('repair.order', 'search_read', [[
+          ['is_parts_available', '=', true],
+          ...selectorDomainNot(config.stageMap.closed),
+          ['company_id', 'in', kpiIds],
+          ...notHist,
+        ]], {
+          fields: ['name', 'create_uid', 'company_id', 'service_ids', ...(anchorField ? [anchorField] : [])],
+          limit: 0,
+        })) as Rec[];
+
+        /**
+         * One chunked read for every labour line of every candidate, the shape
+         * readPartsLines established. Chunking by line id is what keeps the call
+         * count flat: whether there are 70 candidates or 700, this is one read
+         * per 4000 lines, not one read per job card.
+         */
+        const clockedOn: Record<number, boolean> = {};
+        const CHUNK = 4000;
+        const lineIds = [...new Set(candidates.flatMap((r) => (r.service_ids as number[] | undefined) ?? []))];
+        for (let i = 0; i < lineIds.length; i += CHUNK) {
+          try {
+            const lines = (await call(labourModel, 'read', [lineIds.slice(i, i + CHUNK)], { fields: [startField] })) as Rec[];
+            // Truthiness, not odooTime(): the owner's test is whether start_time
+            // is SET. Odoo returns false for an empty datetime, so a set value
+            // that this code cannot parse is still a clock-on — parsing it and
+            // reading null as "not started" would turn an unreadable stamp into
+            // a vehicle waiting, which is the wrong direction for a fine.
+            for (const l of lines) clockedOn[l.id as number] = Boolean(l[startField]);
+          } catch { /* unreadable chunk — its job cards go unjudged below */ }
+        }
+
+        const waiting = new Map<number, Rec>();
+        const overdue = new Map<number, Rec>();
+        let noLines = 0, unreadable = 0, started = 0, noAnchor = 0;
+        for (const r of candidates) {
+          const ids = (r.service_ids as number[] | undefined) ?? [];
+          /**
+           * No labour lines at all: unjudged, counted and noted. The owner's
+           * rule is to check whether the labour lines are started; where there
+           * are none there is nothing to check, and a parts-only job card is
+           * not a labour failure. Live data puts this at about 6 records.
+           */
+          if (!ids.length) { noLines++; continue; }
+          /**
+           * A line whose chunk failed to read cannot be read as "not started".
+           * That is precisely the KPI 20 bug §4 of the audit describes — a
+           * single timed-out chunk declaring whole jobs complete — pointed the
+           * other way: here it would invent a vehicle waiting on labour. Unknown
+           * is unjudged, as everywhere else in this engine.
+           */
+          if (ids.some((id) => clockedOn[id] === undefined)) { unreadable++; continue; }
+          /**
+           * Clocked on, so not waiting. A job clocked on and then PAUSED counts
+           * as started: start_time being set is the whole test. A long pause is
+           * arguably a fresh wait on labour — nobody is working the car — and
+           * `is_paused` / `pause_start_time` / `pause_duration` are all on the
+           * line to measure it with. That is deliberately out of scope for now:
+           * it is a second rule the owner has not given us, and guessing a pause
+           * threshold here would fine people against a limit nobody agreed.
+           */
+          if (ids.some((id) => clockedOn[id])) { started++; continue; }
+          /**
+           * Waiting, but nothing says since when: unjudged, counted and noted.
+           * No fallback to create_date, here or anywhere else in this engine —
+           * the job card predates the wait, so a missing anchor would age the
+           * whole visit against a 2-day limit and guarantee a fine.
+           */
+          const since = anchorField ? odooTime(r[anchorField]) : null;
+          if (since == null) { noAnchor++; continue; }
+          waiting.set(r.id as number, r);
+          // Calendar days, unchanged: this is a backlog age, not a promise timed
+          // against working hours, and moving it onto the business clock would
+          // quietly triple every limit.
+          if (now - since > limitMs) overdue.set(r.id as number, r);
+        }
+
+        if (noLines) {
+          notes.push(`Awaiting labour left ${noLines} open job card${noLines === 1 ? '' : 's'} unjudged because ${noLines === 1 ? 'it carries' : 'they carry'} no labour lines at all. The rule is whether the labour lines have been clocked on; with none there is nothing to clock on, and a job card that is only parts is not a labour failure.`);
+        }
+        if (unreadable) {
+          notes.push(`Awaiting labour could not read the labour lines of ${unreadable} open job card${unreadable === 1 ? '' : 's'}, so ${unreadable === 1 ? 'it is' : 'they are'} left out of the count entirely. An unreadable line is not read as "not started": that would turn a failed read into a vehicle waiting on labour.`);
+        }
+        if (noAnchor) {
+          notes.push(`Awaiting labour could not age ${noAnchor} open job card${noAnchor === 1 ? '' : 's'} with no labour clocked on — ${noAnchor === 1 ? 'it has' : 'they have'} no readable ${anchorField ?? 'status_since'} to measure the wait from. ${noAnchor === 1 ? 'It is' : 'They are'} left out of the count entirely rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait: ${noAnchor === 1 ? 'that vehicle is' : 'those vehicles are'} waiting, but for how long is unknown, and now that only the waiting vehicles are counted an unknown wait cannot be read as a compliant one.`);
+        }
+        if (!anchorField) {
+          notes.push('Awaiting labour has no status_since field on this Odoo instance, so no wait can be dated and nothing is judged. The owner fixed the clock on status_since; the job card\'s creation date is not used in its place.');
+        }
+
+        const { judged } = scoreWaiting(7, waiting, overdue);
+        notes.push(`Awaiting labour is scored against the vehicles actually waiting on labour — ${judged} open job card${judged === 1 ? '' : 's'} whose parts are ready, or which need none, with no labour line clocked on, out of ${candidates.length} with parts ready — and not against all ${inWindow.size} open repair order${inWindow.size === 1 ? '' : 's'} of the last ${baselineDays} days. ${started} ${started === 1 ? 'has' : 'have'} labour already started and ${started === 1 ? 'is' : 'are'} therefore not waiting. The wait is counted in calendar days from when the vehicle entered its current status.`);
+      }
     }
 
   }
@@ -2739,7 +2899,11 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Only quotations attached to a job card in the Orders tab are counted — one whose repair orders have all been moved to Historical, or which has no repair order at all, is out of scope, which is what keeps counter parts sales and retail orders out of the rate. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
     22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. Repaired means the FIRST of the Repaired codes it reached that week (Labour Complete / QC Complete / Vehicle Ready) — the last of them failed a car finished at 16:00 on its promised day because Vehicle Ready was ticked the next morning. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A promise whose Gulf clock reads exactly midnight is a promise for that whole day and falls due at 23:59 Gulf on it, so a car ready at any hour of its promised day is on time. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
     6: `Open ROs with parts still outstanding, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
-    7: `Open ROs in the awaiting-labour state. ${snapshotNote}`,
+    // KPI 7 no longer shares `snapshotNote`: that string names the configured
+    // ageing basis, and this KPI's clock is fixed on status_since by the owner's
+    // decision regardless of what Admin selects. The snapshot framing is spelled
+    // out here instead, so the tooltip and the code state the same anchor.
+    7: `Open job cards whose parts are ready — "All Parts are available" (is_parts_available), which is true both when the parts have arrived and when the job needs none — on which no labour line (repair.order → service_ids) carries a start time. The manual "Awaiting Labour - I" priority-matrix flag no longer decides this KPI: the clock-on is a timestamp Odoo writes itself, the flag was set by hand. The wait is measured in calendar days from when the vehicle entered its current status (status_since), not on the business clock, because the moment a car became ready for labour is not recorded anywhere — is_parts_available is not tracked in the chatter. Counts only the vehicles actually waiting, among open ROs created in the last ${baselineDaysNote} days (closed work is excluded): compliant means still inside the limit, non-compliant means waiting beyond it, and a vehicle that is not waiting is not in the count at all. A job clocked on and then paused counts as started, so it is not waiting. Left out of the count entirely rather than read either way: a job card with no labour lines at all, since there is nothing to clock on and a parts-only job is not a labour failure; one whose labour lines could not be read; and one with no readable status_since, which is never aged from the job card's creation date instead — that is the whole visit's age and overstates every wait.`,
   };
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');

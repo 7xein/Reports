@@ -331,13 +331,102 @@ export interface StageSelector {
   values: (string | number)[];
 }
 
+/**
+ * What a person actually does, which is what decides the KPIs they answer for.
+ *
+ * Read out of Odoo in November 2026: the work separates into three groups, not
+ * the two the `section` model offered. Advisors open job cards, write and
+ * confirm quotations and raise the invoice. Controllers move cars through
+ * Inspection, QA and Repaired and write no quotations at all. Parts staff raise
+ * RFQs and confirm purchase orders and do nothing else. Filed under the old two
+ * sections, a parts man was scored either on quotations he never touches or on
+ * stage timings he never touches — wrong either way.
+ *
+ * A person may hold several roles: one Dubai user writes quotations, raises
+ * RFQs and moves cars through QA.
+ */
+export type KpiRole = 'advisor' | 'controller' | 'parts';
+
+export const KPI_ROLE_ORDER: readonly KpiRole[] = ['advisor', 'controller', 'parts'];
+
+export const KPI_ROLE_LABELS: Record<KpiRole, string> = {
+  advisor: 'Service Advisor',
+  controller: 'Workshop Controller',
+  parts: 'Parts & Purchasing',
+};
+
+/**
+ * Which KPIs each role answers for, decided with the owner against the Odoo
+ * activity map.
+ *
+ * Not listed here, deliberately: 17 (Chatter response) belongs to everyone via
+ * KPI_IDS_FOR_EVERYONE, because anyone can be @mentioned; and 7 (Awaiting
+ * labour) and 9 (Weekly closure rate) belong to nobody, because no individual
+ * performs them — they are branch readings.
+ *
+ * 1 and 11 sit with the advisor on the owner's instruction: the controller
+ * marks a car Repaired but has no say in whether the invoice goes out. 13 does
+ * too, for the same reason — "always the service advisor that created the
+ * repair order".
+ */
+export const ROLE_KPIS: Record<KpiRole, readonly number[]> = {
+  advisor:    [1, 2, 3, 4, 5, 8, 11, 12, 13, 21],
+  controller: [14, 15, 16, 22],
+  parts:      [6, 18, 19, 20],
+};
+
+/** The roles that answer for a KPI, or [] for one nobody is scored on. */
+export const rolesForKpi = (id: number): KpiRole[] =>
+  KPI_ROLE_ORDER.filter((r) => ROLE_KPIS[r].includes(id));
+
+/**
+ * Migrating a section to roles without taking anyone's KPIs away.
+ *
+ * The old 'workshop' section covered the stage timings AND the parts chain, so
+ * it maps to both roles rather than to a guess between them. Nobody loses
+ * coverage on the day this ships; "Refresh roles from Odoo" then narrows each
+ * person to what they are observed to actually do.
+ */
+export const ROLES_FROM_SECTION: Record<KpiSection, readonly KpiRole[]> = {
+  advisor: ['advisor'],
+  workshop: ['controller', 'parts'],
+};
+
 export interface SaRosterEntry {
   odooUserId: number;
   name: string;
+  /** Primary branch — where the person is listed. Still the only one for most people. */
   branch: string;
-  /** Which section this person is listed under. Absent means Service Advisor. */
+  /**
+   * Every branch this person works in, when that is more than one. The owner's
+   * decision: one user opens job cards and writes quotations in all five
+   * branches, and pinning him to one left four fifths of his work scoring a
+   * branch while appearing on nobody's card. Absent means `branch` alone.
+   */
+  branches?: string[];
+  /**
+   * What this person does. Absent falls back to `section` through
+   * ROLES_FROM_SECTION, so a roster saved before roles existed keeps working.
+   */
+  roles?: KpiRole[];
+  /** Legacy, superseded by `roles`. Absent means Service Advisor. */
   section?: KpiSection;
+  /**
+   * Never scored, while still counting at branch level. For OdooBot, the
+   * Administrator account and central staff whose work is not the branch's —
+   * procurement that buys consumables rather than parts, for instance. Listed
+   * rather than deleted so the exclusion is visible and reversible.
+   */
+  excluded?: boolean;
 }
+
+/** Every branch a roster entry covers. */
+export const rosterBranches = (e: SaRosterEntry): string[] =>
+  e.branches?.length ? e.branches : (e.branch ? [e.branch] : []);
+
+/** The roles a roster entry holds, falling back to its legacy section. */
+export const rosterRoles = (e: SaRosterEntry): KpiRole[] =>
+  e.roles?.length ? e.roles : [...ROLES_FROM_SECTION[e.section ?? 'advisor']];
 
 export interface KpiConfig {
   weekStartDay: number;                 // 6 = Saturday
