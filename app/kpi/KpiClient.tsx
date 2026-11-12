@@ -113,9 +113,19 @@ function KpiRow({ cell, delta, expandable = false }: {
           <span className="text-[13px] font-semibold truncate text-ink" title={cell.name}>
             {cell.name}
           </span>
-          {cell.snapshot && (
+          {/* Every KPI that has a note shows it, not only the snapshot pair. The
+              engine writes one for all 21; rendering it for two meant a person
+              asked to account for a score could not see how it was measured. */}
+          {(cell.note || cell.snapshot) && (
             <span className="text-ink-muted cursor-help text-[11px]"
               title={cell.note || 'Point-in-time: reflects open ROs right now, not the selected week.'}>ⓘ</span>
+          )}
+          {/* A visible badge, not just the hover: these two ignore the week
+              selector, and a hover tooltip survives neither a screenshot nor a
+              printout — which is how this number reaches most people. */}
+          {cell.snapshot && (
+            <span className="text-[10px] font-semibold text-ink-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0"
+              title="Point-in-time: reflects open ROs right now, not the selected week — not suitable for weekly scoring.">not this week</span>
           )}
           {lowVolume && (
             <span className="text-[10px] font-semibold text-ink-muted bg-surface border border-border rounded px-1.5 py-0.5 shrink-0"
@@ -555,6 +565,23 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
               <KpiSections cells={saNode.kpis} sections={saNode.sections} deltaFor={() => null} expandable />
             </>
+          )}
+
+          {/* The engine's caveats, which used to be computed and discarded. They
+              belong on the page, not in the server's return value: a figure
+              whose caveats cannot reach the person acting on it is not something
+              anyone can be held to. Never collapsed — that is how a caveat gets
+              skipped — and shown at every level, since the week and the
+              configuration they describe are the same at all three. */}
+          {tree.notes.length > 0 && (
+            <div className="bg-white rounded-lg shadow-sm p-5 mt-4">
+              <h2 className="text-sm font-semibold text-ink">How to read these numbers</h2>
+              <ul className="mt-3 space-y-1.5 list-disc pl-5 text-sm text-ink-soft">
+                {tree.notes.map((n, i) => (
+                  <li key={i}>{n}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </>
       )}

@@ -1854,7 +1854,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   );
 
   // Every retimed KPI repeats this, so no limit on the page can be read as wall-clock.
-  const CLOCK = 'Timed on the business clock: only Sat–Thu 09:00–18:00 Gulf counts, with Friday and public holidays excluded.';
+  // The holiday half is stated only when holidays are actually configured: with
+  // none entered the clock treats Eid as an ordinary working day, and promising
+  // otherwise on every timed KPI is the one place this page could mislead a
+  // fined person about why their limit ran out.
+  const CLOCK = holidays.length
+    ? 'Timed on the business clock: only Sat–Thu 09:00–18:00 Gulf counts, with Friday and the configured public holidays excluded.'
+    : 'Timed on the business clock: only Sat–Thu 09:00–18:00 Gulf counts, with Friday excluded. No public holidays are configured, so a holiday counts as an ordinary working day.';
 
   // KPI 6 states which method decided a vehicle is waiting on parts.
   const snapshotNotes: Record<number, string> = {
@@ -1868,14 +1874,28 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     17: `Time from being @mentioned to your next comment on that RO. Tagging several people is one request — whoever answers first settles it, and if nobody does it falls to the person tagged first. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. ${CLOCK}`,
     16: `Measured from the RO entering QA to the next state change; an RO still in QA past the limit counts against you. ${CLOCK}`,
     11: `Delivery is inferred from invoicing — measured from Repaired to the linked invoice being posted, on a longer timeline than Invoice on delivery. ${CLOCK}`,
-    18: `Measured from the quotation being approved to the last parts line being added, since Odoo records no separate "parts confirmed" moment. ROs with no parts lines are skipped — a job that needed no parts cannot be told from one whose parts were never ordered. ${CLOCK}`,
-    19: 'The share of this week\'s quotations the customer approved (confirmed into a sale order). Counted from quotations CREATED this week: Odoo records no reliable moment a quotation was sent. No time limit applies.',
-    20: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. The promise is a wall-clock date, so the business clock plays no part. ROs with no promised date are skipped.',
+    4: 'Checks that a quotation exists for the job before repair work starts. If the quotation\'s own dates cannot be read, the check falls back to existence alone, which is more generous than the rule.',
+    5: 'Checks whether the RO carries a tag now — not when the tag was added. Odoo records no timestamp of its own for a tag here, so one added late still reads as present. ROs younger than the limit are left out of the count, so the figure covers only ROs that have had their full window.',
+    8: 'A straight yes/no: does the RO carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site. No time limit of its own applies, but ROs younger than the Tag on creation limit are left out of the count alongside that KPI\'s. Inactive until CAR-IN / CAR-OUT tags are picked in Admin.',
+    9: 'ROs received this week that were also closed this week (closed ÷ received). A job opened on Thursday has little of the week left to close in, so this figure is structurally low — which is why it is shown for reference and left out of the overall achievement.',
+    18: 'Measured from the quotation being approved to a purchase order being raised against the vehicle — Odoo records no link from a purchase order back to a repair order, so the vehicle is the only way to see that an RFQ exists. Counted only for ROs still short of parts; ones with no vehicle set are skipped, because without one an RFQ cannot be seen either way. An RFQ raised before approval counts as early, not late. Timed in calendar days, not business hours.',
+    19: 'Measured from a purchase order being created to its Confirmation Date. Counted for every purchase order raised this week in a tracked company — purchase orders carry no link to a repair order, so this includes ones raised against historical job cards, against vehicles with no open job, and ones with no vehicle at all. Cancelled requests are left out, and so are confirmed ones carrying no confirmation date, since there is nothing to measure to. Timed in calendar days, not business hours.',
+    20: 'Measured from a purchase order\'s Confirmation Date to its Arrival date, judged against the whole job card\'s parts rather than this order\'s own lines — one job\'s parts routinely arrive across several orders, and the vehicle is only unblocked when the last of them is in. The job is matched through the vehicle: the newest job card already open when the order was confirmed. Orders with no such job card are skipped, and ones whose parts are complete but which carry no Arrival date are accepted as on time. Timed in calendar days, not business hours.',
+    21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
+    22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A date-only promise falls due as that day closes. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
     6: `Open ROs only, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
     7: snapshotNote,
   };
   if (SNAPSHOT_KPI_IDS.some(on)) {
     notes.push('KPIs 6 & 7 reflect the current state of open ROs, so they are the same regardless of the week selected.');
+  }
+
+  // While the holiday list is empty the business clock treats Eid like any other
+  // working day, and it is the tightest limits that this distorts most. Said out
+  // loud, because the alternative is a fine nobody can account for.
+  const CLOCK_TIMED_IDS = [1, 2, 11, 12, 14, 15, 16, 17];
+  if (!holidays.length && CLOCK_TIMED_IDS.some(on)) {
+    notes.push('No public holidays are configured, so a holiday counts as an ordinary working day and burns about nine business hours out of every limit it falls inside. At the current thresholds a single one-day holiday is enough on its own to fail Invoice on delivery, Check-in after RO and Chatter response. Enter the dates under Admin → KPI Configuration, one YYYY-MM-DD per line.');
   }
 
   // ── Roll up ────────────────────────────────────────────────────────
