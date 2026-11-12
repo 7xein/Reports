@@ -95,6 +95,67 @@ const MAP_HINTS: Partial<Record<MapKey, string>> = {
   closed: 'Anything NOT in these states counts as an open repair order.',
 };
 
+type Thresholds = KpiConfig['thresholds'];
+
+/**
+ * The threshold keys lib/types.ts marks optional. Only those may be DELETED when
+ * their box is emptied: the engine reads every limit as `thresholds.X ?? default`,
+ * so undefined — and nothing else, 0 least of all — is what brings the default back.
+ * A key the type declares required has no such fallback, so an empty box there is
+ * an error rather than an erasure. The mapped type makes that a compile-time claim:
+ * listing a required key below fails to type-check.
+ */
+type ClearableThresholdKey = {
+  [K in keyof Thresholds]-?: undefined extends Thresholds[K] ? K : never;
+}[keyof Thresholds];
+
+const CLEARABLE_THRESHOLDS: readonly ClearableThresholdKey[] = [
+  'checkInHours', 'quoteSentHours', 'quoteApprovalHours', 'invoiceHours', 'deliveryHours',
+  'mentionResponseHours', 'inspectionHours', 'qaHours',
+  'snapshotBaselineDays', 'rfqAfterApprovalDays', 'rfqConfirmDays', 'partsPlacedDays',
+  'followUpGraceDays', 'lowVolumeMin',
+];
+
+const isClearableThreshold = (k: keyof Thresholds): k is ClearableThresholdKey =>
+  (CLEARABLE_THRESHOLDS as readonly string[]).includes(k);
+
+/** Help text for a threshold whose unit or meaning the label alone cannot carry. */
+const THRESHOLD_HINTS: Partial<Record<keyof Thresholds, string>> = {
+  followUpGraceDays:
+    'Grace period, in calendar days after the vehicle is delivered, before the customer follow-up screenshot is expected. Without it the follow-up KPI judges a repair order the moment it is repaired.',
+};
+
+/** The only shape lib/business-hours.ts matches: zero-padded YYYY-MM-DD. */
+const HOLIDAY_FORMAT = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * True only for a date the holiday clock can actually skip. The format test alone
+ * would pass 2026-02-31, so the parts are round-tripped through UTC: an impossible
+ * day rolls over into the next month and comes back different from what was typed.
+ */
+function isUsableHoliday(line: string): boolean {
+  if (!HOLIDAY_FORMAT.test(line)) return false;
+  const [y, m, d] = line.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * Splits the holidays box into what the clock can use and what it cannot.
+ *
+ * Anything unmatched used to be saved verbatim and excluded from nothing, while
+ * Admin and the KPI page both promised holidays were skipped — and a single missed
+ * national holiday burns ~9 business hours, enough on its own to fail KPIs 1, 14
+ * and 17. Rejected lines are handed back rather than dropped, so they can be shown.
+ */
+function splitHolidays(text: string): { kept: string[]; rejected: string[] } {
+  const lines = text.split('\n').map((d) => d.trim()).filter(Boolean);
+  return {
+    kept: [...new Set(lines.filter(isUsableHoliday))].sort(),
+    rejected: [...new Set(lines.filter((l) => !isUsableHoliday(l)))],
+  };
+}
+
 export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) {
   const [cfg, setCfg] = useState<KpiConfig>(withKpiDefaults(initialConfig));
   const [opts, setOpts] = useState<OdooOptions | null>(null);
@@ -107,6 +168,17 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   const [holidayText, setHolidayText] = useState(
     (withKpiDefaults(initialConfig).publicHolidays ?? []).join('\n'),
   );
+  // Lines the clock could never match, surfaced next to the field instead of
+  // dropped in silence. Seeded from the stored config so junk saved before this
+  // check existed is visible too.
+  const [holidayRejects, setHolidayRejects] = useState<string[]>(
+    () => splitHolidays((withKpiDefaults(initialConfig).publicHolidays ?? []).join('\n')).rejected,
+  );
+  // Thresholds are edited as raw text for the same reason the holidays box is: the
+  // field must keep showing exactly what was typed, so a refused value can be
+  // explained instead of silently snapping back to the stored one.
+  const [thresholdText, setThresholdText] = useState<Partial<Record<string, string>>>({});
+  const [thresholdErrors, setThresholdErrors] = useState<Partial<Record<string, string>>>({});
   const [suggesting, setSuggesting] = useState(false);
   // null = no preview open. The preview is deliberately separate from cfg:
   // nothing reaches the roster until "Add selected to roster" is pressed.
@@ -261,13 +333,96 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
     setCfg((p) => ({ ...p, kpiSections: { ...(p.kpiSections ?? {}), [id]: section } }));
   }
 
+  /**
+   * Commits a threshold only when it is a whole number above zero.
+   *
+   * The old handler was `parseInt(e.target.value) || 0`, so an emptied box saved 0.
+   * The engine reads `thresholds.X ?? default` and 0 is not nullish, so the default
+   * never came back: the limit became zero, nothing could be inside it, and roughly
+   * fourteen KPIs marked everyone non-compliant — with no warning anywhere.
+   */
+  function setThreshold(k: keyof Thresholds, raw: string, badInput: boolean) {
+    setThresholdText((p) => ({ ...p, [k]: raw }));
+    const trimmed = raw.trim();
+    const fail = (why: string) => setThresholdErrors((p) => ({ ...p, [k]: why }));
+    const pass = () => setThresholdErrors((p) => {
+      const next = { ...p };
+      delete next[k];
+      return next;
+    });
+
+    // A number input reports '' for text it cannot parse at all ('-', 'e', '1..2').
+    // badInput separates that from a box the admin deliberately emptied.
+    if (trimmed === '' && badInput) {
+      fail('Enter a whole number above 0.');
+      return;
+    }
+    if (trimmed === '') {
+      if (!isClearableThreshold(k)) {
+        fail('This limit has no built-in default, so it cannot be left empty — enter a whole number above 0.');
+        return;
+      }
+      // Narrowed into a const: TypeScript drops a parameter's narrowing inside a
+      // callback, and only an optional key may be deleted.
+      const clearable: ClearableThresholdKey = k;
+      pass();
+      setCfg((p) => {
+        const thresholds = { ...p.thresholds };
+        delete thresholds[clearable];
+        return { ...p, thresholds };
+      });
+      return;
+    }
+    // Whole numbers only, and above zero: a zero limit fails everyone, and nothing
+    // downstream reads a fraction of an hour, a day or a minute.
+    if (!/^\d+$/.test(trimmed) || Number(trimmed) === 0) {
+      fail(
+        'Must be a whole number above 0.'
+        + (isClearableThreshold(k) ? ' Clear the box to use the built-in default.' : ''),
+      );
+      return;
+    }
+    pass();
+    setCfg((p) => ({ ...p, thresholds: { ...p.thresholds, [k]: Number(trimmed) } }));
+  }
+
+  /** One threshold box, its hint, and the reason its last value was refused. */
+  function thresholdField(k: keyof Thresholds, label: string) {
+    const error = thresholdErrors[k];
+    const hint = THRESHOLD_HINTS[k];
+    return (
+      <div key={k} className="flex flex-col gap-1 max-w-xs">
+        <label className="text-sm text-ink-muted flex items-center gap-2">
+          {label}
+          {/* No `?? 0` fallback: an unset optional threshold shows as an empty box,
+              which is exactly what it means — the engine's own default applies. */}
+          <input type="number" min="1" step="1" className={inputCls}
+            aria-invalid={!!error}
+            value={thresholdText[k] ?? cfg.thresholds[k] ?? ''}
+            onChange={(e) => setThreshold(k, e.target.value, e.target.validity.badInput)} />
+        </label>
+        {hint && <span className="text-xs text-ink-muted">{hint}</span>}
+        {error && <span className="text-xs text-danger">{error}</span>}
+      </div>
+    );
+  }
+
   async function save() {
+    // A refused threshold was never written into cfg, so saving now would quietly
+    // persist the previous value under a box showing something else. Stop instead.
+    const refused = Object.keys(thresholdErrors).filter((k) => thresholdErrors[k]);
+    if (refused.length > 0) {
+      setMessage(`Not saved — ${countLabel(refused.length, 'threshold', 'thresholds')} still rejected above. Fix or clear the highlighted boxes.`);
+      return;
+    }
     setSaving(true); setMessage('');
     try {
       const res = await fetch('/api/data', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'kpi-config', payload: cfg }),
+        // The holidays are re-validated here as well as on keystroke, so dates
+        // stored before this check existed cannot survive an untouched save.
+        body: JSON.stringify({ type: 'kpi-config', payload: { ...cfg, publicHolidays: splitHolidays(holidayText).kept } }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -388,13 +543,7 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['invoiceHours', 'Invoice posted after Repaired (business hrs)'],
           ['deliveryHours', 'Delivered after Repaired (business hrs)'],
           ['mentionResponseHours', 'Reply to a chatter mention (business hrs)'],
-        ] as const).map(([k, label]) => (
-          <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
-            {label}
-            <input type="number" min="0" className={inputCls} value={cfg.thresholds[k] ?? 0}
-              onChange={(e) => setCfg((p) => ({ ...p, thresholds: { ...p.thresholds, [k]: parseInt(e.target.value) || 0 } }))} />
-          </label>
-        ))}
+        ] as const).map(([k, label]) => thresholdField(k, label))}
       </div>
       <p className="text-xs text-ink-muted mb-2">Counted in calendar time, including Fridays and holidays.</p>
       <div className="flex flex-wrap gap-5 mb-6">
@@ -405,14 +554,9 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
           ['tagMinutes', 'Tag deadline (minutes)'],
           ['awaitingPartsDays', 'Awaiting parts (days)'],
           ['awaitingLabourDays', 'Awaiting labour (days)'],
+          ['followUpGraceDays', 'Follow-up grace after delivery (days)'],
           ['snapshotBaselineDays', 'Awaiting parts/labour compared against last N days'],
-        ] as const).map(([k, label]) => (
-          <label key={k} className="text-sm text-ink-muted flex items-center gap-2">
-            {label}
-            <input type="number" min="0" className={inputCls} value={cfg.thresholds[k] ?? 0}
-              onChange={(e) => setCfg((p) => ({ ...p, thresholds: { ...p.thresholds, [k]: parseInt(e.target.value) || 0 } }))} />
-          </label>
-        ))}
+        ] as const).map(([k, label]) => thresholdField(k, label))}
       </div>
 
       {/* 2a. How "Awaiting parts" is detected */}
@@ -456,7 +600,9 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
       {/* 2c. Public holidays */}
       <div className="text-sm font-bold text-ink mb-1">2c. Public holidays</div>
       <p className="text-xs text-ink-muted mb-2">
-        One date per line (YYYY-MM-DD). These days are skipped by every business-hours KPI, exactly like Fridays.
+        One date per line, zero-padded (YYYY-MM-DD). These days are skipped by every business-hours KPI,
+        exactly like Fridays. A line in any other shape is listed below the box and is not saved — the
+        clock matches nothing else, so it would be excluded from nothing.
       </p>
       <div className="mb-6">
         <label className="text-sm text-ink-muted flex flex-col gap-2">
@@ -468,11 +614,20 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             value={holidayText}
             onChange={(e) => {
               setHolidayText(e.target.value);
-              setCfg((p) => ({
-                ...p,
-                publicHolidays: e.target.value.split('\n').map((d) => d.trim()).filter(Boolean),
-              }));
+              // Only usable dates reach the config; the rest are reported, never
+              // auto-corrected — guessing 02/12/2026 is day-first or month-first
+              // would move a holiday rather than flag it.
+              const { kept, rejected } = splitHolidays(e.target.value);
+              setHolidayRejects(rejected);
+              setCfg((p) => ({ ...p, publicHolidays: kept }));
             }} />
+          {holidayRejects.length > 0 && (
+            <span className="text-xs text-danger">
+              Not saved — expected YYYY-MM-DD, zero-padded and a real calendar date
+              (2026-12-02, not 2026-12-2 or 02/12/2026):{' '}
+              {holidayRejects.join(', ')}
+            </span>
+          )}
         </label>
       </div>
 

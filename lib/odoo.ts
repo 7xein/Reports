@@ -1114,10 +1114,18 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   cachedUid = null;
   companyIdCache = null;
 
+  // `store` and `readonly` are requested so the report below can tell a real
+  // database column from a computed, non-stored field. Odoo's button-visibility
+  // fields (the `repair_is_*` "Access" family) are computed per reading user, so
+  // a KPI that filters on one is filtering on permissions, not on the record.
   const meta = (await call('repair.order', 'fields_get', [], {
-    attributes: ['string', 'type', 'relation', 'selection'],
-  })) as Record<string, { string?: string; type?: string; relation?: string; selection?: [string, string][] }>;
+    attributes: ['string', 'type', 'relation', 'selection', 'store', 'readonly'],
+  })) as Record<string, { string?: string; type?: string; relation?: string; selection?: [string, string][]; store?: boolean; readonly?: boolean }>;
   const has = (f: string) => Object.prototype.hasOwnProperty.call(meta, f);
+  // Whether this Odoo answered the `store` question at all. Checked once, across
+  // every field, so the report can distinguish "nothing is computed" from "we
+  // could not tell" — two readings that look identical field by field.
+  const storeReported = Object.values(meta).some((m) => typeof m.store === 'boolean');
 
   const notes: string[] = [];
 
@@ -1285,10 +1293,23 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
       .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''} [${m.type}]`);
     notes.push(`Fields mentioning historical/archive/legacy: ${flagged.join(' · ') || '(none)'}`);
 
+    // Annotate only the unusual ones (computed and/or readonly) so they stand out
+    // in a long plain-text list; a stored writable boolean needs no tag.
     const booleans = Object.entries(meta)
       .filter(([, m]) => m.type === 'boolean')
-      .map(([n, m]) => `${n}${m.string ? ` (${m.string})` : ''}`);
-    notes.push(`Boolean fields on repair.order: ${booleans.join(' · ') || '(none)'}`);
+      .map(([n, m]) => {
+        const tags: string[] = [];
+        if (m.store === false) tags.push('computed');
+        if (m.readonly) tags.push('readonly');
+        return `${n}${m.string ? ` (${m.string})` : ''}${tags.length ? ` [${tags.join(', ')}]` : ''}`;
+      });
+    // Said once rather than tagged on every field: if this Odoo omits `store`
+    // altogether, the absence of a [computed] tag means nothing, and a reader
+    // would otherwise take silence for a clean bill of health.
+    const legend = storeReported
+      ? 'unannotated fields are stored and writable; [computed] means non-stored (derived per reading user)'
+      : '⚠ this Odoo did not report the "store" attribute, so computed fields could NOT be identified here and the absence of a [computed] tag proves nothing';
+    notes.push(`Boolean fields on repair.order: ${booleans.join(' · ') || '(none)'} — ${legend}.`);
 
     // Archiving would already hide them from us, so a difference here rules it in
     // or out immediately.
@@ -1350,8 +1371,33 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     } catch { notes.push('Could not count ROs carrying a follow-up screenshot.'); }
   }
 
-  notes.push(`Customer follow-up field: ${followUpField ?? 'NOT FOUND on repair.order'}`
-    + `; QA-eligibility flag: ${has('repair_is_qa') ? 'repair_is_qa' : 'not present (all repaired ROs will be counted)'}`);
+  // A non-stored field has no column: Odoo recomputes it for whoever reads it, so
+  // for the `repair_is_*` "Access" family the value is the integration user's
+  // button permission, not a fact about this repair order. KPI 13 filters its
+  // population on repair_is_qa, so if that field is computed the population is
+  // "everything" or "nothing" depending on our login — and advisors get fined on it.
+  // Three states, not two. `store === undefined` means this Odoo did not answer
+  // the question, which is not the same as "stored" — and reporting the
+  // comforting reading of an unanswered question is the exact habit this whole
+  // diagnostic exists to break.
+  const storageOf = (f: string) => {
+    const s = meta[f]?.store;
+    return s === false ? 'computed (NOT stored)' : s === true ? 'stored' : 'storage UNKNOWN — Odoo did not report it';
+  };
+  notes.push(`Customer follow-up field: ${followUpField ? `${followUpField} — ${storageOf(followUpField)}` : 'NOT FOUND on repair.order'}`
+    + `; QA-eligibility flag: ${has('repair_is_qa') ? `repair_is_qa — ${storageOf('repair_is_qa')}` : 'not present (all repaired ROs will be counted)'}`);
+  if (has('repair_is_qa') && meta.repair_is_qa?.store === false) {
+    notes.push("⚠ repair_is_qa is computed, not stored — it is a button-access field, so it reflects whether the user we log in as may press QA, not whether this repair order was ever QA'd. KPI 13's population is therefore governed by our permissions and will include either every RO or none of them. Do not score KPI 13 until it filters on a stored field that records the QA step.");
+  }
+  if (followUpField && meta[followUpField]?.store === false) {
+    notes.push(`⚠ ${followUpField} is computed, not stored — its value is derived for the reading user rather than saved on the record, so the follow-up screenshot check cannot be trusted either. KPI 13 should not be scored until it reads a stored field.`);
+  }
+  // An unanswered question is not a clean answer: without `store` we cannot tell
+  // a real column from a button-permission field, so the question stays open
+  // rather than being quietly resolved in KPI 13's favour.
+  if (has('repair_is_qa') && !storeReported) {
+    notes.push('⚠ Could not determine whether repair_is_qa is a stored field or a computed button-access one, because this Odoo did not report the "store" attribute. Until that is checked directly in Odoo (Settings → Technical → Fields → repair.order → repair_is_qa), treat KPI 13 as unverified: if the field is computed it reflects our login\'s permissions rather than anything the advisor did.');
+  }
 
   // Explicit stage timestamps, if the workflow writes any. These beat the chatter
   // outright — they survive without tracking and cannot be lost to a field remap.

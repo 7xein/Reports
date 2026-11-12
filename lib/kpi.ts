@@ -11,7 +11,7 @@
 
 import {
   KPI_BRANCHES, Branch, KPI_DEFINITIONS, KpiConfig, StageSelector, SNAPSHOT_KPI_IDS, EXCLUDED_FROM_OVERALL, kpiDisplayName,
-  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField,
+  KpiWeekSummary, KpiSection, KPI_SECTION_ORDER, KPI_IDS_FOR_EVERYONE, sectionOf, resolveAgeField, DEFAULT_KPI_CONFIG,
 } from './types';
 import { call, kpiCompanyIds, mainCompanyIdFor, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
@@ -185,9 +185,14 @@ export function selectorDomainNot(sel: StageSelector): OdooDomain {
  * When each invoice was actually posted. Preferred source is the account.move
  * chatter (exact timestamp); falls back to invoice_date for moves whose posting
  * wasn't tracked. Unposted moves are omitted.
+ *
+ * `failed` separates "this move is not posted yet" from "we could not find out".
+ * The caller reads a missing entry as still-uninvoiced and eventually overdue, so
+ * without the flag one failed RPC would report every repaired vehicle as never
+ * invoiced and fine the whole branch for it.
  */
-async function invoicePostedTimes(moveIds: number[]): Promise<Record<number, number>> {
-  if (!moveIds.length) return {};
+async function invoicePostedTimes(moveIds: number[]): Promise<{ posted: Record<number, number>; failed: boolean }> {
+  if (!moveIds.length) return { posted: {}, failed: false };
   const out: Record<number, number> = {};
   try {
     const mm = (await call('account.move', 'fields_get', [], { attributes: ['selection'] })) as FieldsMeta;
@@ -199,9 +204,10 @@ async function invoicePostedTimes(moveIds: number[]): Promise<Record<number, num
         ['tracking_value_ids', '!=', false],
       ], 'state', [postedLabel]));
     }
-  } catch { /* chatter unavailable — fall back below */ }
+  } catch { /* chatter unavailable — the read below covers every move instead, so this alone is not a failure */ }
 
   const missing = moveIds.filter((id) => out[id] == null);
+  let failed = false;
   if (missing.length) {
     try {
       const moves = (await call('account.move', 'read', [missing], {
@@ -213,9 +219,13 @@ async function invoicePostedTimes(moveIds: number[]): Promise<Record<number, num
         const t = Number.isNaN(d) ? odooTime(m.create_date) : d;
         if (t != null) out[m.id as number] = t;
       }
-    } catch { /* ignore */ }
+    } catch {
+      // This read is the only thing that can tell an unposted move from an
+      // unreadable one, so losing it makes every move it covered unknowable.
+      failed = true;
+    }
   }
-  return out;
+  return { posted: out, failed };
 }
 
 /**
@@ -223,8 +233,12 @@ async function invoicePostedTimes(moveIds: number[]): Promise<Record<number, num
  *
  * Two link shapes exist depending on the Odoo version: a direct invoice_id on the
  * repair order, and the sale order's invoice_ids. Both are followed.
+ *
+ * `failed` means the lookup itself broke, not that nothing was invoiced — see
+ * invoicePostedTimes. A failed lookup leaves KPIs 1 and 11 unjudged rather than
+ * scoring every repaired RO as uninvoiced.
  */
-async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
+async function invoiceTimesForRos(ros: Rec[]): Promise<{ times: Record<number, number>; failed: boolean }> {
   const roMoves: Record<number, number[]> = {};
   for (const r of ros) {
     const direct = m2o(r.invoice_id)?.[0];
@@ -233,11 +247,17 @@ async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
 
   const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
   const soToMoves: Record<number, number[]> = {};
+  let soFailed = false;
   if (soIds.length) {
     try {
       const sos = (await call('sale.order', 'read', [soIds], { fields: ['invoice_ids'] })) as { id: number; invoice_ids?: number[] }[];
       for (const so of sos) soToMoves[so.id] = so.invoice_ids ?? [];
-    } catch { /* direct links may still carry us */ }
+    } catch {
+      // On this instance the sale order carries the closing invoice, so losing
+      // this read hides most invoices outright — "no invoice found" would then
+      // mean nothing more than "we did not look".
+      soFailed = true;
+    }
   }
   for (const r of ros) {
     const soId = m2o(r.sale_order_id)?.[0];
@@ -246,13 +266,13 @@ async function invoiceTimesForRos(ros: Rec[]): Promise<Record<number, number>> {
     if (ids.size) roMoves[r.id as number] = [...ids];
   }
 
-  const posted = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
+  const { posted, failed } = await invoicePostedTimes([...new Set(Object.values(roMoves).flat())]);
   const out: Record<number, number> = {};
   for (const [roId, moves] of Object.entries(roMoves)) {
     const times = moves.map((id) => posted[id]).filter((t): t is number => t != null);
     if (times.length) out[Number(roId)] = Math.min(...times);
   }
-  return out;
+  return { times: out, failed: soFailed || failed };
 }
 
 // ── Engine ─────────────────────────────────────────────────────────
@@ -653,6 +673,18 @@ export async function readFieldsMeta(model: string): Promise<FieldsMeta | null> 
   }
 }
 
+/**
+ * Grace after an RO is marked Repaired before Customer follow-up (KPI 13) judges
+ * it. Calendar days, not business hours: it is a window on the customer being
+ * called back, not a working-time limit, and it passes over a weekend too.
+ *
+ * Deliberately NOT in DEFAULT_KPI_CONFIG. withKpiDefaults() fills every key it
+ * holds, so putting it there would make the stored value impossible to tell
+ * apart from an unset one — and the page needs to be able to say "nobody has set
+ * this yet, here is what is being used instead".
+ */
+const FOLLOW_UP_GRACE_DEFAULT_DAYS = 1;
+
 export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): Promise<KpiTree> {
   const notes: string[] = [];
   const start = weekStartFor(weekStartIso, config.weekStartDay ?? 6);
@@ -664,6 +696,65 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   const holidays = config.publicHolidays ?? [];
   /** Elapsed time as the appendix counts it: working hours only. */
   const elapsed = (from: number, to: number) => businessMsBetween(from, to, holidays);
+
+  // ── Thresholds, defended against a non-positive stored value ──────
+  //
+  // Admin saves `parseInt(e.target.value) || 0`, so clearing a threshold box
+  // stores `0`. Every read below is `?? default`, and `0` is not nullish, so the
+  // default never applies: the limit becomes zero, nothing can be inside it, and
+  // one empty field fines everyone on roughly fourteen KPIs. Admin is being
+  // stopped from saving it, but configs already in Redis may hold one today, so
+  // the engine refuses to treat it as a limit.
+  //
+  // The replacement value comes from DEFAULT_KPI_CONFIG, not from the `?? N` at
+  // each read. withKpiDefaults() builds thresholds as
+  // `{ ...DEFAULT_KPI_CONFIG.thresholds, ...stored }`, so no key ever reaches the
+  // engine absent and those `?? N` fallbacks are unreachable — DEFAULT_KPI_CONFIG
+  // is the only default with any effect. Copying the numbers here by hand is how
+  // awaitingPartsDays came to read 14 at the read and 21 in the shipped config;
+  // sourcing them means the limit, the label and the config can no longer drift.
+  // `def` is used only for a key DEFAULT_KPI_CONFIG does not carry.
+  const limitLabel = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  const THRESHOLD_RULES: { key: keyof KpiConfig['thresholds']; def?: number; label: string; unit: string }[] = [
+    { key: 'invoiceHours',          label: 'Invoice on delivery',       unit: 'business hr' },
+    { key: 'deliveryHours',         label: 'Delivered after repair',    unit: 'business hr' },
+    { key: 'quoteApprovalHours',    label: 'Quote approval',            unit: 'business hr' },
+    { key: 'quoteSentHours',        label: 'Quote sent to customer',    unit: 'business hr' },
+    { key: 'checkInHours',          label: 'Check-in after RO',         unit: 'business hr' },
+    { key: 'inspectionHours',       label: 'Inspection duration',       unit: 'business hr' },
+    { key: 'qaHours',               label: 'QA duration',               unit: 'business hr' },
+    { key: 'mentionResponseHours',  label: 'Chatter response',          unit: 'business hr' },
+    { key: 'tagMinutes',            label: 'Tag on creation',           unit: 'minute' },
+    { key: 'awaitingPartsDays',     label: 'Awaiting parts',            unit: 'day' },
+    { key: 'awaitingLabourDays',    label: 'Awaiting labour',           unit: 'day' },
+    { key: 'rfqAfterApprovalDays',  label: 'RFQ after approval',        unit: 'day' },
+    { key: 'rfqConfirmDays',        label: 'RFQ confirmed',             unit: 'day' },
+    { key: 'partsPlacedDays',       label: 'Parts placed',              unit: 'day' },
+    { key: 'snapshotBaselineDays',  label: 'Awaiting parts / labour baseline window', unit: 'day' },
+    // The one key DEFAULT_KPI_CONFIG deliberately omits, so that "absent" can
+    // still mean "nobody has set it" once Admin offers the field.
+    { key: 'followUpGraceDays',     def: FOLLOW_UP_GRACE_DEFAULT_DAYS, label: 'Customer follow-up grace', unit: 'day' },
+  ];
+  const thresholds = { ...config.thresholds };
+  const replacedLimits: string[] = [];
+  for (const { key, def, label, unit } of THRESHOLD_RULES) {
+    const v = thresholds[key];
+    // Absent is honest — it means "never configured", and the default applies as
+    // it always did. Only a stored value that cannot be a limit is replaced.
+    if (v == null) continue;
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) continue;
+    // Guarded rather than trusted: a non-positive value shipped in
+    // DEFAULT_KPI_CONFIG would otherwise be copied straight back in.
+    const shipped = DEFAULT_KPI_CONFIG.thresholds[key];
+    const fallback = typeof shipped === 'number' && Number.isFinite(shipped) && shipped > 0 ? shipped : def;
+    if (fallback == null) continue;   // no default anywhere to fall back to
+    thresholds[key] = fallback;
+    replacedLimits.push(`${label} → ${limitLabel(fallback, unit)}`);
+  }
+  if (replacedLimits.length) {
+    notes.push(`${replacedLimits.length} saved threshold${replacedLimits.length === 1 ? ' was' : 's were'} zero or not a positive number, which no record can be inside, so the standard limit was used instead: ${replacedLimits.join(', ')}. Set a positive limit under Admin → KPI Configuration if a different one is intended.`);
+  }
+  // From here on every limit comes from `thresholds`, never `config.thresholds`.
 
   // Every Odoo domain below filters on these, so the whole engine is narrowed to
   // the five UAE main branches here and nowhere else. Stations, Qatar and EV Hub
@@ -706,10 +797,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     create_date: 'age of the repair order',
     write_date: 'time since last modification — any edit resets this clock',
   };
-  const baselineDaysNote = config.thresholds.snapshotBaselineDays ?? 90;
+  const baselineDaysNote = thresholds.snapshotBaselineDays ?? 90;
   let snapshotNote = `Scored against open ROs created in the last ${baselineDaysNote} days (closed work is excluded); a vehicle counts against you if it is stuck beyond the limit right now. Ageing measured by ${AGE_LABEL[ageField] ?? ageField}.`;
   let usedTrackingForAging = false;
   let awaitingPartsMethod = 'outstanding parts lines (Done qty below Demand)';
+  // Resolved here, not inside KPI 13's block, so the limit the KPI applies and
+  // the limit its ⓘ tooltip states are the same number by construction.
+  const followUpGraceDays = thresholds.followUpGraceDays ?? FOLLOW_UP_GRACE_DEFAULT_DAYS;
   if (ageField === 'write_date') {
     notes.push('KPIs 6 & 7 are measured from write_date — any edit resets the clock, so violations may be undercounted.');
   }
@@ -819,6 +913,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     if (on(13) && !followUpField) {
       notes.push('Customer follow-up is inactive — no follow-up screenshot field found on repair.order.');
     }
+    // The guard above is the whole fairness basis of KPI 13, and it used to
+    // evaporate: with the flag absent, `eligible` fell back to every repaired RO
+    // — scoring exactly the records whose screenshot box Odoo would not unlock.
+    // A missing flag now costs the KPI, not the advisors.
+    if (on(13) && followUpField && !qaFlagField) {
+      notes.push('Customer follow-up was skipped: repair.order carries no repair_is_qa flag on this instance, so the repair orders Odoo would actually let an advisor upload the screenshot on cannot be identified. Judging the rest would mark advisors down for a box Odoo never let them fill.');
+    }
     roFields.push(...histField);   // the chatter branch below reads by id, past any domain
     const roCtx = { bin_size: true };
     const tfRepaired = trackedField(config.stageMap.repaired, meta, stageNames);
@@ -844,7 +945,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     }
 
-    const invoicedAt = (on(1) || on(11)) ? await invoiceTimesForRos(repaired) : {};
+    const invoices = (on(1) || on(11))
+      ? await invoiceTimesForRos(repaired)
+      : { times: {} as Record<number, number>, failed: false };
+    const invoicedAt = invoices.times;
 
     /** Judge repaired → invoice-posted against a time limit. */
     const judgeInvoiceTiming = (kpiId: number, limitMs: number) => {
@@ -861,21 +965,55 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       }
     };
 
-    if (on(1)) judgeInvoiceTiming(1, businessHours(config.thresholds.invoiceHours ?? 1));
-    if (on(11)) judgeInvoiceTiming(11, businessHours(config.thresholds.deliveryHours ?? 48));
+    // A lookup that failed is not an invoice that was never posted. With an empty
+    // map every repaired RO looks uninvoiced and the clause above fails each one
+    // past the limit — at a one-business-hour limit, effectively all of them. So
+    // neither KPI is judged at all until the invoices can be read.
+    if (invoices.failed) {
+      notes.push('Invoice on delivery and Delivered after repair were not scored this week: the linked invoices could not be read from Odoo, so an unposted invoice cannot be told apart from one we failed to fetch. Both KPIs are left out rather than counting every repaired vehicle as never invoiced.');
+    } else {
+      if (on(1)) judgeInvoiceTiming(1, businessHours(thresholds.invoiceHours ?? 1));
+      if (on(11)) judgeInvoiceTiming(11, businessHours(thresholds.deliveryHours ?? 48));
+    }
 
     // Follow-up is the one KPI here that is not a stopwatch: a vehicle either has
-    // the screenshot or it does not. No timestamp is involved, so it survives the
-    // chatter fallback.
+    // the screenshot or it does not.
     //
     // Scope matters more than timing here. Odoo makes follow_up_screenshot
     // read-only unless repair_is_qa is set, so an RO that never went through QA
     // CANNOT carry one. Judging those would mark advisors down for a box Odoo
-    // never let them fill.
-    if (on(13) && followUpField) {
-      const eligible = qaFlagField ? repaired.filter((r) => !!r[qaFlagField]) : repaired;
-      for (const r of eligible) push(13, r, !!r[followUpField], (r.name as string) || '');
-      if (qaFlagField && repaired.length && !eligible.length) {
+    // never let them fill — so without the flag the KPI is skipped outright
+    // (noted where the flag is resolved, above) rather than widened to everyone.
+    //
+    // It is not instantaneous either. The advisor is owed a grace period in which
+    // to call the customer back and upload the proof; without one, a car repaired
+    // ten minutes before the page loads was already a named violation with its RO
+    // number against it.
+    if (on(13) && followUpField && qaFlagField) {
+      // Calendar days, not business hours: the grace is a window on the customer
+      // being called back, and it runs over a weekend too.
+      const graceMs = followUpGraceDays * 86400_000;
+      const eligible = repaired.filter((r) => !!r[qaFlagField]);
+      let insideGrace = 0, noRepairedAt = 0;
+      for (const r of eligible) {
+        const rep = deliveredAt[r.id as number];
+        // Without the Repaired moment there is no way to know the grace has run
+        // out. The job card's own create_date would say it always has — the same
+        // ambiguity-resolved-as-a-fine this engine no longer accepts anywhere.
+        if (rep == null) { noRepairedAt++; continue; }
+        if (now - rep < graceMs) { insideGrace++; continue; }
+        push(13, r, !!r[followUpField], (r.name as string) || '');
+      }
+      if (thresholds.followUpGraceDays == null) {
+        notes.push(`Customer follow-up has no grace period configured, so ${limitLabel(FOLLOW_UP_GRACE_DEFAULT_DAYS, 'day')} is being used: a repaired RO is only judged once that long has passed since it was marked Repaired. Set the follow-up grace under Admin → KPI Configuration to change it.`);
+      }
+      if (insideGrace) {
+        notes.push(`Customer follow-up left ${insideGrace} repaired RO${insideGrace === 1 ? '' : 's'} unjudged, still inside the ${limitLabel(followUpGraceDays, 'day')} grace period — the follow-up is not due on them yet.`);
+      }
+      if (noRepairedAt) {
+        notes.push(`Customer follow-up left ${noRepairedAt} QA-flagged RO${noRepairedAt === 1 ? '' : 's'} unjudged with no Repaired timestamp in the chatter — without it the grace period cannot be measured, and nothing here will stand in for it.`);
+      }
+      if (repaired.length && !eligible.length) {
         notes.push(`None of this week's ${repaired.length} repaired ROs were flagged for QA, so the follow-up screenshot could not be uploaded on any of them.`);
       }
     }
@@ -943,6 +1081,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const soIds = [...new Set(inRepair.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
     const soCreated: Record<number, number> = {};
     const soApproved: Record<number, number> = {};
+    // "We could not read the quotations" is a different fact from "the quotation
+    // was never approved", and the two used to be indistinguishable here: an empty
+    // soApproved failed every quoted RO on KPI 3, while an empty soCreated passed
+    // every one of them on KPI 4. One lost RPC, a branch fined on one KPI and paid
+    // an undeserved incentive on the other.
+    let quotationsUnreadable = false;
     if (soIds.length) {
       try {
         const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date', 'date_order', 'state'] })) as Rec[];
@@ -954,7 +1098,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             if (a != null) soApproved[so.id as number] = a;
           }
         }
-      } catch { /* fall back to existence-only below */ }
+      } catch { quotationsUnreadable = true; }
     }
 
     let sequenceChecked = 0;
@@ -962,10 +1106,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       const ref = (r.name as string) || '';
       const soId = m2o(r.sale_order_id)?.[0] ?? null;
       const startedAt = entered[r.id as number];
+      // An RO with no quotation linked at all is still judged: that verdict comes
+      // from the repair order, which was read fine. Only the ones whose quotation
+      // we failed to read go unjudged, counted for the note below.
+      const unreadable = soId != null && quotationsUnreadable;
 
       if (on(4)) {
         if (soId == null) push(4, r, false, ref);              // no quote at all
-        else {
+        else if (!unreadable) {
           const quotedAt = soCreated[soId];
           if (startedAt != null && quotedAt != null) {
             sequenceChecked++;
@@ -980,7 +1128,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         // The quotation must have been APPROVED (confirmed into a sale order)
         // before the RO moved into Under Repair.
         if (soId == null) push(3, r, false, ref);
-        else {
+        else if (!unreadable) {
           const approvedAt = soApproved[soId];
           if (approvedAt == null) push(3, r, false, ref);       // never approved
           else if (startedAt != null) push(3, r, approvedAt <= startedAt, ref);
@@ -988,10 +1136,20 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       }
     }
-    if (inRepair.length && sequenceChecked === 0) {
+    if (quotationsUnreadable) {
+      const skipped = inRepair.filter((r) => m2o(r.sale_order_id)?.[0] != null).length;
+      notes.push(`SO before repaired and Quote before starting repair left ${skipped} repair order${skipped === 1 ? '' : 's'} unjudged — their quotations could not be read from Odoo, so an unapproved quotation cannot be told apart from one we failed to fetch. Repair orders with no quotation linked at all are still counted.`);
+    }
+    // Guarded on the read having worked: with the quotations unreadable nothing
+    // could be sequence-checked for that reason alone, and blaming the chatter
+    // for it would send the admin to fix the wrong thing.
+    if (inRepair.length && sequenceChecked === 0 && !quotationsUnreadable) {
+      // The two KPIs fail in opposite directions without a start timestamp, and
+      // saying they "only check that a quotation exists" was true of KPI 4 and
+      // false of KPI 3, which still hard-fails anything unapproved.
       notes.push(tf
-        ? `No "${tf.labels.join('/')}" transitions found on ${tf.field} in the chatter, so the quotation KPIs only check that a quotation exists rather than that it came first.`
-        : 'Under repair is not mapped, so the quotation KPIs only check that a quotation exists.');
+        ? `No "${tf.labels.join('/')}" transitions found on ${tf.field} in the chatter, so neither quotation KPI could check the sequence. Quote before starting repair then passes any RO that has a quotation at all, which is more generous than its rule; SO before repaired still fails any RO whose quotation was never approved, which is stricter than its rule.`
+        : 'Under repair is not mapped, so neither quotation KPI could check the sequence. Quote before starting repair passes any RO that has a quotation at all, which is more generous than its rule; SO before repaired still fails any RO whose quotation was never approved, which is stricter than its rule.');
     }
   }
 
@@ -1003,7 +1161,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
       fields: ['name', 'create_uid', 'company_id', 'create_date', ...tagFields], limit: 0,
     })) as Rec[];
-    const graceMs = (config.thresholds.tagMinutes ?? 60) * 60_000;
+    const graceMs = (thresholds.tagMinutes ?? 60) * 60_000;
 
     // Tags that mark the vehicle in/out (KPI 8), resolved per field.
     const presence = on(8)
@@ -1035,7 +1193,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // ── KPI 2 — quotation approval within the configured business hours ──
   if (on(2)) {
-    const limitMs = businessHours(config.thresholds.quoteApprovalHours ?? 48);
+    const limitMs = businessHours(thresholds.quoteApprovalHours ?? 48);
     // (a) Still-open quotations: compliant while they're inside the window.
     const open = (await call('sale.order', 'search_read', [[
       ['state', 'in', ['draft', 'sent']],
@@ -1199,7 +1357,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
   // KPI 14 — check-in is complete when the RO reaches Inspection.
   if (on(14) && tfInspection) {
-    const limitMs = businessHours(config.thresholds.checkInHours ?? 3);
+    const limitMs = businessHours(thresholds.checkInHours ?? 3);
     const weekROs = (await call('repair.order', 'search_read', [weekDomain], {
       fields: ['name', 'create_uid', 'company_id', 'create_date'], limit: 0,
     })) as Rec[];
@@ -1250,6 +1408,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
       const soIds = [...new Set(ros.map((r) => m2o(r.sale_order_id)?.[0]).filter((x): x is number => x != null))];
       const soCreated: Record<number, number> = {};
+      let quotesUnreadable = false;
       if (soIds.length) {
         try {
           const sos = (await call('sale.order', 'read', [soIds], { fields: ['create_date'] })) as Rec[];
@@ -1257,7 +1416,12 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             const t = odooTime(so.create_date);
             if (t != null) soCreated[so.id as number] = t;
           }
-        } catch { /* unreadable — the tri-state below still catches overruns */ }
+        } catch {
+          // The tri-state below does NOT catch this — it reads a missing entry as
+          // "still unquoted" and fails everything past the limit. An unreadable
+          // read has to be tracked separately or one lost RPC fails both KPIs.
+          quotesUnreadable = true;
+        }
       }
 
       const judgeQuoteTiming = (kpiId: number, limitMs: number) => {
@@ -1266,6 +1430,10 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
           if (from == null) continue;
           const ref = (r.name as string) || '';
           const soId = m2o(r.sale_order_id)?.[0] ?? null;
+          // A quotation we could not read is not a quotation that was never
+          // raised. An RO with no quotation linked at all is still judged — that
+          // fact came from the repair order, which read fine.
+          if (soId != null && quotesUnreadable) continue;
           const quotedAt = soId != null ? soCreated[soId] : undefined;
           if (quotedAt != null) push(kpiId, r, elapsed(from, quotedAt) <= limitMs, ref);
           // The unquoted clock runs on business time as well — otherwise the
@@ -1274,14 +1442,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         }
       };
 
-      if (on(15)) judgeQuoteTiming(15, businessHours(config.thresholds.inspectionHours ?? 27));
-      if (on(12)) judgeQuoteTiming(12, businessHours(config.thresholds.quoteSentHours ?? 4));
+      if (on(15)) judgeQuoteTiming(15, businessHours(thresholds.inspectionHours ?? 27));
+      if (on(12)) judgeQuoteTiming(12, businessHours(thresholds.quoteSentHours ?? 4));
+      if (quotesUnreadable) {
+        const skipped = ros.filter((r) => m2o(r.sale_order_id)?.[0] != null).length;
+        notes.push(`Inspection duration and Quote sent to customer left ${skipped} repair order${skipped === 1 ? '' : 's'} unjudged — their quotations could not be read from Odoo, so an RO still waiting for a quote cannot be told apart from one whose quote we failed to fetch. Repair orders with no quotation linked at all are still counted.`);
+      }
     }
   }
 
   // KPI 16 — how long the RO actually sat in QA.
   if (on(16) && tfQa) {
-    const limitMs = businessHours(config.thresholds.qaHours ?? 9);
+    const limitMs = businessHours(thresholds.qaHours ?? 9);
     const entered = await roIdsEnteringStateInWindow(tfQa.field, tfQa.labels, wStart, wEnd);
     const ids = Object.keys(entered).map(Number);
     if (!ids.length) {
@@ -1338,7 +1510,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
       // ── KPI 18 — RFQ raised within N days of the quotation being approved ──
       if (on(18)) {
-        const limitMs = (config.thresholds.rfqAfterApprovalDays ?? 1) * 86400_000;
+        const limitMs = (thresholds.rfqAfterApprovalDays ?? 1) * 86400_000;
         if (!has('is_parts_available')) {
           // Without the flag every approved quotation looks like it needed parts,
           // so the KPI would charge branches for RFQs they never had to raise.
@@ -1455,7 +1627,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         if (!poHas('date_approve')) {
           notes.push('purchase.order has no Confirmation Date (date_approve), so RFQ confirmed (KPI 19) was skipped.');
         } else {
-          const limitMs = (config.thresholds.rfqConfirmDays ?? 1) * 86400_000;
+          const limitMs = (thresholds.rfqConfirmDays ?? 1) * 86400_000;
           let raised: Rec[] = [];
           try {
             // Cancelled RFQs are out of the population: a withdrawn request was
@@ -1499,7 +1671,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
         } else if (!parts) {
           notes.push('Parts placed (KPI 20) could not read the parts lines (Demand/Done), so receipt could not be judged.');
         } else {
-          const limitMs = (config.thresholds.partsPlacedDays ?? 21) * 86400_000;
+          const limitMs = (thresholds.partsPlacedDays ?? 21) * 86400_000;
           const poFields = ['name', 'create_uid', 'company_id', 'fleet_id', 'date_approve'];
           if (poHas('effective_date')) poFields.push('effective_date');
           let confirmedPos: Rec[] = [];
@@ -1611,7 +1783,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
   // Without that second rule the thread never closes: every courteous reply
   // starts a new clock and whoever speaks last always fails.
   if (on(17)) {
-    const limitMs = businessHours(config.thresholds.mentionResponseHours ?? 1);
+    const limitMs = businessHours(thresholds.mentionResponseHours ?? 1);
     const weekFrom = Date.parse(wStart.replace(' ', 'T') + 'Z');
     const weekTo = Date.parse(wEnd.replace(' ', 'T') + 'Z');
 
@@ -1663,10 +1835,60 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             if (list) list.push(m); else byRo.set(rid, [m]);
           }
 
+          // Partner → user, resolved BEFORE anyone is judged.
+          //
+          // partner_ids is just "who was notified", and Odoo's Send message puts
+          // the CUSTOMER's partner on it. A customer never comments in the
+          // chatter, so after one business hour they handed the branch a
+          // non-compliance — and because a customer has no user record the fine
+          // landed on no advisor at all and could not be audited from the page.
+          // Only partners with a user record can be asked to answer, so the
+          // mapping has to exist before the candidate lists are built, not
+          // afterwards for the display name.
+          const touched = new Set<number>();
+          for (const m of thread) {
+            const a = m2o(m.author_id)?.[0];
+            if (a != null) touched.add(a);
+            for (const pid of (m[recipientField] as number[] | undefined) ?? []) touched.add(pid);
+          }
+          const partnerIds = [...touched];
+          const names: Record<number, string> = {};
+          const userIds: Record<number, number> = {};
+          let usersUnreadable = false;
+          if (partnerIds.length) {
+            try {
+              const partners = (await call('res.partner', 'read', [partnerIds], { fields: ['display_name'] })) as Rec[];
+              for (const pt of partners) names[pt.id as number] = (pt.display_name as string) || `Partner ${pt.id}`;
+            } catch { /* fall back to the id below */ }
+            try {
+              // active_test: false keeps ARCHIVED users in the lookup. A departed
+              // employee is still a user and still owes the replies they missed
+              // while employed; a customer never was one. Without it Odoo's
+              // implicit active = True clause would drop ex-staff and the filter
+              // would remove the wrong people.
+              const users = (await call('res.users', 'search_read', [[['partner_id', 'in', partnerIds]]], {
+                fields: ['partner_id'], limit: 0, context: { active_test: false },
+              })) as Rec[];
+              for (const usr of users) {
+                const pid = m2o(usr.partner_id)?.[0];
+                if (pid != null) userIds[pid] = usr.id as number;
+              }
+            } catch { usersUnreadable = true; }
+          }
+
           type Judgement = { partner: number; compliant: boolean; ref: string; branch: Branch };
           const judgements: Judgement[] = [];
-          const involved = new Set<number>();
+          /** Mentioned partners with no user record — customers, not staff. */
+          const external = new Set<number>();
           let pending = 0;
+
+          // Without the user map every recipient would look external, so the
+          // conversation walk is dropped outright rather than quietly judging
+          // nobody and reading as a clean 100%.
+          if (usersUnreadable) {
+            notes.push('Chatter response was not scored this week: res.users could not be read, so the customers Odoo notifies on a Send message could not be told apart from the staff who owe a reply. Nobody is charged with a mention rather than charging a customer for one.');
+            byRo.clear();
+          }
 
           for (const [rid, msgs] of byRo) {
             const info = roInfo[rid];
@@ -1681,7 +1903,6 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
               const at = odooTime(m.date);
               const author = m2o(m.author_id)?.[0];
               if (at == null || author == null) continue;
-              involved.add(author);
 
               // 1. Any request this author could answer is settled by commenting.
               const answered = new Set<number>();
@@ -1694,12 +1915,18 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
               }
               if (settled.length) open = open.filter((o) => !settled.includes(o));
 
-              // 2. A new request — but not back at whoever was just answered.
+              // 2. A new request — but not back at whoever was just answered,
+              //    and only ever to someone who could answer: a partner with no
+              //    user record is the customer, who owes the workshop nothing.
               const recipients = (m[recipientField] as number[] | undefined) ?? [];
               const candidates = mentionOrder(m.body, recipients)
-                .filter((pid) => pid !== author && !answered.has(pid));
+                .filter((pid) => pid !== author && !answered.has(pid))
+                .filter((pid) => {
+                  if (userIds[pid] != null) return true;
+                  external.add(pid);
+                  return false;
+                });
               if (!candidates.length) continue;
-              for (const pid of candidates) involved.add(pid);
               // A nudge does not restart the clock — it keeps running from the
               // first ask, so an existing request from the same person stands.
               if (open.some((o) => o.by === author && o.candidates.some((c) => candidates.includes(c)))) continue;
@@ -1718,28 +1945,13 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             }
           }
 
-          // Names for display, user ids for attribution.
-          const partnerIds = [...involved];
-          const names: Record<number, string> = {};
-          const userIds: Record<number, number> = {};
-          if (partnerIds.length) {
-            try {
-              const partners = (await call('res.partner', 'read', [partnerIds], { fields: ['display_name'] })) as Rec[];
-              for (const pt of partners) names[pt.id as number] = (pt.display_name as string) || `Partner ${pt.id}`;
-            } catch { /* fall back to the id below */ }
-            try {
-              const users = (await call('res.users', 'search_read', [[['partner_id', 'in', partnerIds]]], {
-                fields: ['partner_id'], limit: 0,
-              })) as Rec[];
-              for (const usr of users) {
-                const pid = m2o(usr.partner_id)?.[0];
-                if (pid != null) userIds[pid] = usr.id as number;
-              }
-            } catch { /* attribute to the partner name alone */ }
-          }
-
+          // Every judged partner was a candidate, and a candidate always has a
+          // user record now, so the id is never null here.
           for (const j of judgements) {
             pushFor(17, j.branch, { id: userIds[j.partner] ?? null, name: names[j.partner] ?? `Partner ${j.partner}` }, j.compliant, j.ref);
+          }
+          if (external.size) {
+            notes.push(`Chatter response ignored ${external.size} mentioned ${external.size === 1 ? 'partner who is' : 'partners who are'} not an internal user — Odoo's Send message notifies the customer, and a customer who never comments is not a missed reply by the workshop.`);
           }
           if (!judgements.length && pending) {
             notes.push(`All ${pending} open chatter mention${pending === 1 ? '' : 's'} this week are still inside the reply window.`);
@@ -1757,7 +1969,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // excluded deliberately — a car that has already left cannot be waiting on
     // anything, and counting thousands of them buried the signal: a few hundred
     // genuinely stuck vehicles read as a comfortable 98%.
-    const baselineDays = config.thresholds.snapshotBaselineDays ?? 90;
+    const baselineDays = thresholds.snapshotBaselineDays ?? 90;
     const sinceIso = new Date(now - baselineDays * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
     const baseROs = (await call('repair.order', 'search_read', [[
       ['create_date', '>=', sinceIso],
@@ -1781,7 +1993,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     };
 
     /** Currently-open ROs held past `days` in a mapped state (used for labour). */
-    const overdueByState = async (sel: StageSelector, days: number) => {
+    const overdueByState = async (sel: StageSelector, days: number, kpiLabel: string) => {
       const recs = (await call('repair.order', 'search_read', [[
         ...selectorDomain(sel),
         ['company_id', 'in', kpiIds],
@@ -1792,10 +2004,21 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
       if (Object.keys(entered).length) usedTrackingForAging = true;
       const limitMs = days * 86400_000;
       const overdue = new Map<number, Rec>();
+      let noStamp = 0;
       for (const r of recs) {
-        const since = entered[r.id as number] ?? odooTime(r[ageField]) ?? odooTime(r.create_date);
-        if (since == null) continue;
+        // No fallback to create_date. Both steps that remain measure time in the
+        // CURRENT state; the job card's own creation date measures the whole
+        // visit, so a job opened 100 days ago that started waiting yesterday
+        // would be aged at 100 days against a 2-day limit — a guaranteed fine
+        // from a missing stamp. Every step of that chain moved toward more
+        // elapsed time, so every ambiguity resolved against the branch. An RO
+        // with no stamp is now unknown, not overdue.
+        const since = entered[r.id as number] ?? odooTime(r[ageField]);
+        if (since == null) { noStamp++; continue; }
         if (now - since > limitMs) overdue.set(r.id as number, r);
+      }
+      if (noStamp) {
+        notes.push(`${kpiLabel} could not age ${noStamp} open repair order${noStamp === 1 ? '' : 's'} in that state — no chatter transition and no ${ageField} on the record. None of them is counted as overdue, rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait.`);
       }
       return overdue;
     };
@@ -1805,7 +2028,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // order with any line whose Done quantity is short of Demand is still waiting
     // on parts. Ages from when that part was requested.
     if (on(6)) {
-      const days = config.thresholds.awaitingPartsDays ?? 14;
+      const days = thresholds.awaitingPartsDays ?? 14;
       const useParts = (config.awaitingPartsSource ?? 'parts') === 'parts';
       const parts = useParts ? await resolvePartsFields(meta) : null;
       let overdue: Map<number, Rec>;
@@ -1822,31 +2045,44 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
 
         const limitMs = days * 86400_000;
         overdue = new Map<number, Rec>();
+        let noRequestDate = 0;
         for (const r of openROs) {
           // Oldest outstanding part decides how long this RO has been held up.
+          // No fallback to the RO's create_date, for the same reason the state
+          // path above drops it: the job card predates every line on it, so a
+          // line with no request date would be aged from the whole visit and
+          // overstate the wait. Which path reached a vehicle must not decide
+          // whether its wait is overstated.
           let waitingSince: number | null = null;
+          let anyShort = false;
           for (const id of (r[parts.lineField] as number[] | undefined) ?? []) {
             const li = lineInfo[id];
             if (!li?.short) continue;
-            const t = li.since ?? odooTime(r.create_date);
+            anyShort = true;
+            const t = li.since;
             if (t != null && (waitingSince == null || t < waitingSince)) waitingSince = t;
           }
-          if (waitingSince == null) continue; // nothing outstanding — not waiting on parts
+          if (!anyShort) continue;            // nothing outstanding — not waiting on parts
+          // Outstanding, but nothing says since when: unknown, not overdue.
+          if (waitingSince == null) { noRequestDate++; continue; }
           if (now - waitingSince > limitMs) overdue.set(r.id as number, r);
+        }
+        if (noRequestDate) {
+          notes.push(`Awaiting parts could not age ${noRequestDate} open repair order${noRequestDate === 1 ? '' : 's'} with parts still outstanding — none of their short lines carries a request date. None of them is counted as overdue, rather than being aged from the job card's creation date, which is the whole visit's age and overstates every wait.`);
         }
       } else {
         if (useParts) {
           notes.push('Could not read the parts lines (Demand/Done), so "Awaiting parts" fell back to the mapped state.');
         }
         awaitingPartsMethod = 'the mapped state';
-        overdue = await overdueByState(config.stageMap.awaitingParts, days);
+        overdue = await overdueByState(config.stageMap.awaitingParts, days, 'Awaiting parts');
       }
       scoreAgainstBaseline(6, overdue);
     }
 
     // ── KPI 7 — awaiting labour (mapped state) ──
     if (on(7)) {
-      scoreAgainstBaseline(7, await overdueByState(config.stageMap.awaitingLabour, config.thresholds.awaitingLabourDays ?? 2));
+      scoreAgainstBaseline(7, await overdueByState(config.stageMap.awaitingLabour, thresholds.awaitingLabourDays ?? 2, 'Awaiting labour'));
     }
 
   }
@@ -1861,7 +2097,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     KPI_DEFINITIONS.map((d) => [d.id, sectionOf(d.id, config)]),
   );
   const displayNames: Record<number, string> = Object.fromEntries(
-    KPI_DEFINITIONS.map((d) => [d.id, kpiDisplayName(d.id, d.name, config.thresholds)]),
+    KPI_DEFINITIONS.map((d) => [d.id, kpiDisplayName(d.id, d.name, thresholds)]),
   );
 
   // Every retimed KPI repeats this, so no limit on the page can be read as wall-clock.
@@ -1879,7 +2115,7 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     2: `Measured from the quotation being created to its approval; one still awaiting approval past the limit counts against you. ${CLOCK}`,
     3: 'Checks the quotation was approved (confirmed into a sale order) before the RO moved into Under Repair.',
     12: `Measured from the RO entering Inspection to its quotation being created — the promise on getting a quote out, tighter than the inspection limit itself. ${CLOCK}`,
-    13: 'A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest.',
+    13: `A straight yes/no: was the follow-up screenshot uploaded. Only ROs flagged for QA are counted, since Odoo keeps the field read-only on the rest — and with that flag missing from the instance the KPI is skipped rather than widened to everyone. An RO is judged only once ${limitLabel(followUpGraceDays, 'day')} has passed since it was marked Repaired, so a car just handed over is not already a violation; one with no Repaired timestamp is not judged at all, since the grace cannot be measured without it.`,
     14: `Check-in counts as complete the moment the RO reaches Inspection. ${CLOCK}`,
     15: `Measured from the RO entering Inspection to its quotation being created. ${CLOCK}`,
     17: `Time from being @mentioned to your next comment on that RO. Tagging several people is one request — whoever answers first settles it, and if nobody does it falls to the person tagged first. Answering someone does not oblige them to answer you back, so a thread closes instead of looping. ${CLOCK}`,
