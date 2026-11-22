@@ -515,8 +515,13 @@ function mentionOrder(body: unknown, recipients: number[]): number[] {
 /** Matches tag names like "CAR-IN", "CAR IN", "CAR OUT", "car_out". */
 const PRESENCE_TAG_RE = /car\s*[-_]?\s*(in|out)\b/i;
 
-/** Matches tag names like "Insurance", "INSURANCE JOB", "insured". */
-const INSURANCE_TAG_RE = /insur/i;
+/**
+ * Matches tag names like "Insurance", "INSURANCE JOB", "insured" — but not the
+ * negations. A bare /insur/ would read "NON INSURANCE" or "NO INSURANCE" as an
+ * insurance job and exempt it, which is exactly the bug the warranty tags had:
+ * "NO WARRANTY" was being read as warranty work.
+ */
+const INSURANCE_TAG_RE = /^(?!.*\b(?:no|non|not)[\s_-]*insur)(?!.*noninsur).*insur/i;
 
 /** Every many2many tag field on repair.order, in the order we search them. */
 export const TAG_FIELDS = ['tag_ids', 'x_studio_stages_tags'] as const;
@@ -1879,6 +1884,14 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
     // exemption and start charging advisors for the insurer's delay.
     const insuranceExempt = new Set<number>();
     const insuranceTags = await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
+    let insuranceUnchecked = 0;
+    // Said out loud, because a missing exemption is silent in the figure: every
+    // insurance job would sit on the approval clock and read as the advisor's delay.
+    if (!insuranceTags.some((m) => m.ids.size)) {
+      notes.push('Quote approval could not find any insurance tag on the repair orders, so no insurance job is exempt this run — the insurer\'s approval time is being counted against whoever confirmed the quotation. Pick the insurance tags under Admin → KPI Configuration if the auto-detection is missing them.');
+    } else if (!has('sale_order_id')) {
+      notes.push('Quote approval could not exempt insurance jobs: repair.order carries no sale_order_id on this instance, so a quotation cannot be traced to its repair order\'s tags.');
+    }
     if (insuranceTags.some((m) => m.ids.size) && has('sale_order_id')) {
       for (let i = 0; i < soIds.length; i += 2000) {
         try {
@@ -1890,8 +1903,15 @@ export async function computeKpiTree(config: KpiConfig, weekStartIso?: string): 
             const id = m2o(r.sale_order_id)?.[0];
             if (id != null) insuranceExempt.add(id);
           }
-        } catch { /* leave this chunk unexempted rather than dropping the KPI */ }
+        } catch {
+          // Unexempted rather than dropping the KPI — but counted, so the note
+          // below can say some insurance jobs may be on the clock this run.
+          insuranceUnchecked += Math.min(2000, soIds.length - i);
+        }
       }
+    }
+    if (insuranceUnchecked) {
+      notes.push(`Quote approval could not check ${insuranceUnchecked} quotation${insuranceUnchecked === 1 ? '' : 's'} for an insurance tag, so any insurance jobs among them are being scored as ordinary jobs this run — the insurer's approval time counted against the advisor.`);
     }
 
     // Only quotations attached to a job card in the Orders tab are scored.
