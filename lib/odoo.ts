@@ -29,7 +29,7 @@ const ODOO_API_KEY = () => requireEnv('ODOO_API_KEY');
 // ── Branch consolidation rules ─────────────────────────────────────
 // Order matches BRANCHES constant: Dubai, Ajman, Sharjah, Abu Dhabi, Al Ain, Qatar
 export const BRANCH_CLUSTERS: Record<Branch, string[]> = {
-  'Dubai':     ['EVS Dubai', 'Emarat - Altwar', 'Emarat - Albarsha'],
+  'Dubai':     ['EVS ELECTRIC VEHICLE SERVICE DXB', 'Emarat - Altwar', 'Emarat - Albarsha'],
   'Ajman':     ['EVS ELECTRIC VEHICLE SERVICE AJ'],
   'Sharjah':   ['EVS ELECTRIC VEHICLE SERVICE SHARJAH', 'Emarat - Muwafja'],
   'Abu Dhabi': ['EVS ELECTRIC VEHICLE SERVICE ABU DHABI', 'Almushrif'],

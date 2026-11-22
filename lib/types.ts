@@ -26,7 +26,7 @@ export const subKey = (branch: string, sub: string): string => `${branch}__${sub
 // in the browser and must agree with the WIP page about what a station is.
 export const SUB_BRANCH_COMPANY: Record<string, Record<string, string>> = {
   'Dubai': {
-    'Main branch':        'EVS Dubai',
+    'Main branch':        'EVS ELECTRIC VEHICLE SERVICE DXB',
     'Emarat - Albarsha':  'Emarat - Albarsha',
     'Emarat - Altwar':    'Emarat - Altwar',
   },
