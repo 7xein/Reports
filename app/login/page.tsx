@@ -1,11 +1,14 @@
 'use client';
 
+import Link from 'next/link';
 import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { AuthField, AuthFrame, safeFrom } from '@/components/auth/AuthFrame';
 
 function LoginForm() {
   const params = useSearchParams();
-  const from = params.get('from') || '/';
+  const from = safeFrom(params.get('from'));
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -15,40 +18,49 @@ function LoginForm() {
     setLoading(true);
     setError('');
 
-    const res = await fetch('/api/auth', {
+    const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
+      body: JSON.stringify({ email, password }),
+    }).catch(() => null);
 
-    if (res.ok) {
+    if (res?.ok) {
       // A document navigation, not router.push: this page is reached BY a
       // middleware redirect, so the router's cached entry for the target IS
       // that redirect — pushing to it lands straight back here and the cookie
       // just set goes unused. A full load re-runs the middleware with it.
       window.location.assign(from);
     } else {
-      setError('Incorrect password');
+      const body = res ? await res.json().catch(() => ({})) : {};
+      setError(body?.error || 'Incorrect email or password');
       setLoading(false);
     }
   }
 
+  const signupHref = from === '/' ? '/signup' : `/signup?from=${encodeURIComponent(from)}`;
+
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      <div>
-        <label htmlFor="password" className="block smallcaps text-[10px] text-ink-muted mb-2">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoFocus
-          className="w-full px-4 py-3 bg-white border border-rule focus:border-ink focus:outline-none font-sans text-ink transition-colors"
-          placeholder="••••••••"
-        />
-      </div>
+      <AuthField
+        id="email"
+        label="Email"
+        type="email"
+        autoComplete="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        autoFocus
+        required
+      />
+      <AuthField
+        id="password"
+        label="Password"
+        type="password"
+        autoComplete="current-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="••••••••"
+        required
+      />
 
       {error && <div className="text-rust text-sm">{error}</div>}
 
@@ -57,35 +69,25 @@ function LoginForm() {
         disabled={loading}
         className="w-full py-3 bg-ink text-paper hover:bg-ink-soft transition-colors smallcaps text-xs disabled:opacity-50"
       >
-        {loading ? 'Signing in…' : 'Continue'}
+        {loading ? 'Signing in…' : 'Sign in'}
       </button>
+
+      <p className="text-center text-ink-muted text-sm">
+        No account?{' '}
+        <Link href={signupHref} className="underline underline-offset-4 hover:text-ink">
+          Create one
+        </Link>
+      </p>
     </form>
   );
 }
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center px-6">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-12">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/evs-logo-nobg.png"
-            alt="EVS"
-            style={{ height: '64px', width: 'auto', margin: '0 auto 24px' }}
-          />
-          <div className="smallcaps text-xs text-ink-muted mb-4">Electric Vehicle Services</div>
-          <h1 className="font-display text-5xl font-light tracking-tight text-ink leading-none">
-            Reports
-          </h1>
-          <div className="mt-6 mx-auto w-12 h-px bg-rule" />
-          <p className="mt-6 text-ink-muted text-sm">Internal access only</p>
-        </div>
-
-        <Suspense fallback={<div className="text-ink-muted text-sm text-center">Loading…</div>}>
-          <LoginForm />
-        </Suspense>
-      </div>
-    </div>
+    <AuthFrame heading="Reports" subtitle="Internal access only">
+      <Suspense fallback={<div className="text-ink-muted text-sm text-center">Loading…</div>}>
+        <LoginForm />
+      </Suspense>
+    </AuthFrame>
   );
 }

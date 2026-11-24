@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { computeKpiTree, weekStartFor, summariseTree, KpiTree } from '@/lib/kpi';
 import { readData, writeData } from '@/lib/data-store';
-import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
+import { getCurrentUser, hasTab } from '@/lib/auth';
 import { withKpiDefaults, KpiWeekSummary } from '@/lib/types';
 
 // 300, not 60: computing all 21 KPIs for every branch is the heaviest read in
@@ -47,7 +47,8 @@ function recentHistory(all: Record<string, KpiWeekSummary> | undefined, weekStar
 }
 
 export async function GET(req: NextRequest) {
-  if (!isAuthenticated()) {
+  const user = await getCurrentUser();
+  if (!hasTab(user, 'kpi')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -63,7 +64,7 @@ export async function GET(req: NextRequest) {
   const weekParam = req.nextUrl.searchParams.get('week') ?? undefined;
   const wantsRefresh = req.nextUrl.searchParams.get('refresh') === '1';
   // Only an admin may force a fresh (expensive) recompute.
-  const refresh = wantsRefresh && isAdminAuthenticated();
+  const refresh = wantsRefresh && hasTab(user, 'admin');
 
   try {
     const data = await readData();

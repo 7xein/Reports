@@ -5,7 +5,8 @@ import { isAdminAuthenticated } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-export default function KpiPage() {
+export default async function KpiPage() {
+  const isAdmin = await isAdminAuthenticated();
   return (
     <Shell
       breadcrumbSection="KPI"
@@ -18,7 +19,7 @@ export default function KpiPage() {
         sub: 'Company → branch → service advisor · click through to see the exact records failing each rule',
       }}
     >
-      <KpiClient isAdmin={isAdminAuthenticated()} />
+      <KpiClient isAdmin={isAdmin} />
     </Shell>
   );
 }

@@ -5,13 +5,13 @@
  *   POST { metric, branch?, start?, end? } — WIP dashboard CSV: the records
  *     behind a metric, same filter as the count (site-auth).
  *   POST { type: 'wip' | 'received', date? } — Admin Excel export: repair orders
- *     for a Gulf day, one sheet per branch (admin-auth). Returns an .xlsx file.
+ *     for a Gulf day, one sheet per branch (Admin tab). Returns an .xlsx file.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx-js-style';
 import { fetchMetricRecords, fetchRepairOrdersForExport, fetchInvoiceSalesForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
-import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
+import { getCurrentUser, hasAnyTab, hasTab } from '@/lib/auth';
 import { autoWidth, boldHeaderRow } from '@/lib/xlsx';
 import { WIP_METRICS, WipMetricKey, BRANCHES, Branch } from '@/lib/types';
 
@@ -142,7 +142,9 @@ function toCsv(rows: Record<string, unknown>[]): string {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isAuthenticated()) {
+  // Same rule as the middleware (lib/access.ts): the WIP pages' CSV and Admin's Excel.
+  const user = await getCurrentUser();
+  if (!hasAnyTab(user, ['wip', 'sales', 'admin'])) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -164,7 +166,7 @@ export async function POST(req: NextRequest) {
 
   // ── Admin Excel export (repair orders, one sheet per branch) ──────
   if (body.type === 'wip' || body.type === 'wip-todate' || body.type === 'received') {
-    if (!isAdminAuthenticated()) {
+    if (!hasTab(user, 'admin')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const dateStr = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : yesterdayGulf();

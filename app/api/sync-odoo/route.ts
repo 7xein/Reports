@@ -17,7 +17,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchWipSnapshot, fetchWipWeeklySnapshot, fetchDailySales, fetchSalesRange, KPI_OWNER_BUDGET_MS } from '@/lib/odoo';
-import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
+import { isAdminAuthenticated } from '@/lib/auth';
 import { readData, writeData } from '@/lib/data-store';
 import { refreshKpiOwners } from '@/lib/kpi-owners-refresh';
 import { BRANCHES, type WipDailyEntry, type RegionalSalesEntry } from '@/lib/types';
@@ -193,7 +193,7 @@ async function dailySync(): Promise<{ body: Record<string, unknown>; status: num
 // ── Manual entry point (returns data for preview) ──────────────────
 export async function POST(request: NextRequest) {
   // Admin session auth (same as /api/data)
-  if (!isAuthenticated() || !isAdminAuthenticated()) {
+  if (!(await isAdminAuthenticated())) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

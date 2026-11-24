@@ -5,10 +5,10 @@ import { isAdminAuthenticated } from '@/lib/auth';
  * POST /api/seed
  * One-time endpoint: uploads data.json content to the KV store.
  * Call this once after first deploy via the Admin panel or curl.
- * Protected — requires admin auth cookie.
+ * Protected — requires a session with the Admin tab.
  */
 export async function POST(req: NextRequest) {
-  if (!isAdminAuthenticated()) {
+  if (!(await isAdminAuthenticated())) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

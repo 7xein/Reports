@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readData, writeData } from '@/lib/data-store';
-import { isAuthenticated, isAdminAuthenticated } from '@/lib/auth';
+import { getCurrentUser, hasAnyTab, isAdminAuthenticated } from '@/lib/auth';
 
 export async function GET() {
-  if (!isAuthenticated()) {
+  // Same rule as the middleware (lib/access.ts): any section that shows this data.
+  if (!hasAnyTab(await getCurrentUser(), ['wip', 'sales', 'kpi', 'admin'])) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {
@@ -16,7 +17,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isAuthenticated() || !isAdminAuthenticated()) {
+  if (!(await isAdminAuthenticated())) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,95 +1,86 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { effectiveTabs, landingHref, tabForPage, tabsForApi } from '@/lib/access';
+import { SESSION_COOKIE, resolveSession } from '@/lib/session';
+import { loadUserRecord } from '@/lib/user-record';
 
-export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+// Files in public/ that the sign-in pages show before anyone is signed in.
+const PUBLIC_FILES = new Set(['/evs-logo.png', '/evs-logo-nobg.png', '/evs-logo-new.png']);
 
-  // Public paths
-  if (
+// The shared-password login pages are gone; old bookmarks land on `/`.
+const LEGACY_LOGIN_PATHS = new Set(['/admin/login', '/ceo/login', '/evhub/login']);
+
+function isPublic(pathname: string, method: string): boolean {
+  return (
     pathname === '/login' ||
-    pathname === '/admin/login' ||
-    pathname.startsWith('/api/auth') ||
+    pathname === '/signup' ||
+    pathname === '/api/auth' ||
+    pathname.startsWith('/api/auth/') ||
     // The cron hits this with a bearer token and no cookie. Without this line the
     // middleware redirects it to /login and the scheduled sync never runs; the
-    // handler's CRON_SECRET check is the real guard.
-    pathname === '/api/sync-odoo' ||
+    // handler's CRON_SECRET check is the real guard. Only GET — the manual
+    // POST sync is Admin's and is gated below.
+    (pathname === '/api/sync-odoo' && method === 'GET') ||
     pathname.startsWith('/_next') ||
-    pathname.startsWith('/favicon')
-  ) {
-    return NextResponse.next();
+    pathname.startsWith('/favicon') ||
+    pathname === '/icon.png' ||
+    PUBLIC_FILES.has(pathname)
+  );
+}
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const method = request.method;
+
+  if (isPublic(pathname, method)) return NextResponse.next();
+
+  if (LEGACY_LOGIN_PATHS.has(pathname)) {
+    return NextResponse.redirect(new URL('/', request.url));
   }
 
-  const isSiteAuth = request.cookies.get('evs_auth')?.value === 'authenticated';
+  const isApi = pathname === '/api' || pathname.startsWith('/api/');
 
-  if (!isSiteAuth) {
+  // Signature, expiry, the user record and its session version are all checked
+  // here, on every request, so revoking access takes effect immediately. Any
+  // failure (no AUTH_SECRET, no Redis, Redis down) means signed out.
+  let user = null;
+  try {
+    user = await resolveSession(request.cookies.get(SESSION_COOKIE)?.value, loadUserRecord);
+  } catch (err) {
+    console.error('[middleware] session check failed:', err);
+  }
+
+  if (!user) {
+    // APIs answer 401 rather than redirect: a fetch that follows a redirect to
+    // an HTML login page fails with a confusing JSON parse error at the caller.
+    if (isApi) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('from', pathname);
     return NextResponse.redirect(loginUrl);
   }
 
-  // Admin routes require a second password
-  if (pathname.startsWith('/admin')) {
-    const isAdminAuth = request.cookies.get('evs_admin_auth')?.value === 'authenticated';
-    if (!isAdminAuth) {
-      const adminLoginUrl = new URL('/admin/login', request.url);
-      return NextResponse.redirect(adminLoginUrl);
+  const tabs = effectiveTabs(user);
+
+  if (isApi) {
+    const needs = tabsForApi(pathname, method);
+    // An API that maps to no tab is shut: new routes must be added to lib/access.ts.
+    if (!needs || !needs.some((t) => tabs.includes(t))) {
+      return NextResponse.json({ error: 'You do not have access to this' }, { status: 403 });
     }
+    return NextResponse.next();
   }
 
-  // The EV Hub section requires a second password too. Both halves are gated:
-  // the report pages fetch their rows from /api/evhub/[report], so gating the
-  // pages alone would leave the data one request away for anyone who holds the
-  // site password.
-  const isEvhubPage = pathname === '/evhub' || pathname.startsWith('/evhub/');
-  const isEvhubApi = pathname === '/api/evhub' || pathname.startsWith('/api/evhub/');
-
-  // IMPORTANT: /evhub/login is deliberately NOT in the public-paths list above —
-  // it sits behind the site password so the second password has no guessing
-  // surface on the open internet. That means it reaches this gate, so it MUST be
-  // skipped here; without this check the login page would redirect to itself
-  // forever.
-  if ((isEvhubPage || isEvhubApi) && pathname !== '/evhub/login') {
-    const isEvhubAuth = request.cookies.get('evs_evhub_auth')?.value === 'authenticated';
-    if (!isEvhubAuth) {
-      // The data route answers with 401 rather than a redirect: a fetch that
-      // follows a redirect to an HTML login page fails with a confusing JSON
-      // parse error at the caller.
-      if (isEvhubApi) {
-        return NextResponse.json({ error: 'EVHUB authentication required' }, { status: 401 });
-      }
-      const evhubLoginUrl = new URL('/evhub/login', request.url);
-      evhubLoginUrl.searchParams.set('from', pathname);
-      return NextResponse.redirect(evhubLoginUrl);
-    }
+  if (pathname === '/') {
+    return NextResponse.redirect(new URL(landingHref(tabs), request.url));
   }
 
-  // The CEO section requires a second password too, pages and data alike, for
-  // the same reason as EV Hub: the pages fetch their rows from /api/ceo/[report],
-  // so gating the pages alone would leave the data one request away for anyone
-  // who holds the site password.
-  const isCeoPage = pathname === '/ceo' || pathname.startsWith('/ceo/');
-  const isCeoApi = pathname === '/api/ceo' || pathname.startsWith('/api/ceo/');
-
-  // IMPORTANT: /ceo/login is deliberately NOT in the public-paths list above —
-  // it sits behind the site password so the second password has no guessing
-  // surface on the open internet. That means it reaches this gate, so it MUST be
-  // skipped here; without this check the login page would redirect to itself
-  // forever.
-  if ((isCeoPage || isCeoApi) && pathname !== '/ceo/login') {
-    const isCeoAuth = request.cookies.get('evs_ceo_auth')?.value === 'authenticated';
-    if (!isCeoAuth) {
-      // The data route answers with 401 rather than a redirect: a fetch that
-      // follows a redirect to an HTML login page fails with a confusing JSON
-      // parse error at the caller.
-      if (isCeoApi) {
-        return NextResponse.json({ error: 'CEO authentication required' }, { status: 401 });
-      }
-      const ceoLoginUrl = new URL('/ceo/login', request.url);
-      ceoLoginUrl.searchParams.set('from', pathname);
-      return NextResponse.redirect(ceoLoginUrl);
-    }
+  const tab = tabForPage(pathname);
+  if (tab && !tabs.includes(tab)) {
+    // `/` then lands them on a tab they do have, or on /welcome.
+    return NextResponse.redirect(new URL('/', request.url));
   }
 
+  // /welcome and any page outside every tab: signed in is enough.
   return NextResponse.next();
 }
 

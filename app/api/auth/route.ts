@@ -1,53 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
-import {
-  getSitePassword,
-  getAdminPassword,
-  getEvhubPassword,
-  getCeoPassword,
-  setAuthCookie,
-  setAdminAuthCookie,
-  setEvhubAuthCookie,
-  setCeoAuthCookie,
-  clearAuthCookies,
-} from '@/lib/auth';
+/**
+ * DELETE /api/auth — sign out. Kept for the Admin page's sign-out button
+ * (app/admin/AdminForm.tsx); new code should POST /api/auth/logout.
+ *
+ * The old shared-password POST is gone: sign in with /api/auth/login.
+ */
 
-export async function POST(req: NextRequest) {
-  const { password, type } = await req.json();
-
-  if (type === 'admin') {
-    if (password === getAdminPassword()) {
-      setAdminAuthCookie();
-      return NextResponse.json({ success: true });
-    }
-    return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
-  }
-
-  if (type === 'evhub') {
-    if (password === getEvhubPassword()) {
-      setEvhubAuthCookie();
-      return NextResponse.json({ success: true });
-    }
-    return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
-  }
-
-  if (type === 'ceo') {
-    if (password === getCeoPassword()) {
-      setCeoAuthCookie();
-      return NextResponse.json({ success: true });
-    }
-    return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
-  }
-
-  // Default: site login
-  if (password === getSitePassword()) {
-    setAuthCookie();
-    return NextResponse.json({ success: true });
-  }
-
-  return NextResponse.json({ success: false, error: 'Invalid password' }, { status: 401 });
-}
+import { NextResponse } from 'next/server';
+import { clearSessionCookie } from '@/lib/auth';
 
 export async function DELETE() {
-  clearAuthCookies();
+  clearSessionCookie();
   return NextResponse.json({ success: true });
 }

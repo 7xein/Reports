@@ -8,7 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthenticated, isCeoAuthenticated, isEvhubAuthenticated } from '@/lib/auth';
+import { getCurrentUser, hasTab } from '@/lib/auth';
 import { readData } from '@/lib/data-store';
 import { withKpiDefaults } from '@/lib/types';
 import { selectorDomainNot } from '@/lib/kpi';
@@ -41,14 +41,15 @@ function fitResponse(result: ReportResult): ReportResult {
 
 export async function serveReport(req: NextRequest, slug: string, section: ReportSection): Promise<NextResponse> {
   // The middleware guards /api too; these keep the route safe if that changes.
-  // The section's OWN cookie has to be checked, not just the site's: with
-  // isAuthenticated() alone, a change to the middleware would hand a section's
-  // data to anyone holding the site password.
-  if (!isAuthenticated()) {
+  // The section's OWN tab has to be checked, not just being signed in: with a
+  // sign-in check alone, a change to the middleware would hand a section's data
+  // to every account.
+  const user = await getCurrentUser();
+  if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (!(section === 'ceo' ? isCeoAuthenticated() : isEvhubAuthenticated())) {
-    return NextResponse.json({ error: `${section.toUpperCase()} authentication required` }, { status: 401 });
+  if (!hasTab(user, section)) {
+    return NextResponse.json({ error: `No access to ${section.toUpperCase()}` }, { status: 403 });
   }
 
   if (!isReportSlug(slug)) {
@@ -56,7 +57,7 @@ export async function serveReport(req: NextRequest, slug: string, section: Repor
   }
 
   // A report of another section does not exist at this prefix. This is the only
-  // thing stopping someone holding the EVHUB password from reading CEO data
+  // thing stopping someone with only the EVHUB tab from reading CEO data
   // through /api/evhub/attention, so it has to live here, in the handler, and
   // not in the navigation — hiding a sub-tab hides nothing from a URL.
   if (reportSection(slug) !== section) {

@@ -1,98 +1,61 @@
+/**
+ * Session helpers for server components and route handlers (Node runtime).
+ *
+ * The middleware already gates every page and API by tab (middleware.ts); route
+ * handlers still check here as defence in depth, so a change to the middleware
+ * cannot silently open a route.
+ */
+
 import { cookies } from 'next/headers';
+import { effectiveTabs, type TabId, type UserRecord } from './access';
+import {
+  SESSION_COOKIE, getAuthSecret, newSessionPayload, resolveSession, sessionCookieOptions, signSession,
+} from './session';
+import { getUser } from './users';
 
-const SITE_COOKIE  = 'evs_auth';
-const ADMIN_COOKIE = 'evs_admin_auth';
-const EVHUB_COOKIE = 'evs_evhub_auth';
-const CEO_COOKIE   = 'evs_ceo_auth';
-const COOKIE_VALUE = 'authenticated';
+export type User = UserRecord;
 
-export function getSitePassword(): string {
-  const pw = process.env.SITE_PASSWORD;
-  if (!pw) throw new Error('SITE_PASSWORD environment variable is not set');
-  return pw;
+/** The signed-in user (full record — never send it to the browser as is), or null. */
+export async function getCurrentUser(): Promise<User | null> {
+  const token = cookies().get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+  try {
+    return await resolveSession(token, getUser);
+  } catch (err) {
+    // Redis down or similar: fail closed.
+    console.error('[auth] could not resolve session:', err);
+    return null;
+  }
 }
 
-export function getAdminPassword(): string {
-  const pw = process.env.ADMIN_PASSWORD;
-  if (!pw) throw new Error('ADMIN_PASSWORD environment variable is not set');
-  return pw;
+/** Whether the user may open a tab (the owner may open every tab). */
+export function hasTab(user: Pick<User, 'email' | 'tabs'> | null | undefined, tab: TabId): boolean {
+  return !!user && effectiveTabs(user).includes(tab);
 }
 
-export function getEvhubPassword(): string {
-  const pw = process.env.EVHUB_PASSWORD;
-  if (!pw) throw new Error('EVHUB_PASSWORD environment variable is not set');
-  return pw;
+/** Whether the user may open at least one of the given tabs. */
+export function hasAnyTab(user: Pick<User, 'email' | 'tabs'> | null | undefined, tabs: readonly TabId[]): boolean {
+  return !!user && tabs.some((t) => hasTab(user, t));
 }
 
-export function getCeoPassword(): string {
-  const pw = process.env.CEO_PASSWORD;
-  if (!pw) throw new Error('CEO_PASSWORD environment variable is not set');
-  return pw;
+/** Signed in at all. */
+export async function isAuthenticated(): Promise<boolean> {
+  return (await getCurrentUser()) !== null;
 }
 
-export function isAuthenticated(): boolean {
-  const cookieStore = cookies();
-  return cookieStore.get(SITE_COOKIE)?.value === COOKIE_VALUE;
+/** Signed in with the Admin tab. */
+export async function isAdminAuthenticated(): Promise<boolean> {
+  return hasTab(await getCurrentUser(), 'admin');
 }
 
-export function isAdminAuthenticated(): boolean {
-  const cookieStore = cookies();
-  return cookieStore.get(ADMIN_COOKIE)?.value === COOKIE_VALUE;
+/** Sign a user in on this response. Throws if AUTH_SECRET is unset. */
+export async function setSessionCookie(user: Pick<User, 'email' | 'sessionVersion'>): Promise<void> {
+  const secret = getAuthSecret();
+  if (!secret) throw new Error('AUTH_SECRET environment variable is not set');
+  const token = await signSession(newSessionPayload(user), secret);
+  cookies().set(SESSION_COOKIE, token, sessionCookieOptions());
 }
 
-export function isEvhubAuthenticated(): boolean {
-  const cookieStore = cookies();
-  return cookieStore.get(EVHUB_COOKIE)?.value === COOKIE_VALUE;
-}
-
-export function isCeoAuthenticated(): boolean {
-  const cookieStore = cookies();
-  return cookieStore.get(CEO_COOKIE)?.value === COOKIE_VALUE;
-}
-
-export function setAuthCookie(): void {
-  cookies().set(SITE_COOKIE, COOKIE_VALUE, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 30,
-    path: '/',
-  });
-}
-
-export function setAdminAuthCookie(): void {
-  cookies().set(ADMIN_COOKIE, COOKIE_VALUE, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 30,
-    path: '/',
-  });
-}
-
-export function setEvhubAuthCookie(): void {
-  cookies().set(EVHUB_COOKIE, COOKIE_VALUE, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 30,
-    path: '/',
-  });
-}
-
-export function setCeoAuthCookie(): void {
-  cookies().set(CEO_COOKIE, COOKIE_VALUE, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 30,
-    path: '/',
-  });
-}
-
-export function clearAuthCookies(): void {
-  cookies().delete(SITE_COOKIE);
-  cookies().delete(ADMIN_COOKIE);
-  cookies().delete(EVHUB_COOKIE);
-  cookies().delete(CEO_COOKIE);
+export function clearSessionCookie(): void {
+  cookies().delete(SESSION_COOKIE);
 }

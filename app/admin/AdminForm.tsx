@@ -9,6 +9,7 @@ import {
 import { getWeekStart } from '@/lib/sales-utils';
 import { formatNumber } from '@/lib/format';
 import { KpiConfigCard } from './KpiConfigCard';
+import { ADMIN_SUB_TABS } from './admin-sub-tabs';
 
 const BRANCH_COLORS: Record<string, string> = {
   Dubai:       '#78C41A',
@@ -86,9 +87,6 @@ function lastThursday() {
   return d.toISOString().slice(0, 10);
 }
 
-const ADMIN_SUB_TABS = [
-  { href: '/admin', label: 'Update Data' },
-];
 
 function today() {
   return new Date().toISOString().slice(0, 10);

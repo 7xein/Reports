@@ -1,12 +1,33 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { TAB_BY_ID, type TabId } from '@/lib/access';
+
+type Me = { email: string; name: string; tabs: TabId[]; isOwner: boolean };
+
+// One request per page load, shared by every Sidebar that mounts. A failed
+// request resolves to null (and is retried on the next mount) so the sidebar
+// shows no tabs rather than guessing.
+let mePromise: Promise<Me | null> | null = null;
+function loadMe(): Promise<Me | null> {
+  if (!mePromise) {
+    mePromise = fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<Me>) : null))
+      .catch(() => null)
+      .then((me) => {
+        if (!me) mePromise = null;
+        return me;
+      });
+  }
+  return mePromise;
+}
 
 const NAV_ITEMS = [
   {
-    href: '/wip/daily',
-    group: 'wip',
+    href: TAB_BY_ID.wip.href,
+    group: 'wip' as TabId,
     label: 'WIP Dashboard',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -18,8 +39,8 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/sales/daily',
-    group: 'sales',
+    href: TAB_BY_ID.sales.href,
+    group: 'sales' as TabId,
     label: 'Sales Dashboard',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -31,8 +52,8 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/kpi',
-    group: 'kpi',
+    href: TAB_BY_ID.kpi.href,
+    group: 'kpi' as TabId,
     label: 'KPI Dashboard',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -43,8 +64,8 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/evhub/no-rfq',
-    group: 'evhub',
+    href: TAB_BY_ID.evhub.href,
+    group: 'evhub' as TabId,
     label: 'EVHUB',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -56,8 +77,8 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: '/ceo/attention',
-    group: 'ceo',
+    href: TAB_BY_ID.ceo.href,
+    group: 'ceo' as TabId,
     label: 'CEO',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -70,8 +91,8 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_ITEM = {
-  href: '/admin',
-  group: 'admin',
+  href: TAB_BY_ID.admin.href,
+  group: 'admin' as TabId,
   label: 'Admin',
   icon: (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -87,7 +108,7 @@ const ADMIN_ITEM = {
 
 type NavItem = {
   href: string;
-  group: string;
+  group: TabId;
   label: string;
   icon: React.ReactNode;
 };
@@ -114,8 +135,50 @@ function SidebarIcon({ href, label, icon, group, active }: NavItem & { active: b
   );
 }
 
+const SIGN_OUT_ICON = (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+    <polyline points="16 17 21 12 16 7"/>
+    <line x1="21" y1="12" x2="9" y2="12"/>
+  </svg>
+);
+
+function SignOutIcon({ email }: { email: string }) {
+  async function signOut() {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    window.location.assign('/login');
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={signOut}
+      aria-label="Sign out"
+      title={email}
+      className="relative flex items-center justify-center w-11 h-11 rounded-xl transition-colors group text-white/35 hover:text-white/75 hover:bg-evs-green/10"
+    >
+      {SIGN_OUT_ICON}
+      <span className="absolute left-14 bg-gray-900 text-white text-sm px-3 py-1.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 text-left">
+        Sign out
+        <span className="block text-xs text-white/60">{email}</span>
+      </span>
+    </button>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
+  const [me, setMe] = useState<Me | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    loadMe().then((m) => { if (alive) setMe(m); });
+    return () => { alive = false; };
+  }, []);
+
+  const allowed = new Set<TabId>(me?.tabs ?? []);
+  const navItems = NAV_ITEMS.filter((item) => allowed.has(item.group));
+  const showAdmin = allowed.has('admin');
 
   function isActive(group: string) {
     if (group === 'wip')   return pathname.startsWith('/wip');
@@ -130,7 +193,7 @@ export function Sidebar() {
   return (
     <aside className="shell-sidebar">
       {/* Logo — fills the full sidebar width */}
-      <Link href="/wip/daily" className="flex items-center justify-center w-full mb-4">
+      <Link href="/" className="flex items-center justify-center w-full mb-4">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/evs-logo-nobg.png"
@@ -146,13 +209,23 @@ export function Sidebar() {
 
       <div className="w-8 h-px bg-[#1a3a0d] my-1" />
 
-      {NAV_ITEMS.map((item) => (
+      {/* Nothing until /api/auth/me answers, so a tab the user cannot open never flashes up. */}
+      {navItems.map((item) => (
         <SidebarIcon key={item.href} {...item} active={isActive(item.group)} />
       ))}
 
-      <div className="w-8 h-px bg-[#1a3a0d] my-1" />
+      {showAdmin && (
+        <>
+          <div className="w-8 h-px bg-[#1a3a0d] my-1" />
+          <SidebarIcon {...ADMIN_ITEM} active={isActive(ADMIN_ITEM.group)} />
+        </>
+      )}
 
-      <SidebarIcon {...ADMIN_ITEM} active={isActive(ADMIN_ITEM.group)} />
+      {me && (
+        <div className="mt-auto">
+          <SignOutIcon email={me.email} />
+        </div>
+      )}
     </aside>
   );
 }
