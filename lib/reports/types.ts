@@ -52,6 +52,13 @@ export interface ReportSummaryItem {
   hint?: string;
 }
 
+/**
+ * A row may carry a note for one of its cells under noteKey(column). Notes are
+ * not columns: the page ignores them and the Excel export attaches each as a
+ * comment on its cell.
+ */
+export const noteKey = (column: string) => `__note:${column}`;
+
 /** Every branch-scoped report keeps the branch name under this row key. */
 export const BRANCH_KEY = 'branch';
 

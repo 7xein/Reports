@@ -15,7 +15,7 @@ import {
   companyIdsFor, m2o, poTime, toOdooUtc, gulfDate, gulfMonthKey, monthLabel,
   searchReadAll, readChunked, type Rec,
 } from './common';
-import type { ReportBuild, ReportColumn, ReportModule, ReportRow, ReportSummaryItem, Tone } from './types';
+import { noteKey, type ReportBuild, type ReportColumn, type ReportModule, type ReportRow, type ReportSummaryItem, type Tone } from './types';
 
 /** Gulf time is UTC+4 all year — no DST — so a fixed offset is exact. */
 const GULF_OFFSET_MS = 4 * 3600 * 1000;
@@ -84,7 +84,10 @@ function columnsFor(months: Month[], cur: string): ReportColumn[] {
 /** Odoo prefixes a product's display name with "[code] "; the code has its own column. */
 const partName = (display: string) => display.replace(/^\[[^\]]*\]\s*/, '');
 
-type Agg = { name: string; amount: number; qty: number; months: Map<string, { amount: number; qty: number }> };
+/** One purchase order's share of a month's price: which PO, from whom, how many, for how much. */
+type Buy = { po: string; vendor: string; qty: number; amount: number };
+type Bucket = { amount: number; qty: number; buys: Map<number, Buy> };
+type Agg = { name: string; amount: number; qty: number; months: Map<string, Bucket> };
 
 export const report: ReportModule = {
   async build(): Promise<ReportBuild> {
@@ -191,7 +194,7 @@ export const report: ReportModule = {
 
     // ── The orders behind them: date, currency and the rate it was bought at ──
     const orderIds = [...new Set(lines.map((l) => m2o(l.rec.order_id)?.[0]).filter((x): x is number => x != null))];
-    const poFields = ['company_id', ...dateFields, ...['currency_id', 'currency_rate'].filter(poHas)];
+    const poFields = ['company_id', 'name', 'partner_id', ...dateFields, ...['currency_id', 'currency_rate'].filter(poHas)];
     const orders = new Map<number, Rec>();
     try {
       for (const o of await readChunked('purchase.order', orderIds, poFields)) orders.set(o.id as number, o);
@@ -247,9 +250,18 @@ export const report: ReportModule = {
       const agg = aggs.get(product[0]) ?? { name: partName(product[1]), amount: 0, qty: 0, months: new Map() };
       agg.amount += amount;
       agg.qty += qty;
-      const bucket = agg.months.get(key) ?? { amount: 0, qty: 0 };
+      const bucket = agg.months.get(key) ?? { amount: 0, qty: 0, buys: new Map() };
       bucket.amount += amount;
       bucket.qty += qty;
+      const buy = bucket.buys.get(orderId) ?? {
+        po: typeof order?.name === 'string' ? order.name : m2o(rec.order_id)?.[1] ?? `PO #${orderId}`,
+        vendor: m2o(order?.partner_id)?.[1] ?? 'Unknown vendor',
+        qty: 0,
+        amount: 0,
+      };
+      buy.qty += qty;
+      buy.amount += amount;
+      bucket.buys.set(orderId, buy);
       agg.months.set(key, bucket);
       aggs.set(product[0], agg);
     }
@@ -287,6 +299,12 @@ export const report: ReportModule = {
         const b = agg.months.get(m.key);
         const unit = b && b.qty > 0 ? round2(b.amount / b.qty) : null;
         row[monthCol(m.key)] = unit;
+        // Which orders the price came from, for the Excel cell comment.
+        if (b && unit != null) {
+          row[noteKey(monthCol(m.key))] = [...b.buys.values()]
+            .map((x) => `${x.po} · ${x.vendor} · ${round2(x.qty)} @ ${round2(x.amount / x.qty).toFixed(2)}`)
+            .join('\n');
+        }
         if (unit != null) priced.push(unit);
       }
 

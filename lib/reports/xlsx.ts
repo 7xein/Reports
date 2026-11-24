@@ -10,7 +10,7 @@
 import * as XLSX from 'xlsx-js-style';
 import { autoWidth, boldHeaderRow } from '../xlsx';
 import { parseScope, scopeLabel } from '../types';
-import type { CellValue, ReportResult } from './types';
+import { noteKey, type CellValue, type ReportResult } from './types';
 
 /** 'All branches', a group, the branch, or the station with its branch: 'Emarat - Altwar (Dubai)'. */
 function scopeText(scope: string): string {
@@ -55,7 +55,20 @@ export function reportWorkbook(result: ReportResult): ArrayBuffer {
     result.columns.map((c) => c.label),
     ...result.rows.map((r) => result.columns.map((c) => cell(r[c.key]))),
   ];
-  XLSX.utils.book_append_sheet(wb, sheet(table), 'Report');
+  const report = sheet(table);
+  // Cell notes travel as Excel comments: hover a price to see where it came from.
+  result.rows.forEach((r, i) => {
+    result.columns.forEach((c, j) => {
+      const note = r[noteKey(c.key)];
+      if (typeof note !== 'string' || !note) return;
+      const ref = XLSX.utils.encode_cell({ r: i + 1, c: j });
+      const target = report[ref];
+      if (!target) return;
+      target.c = [{ a: 'EVS Reports', t: note }];
+      target.c.hidden = true;
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, report, 'Report');
 
   const about: (string | number | null)[][] = [
     ['Title', result.title],
