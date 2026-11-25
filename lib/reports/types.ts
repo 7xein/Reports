@@ -10,7 +10,7 @@ import type { OdooDomain } from '../odoo';
 import { isGroupScope, isStationCompany, parseScope, stationCompany } from '../types';
 
 export type ReportSlug =
-  | 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts' | 'cost'
+  | 'no-rfq' | 'rfq-to-po' | 'po-to-receipt' | 'open-parts' | 'open-parts-car-in' | 'cost'
   | 'attention' | 'open-jobs' | 'not-invoiced' | 'unposted';
 
 /**
@@ -168,6 +168,14 @@ export interface ReportMeta {
   /** Which branches the picker offers: workshops only (repair-order reports) or every branch incl. EV Hub (purchase reports). */
   branchSet: 'workshop' | 'all';
   hero: { title: string; titleEm: string; sub: string };
+  /**
+   * Set on a narrower view of another report. It gets no sub-tab of its own:
+   * the parent's sub-tab stays highlighted, and a toggle above the report
+   * switches between the parent and its children.
+   */
+  parent?: ReportSlug;
+  /** The option's label in that toggle — set on the parent and on each child. */
+  variantLabel?: string;
 }
 
 /** Display order, which is also the sub-tab order. */
@@ -187,6 +195,13 @@ export const REPORTS: readonly ReportMeta[] = [
   {
     slug: 'open-parts', section: 'evhub', label: 'Open parts', windowed: false, branchSet: 'workshop',
     hero: { title: 'Open parts', titleEm: 'and why', sub: 'Every part still short on an open repair order, with where it is stuck in the purchasing chain.' },
+    variantLabel: 'All open repair orders',
+  },
+  {
+    slug: 'open-parts-car-in', section: 'evhub', label: 'Open parts · Car-in', windowed: false, branchSet: 'workshop',
+    hero: { title: 'Open parts', titleEm: 'car-in only', sub: 'Every part still short on an open repair order tagged CAR-IN, with where it is stuck in the purchasing chain.' },
+    parent: 'open-parts',
+    variantLabel: 'Car-in only',
   },
   {
     slug: 'cost', section: 'evhub', label: 'Cost analysis', windowed: false, branchSet: 'all',
@@ -220,8 +235,23 @@ export const DEFAULT_WINDOW_DAYS = 30;
 export const isReportSlug = (s: string): s is ReportSlug => REPORTS.some((r) => r.slug === s);
 export const reportMeta = (slug: ReportSlug): ReportMeta => REPORTS.find((r) => r.slug === slug)!;
 
-/** One section's reports, in display order — its sub-tabs and the only slugs it may prefetch. */
+/** One section's sub-tabs, in display order: its reports minus the child views, which hang off their parent's tab. */
 export const reportsFor = (section: ReportSection): readonly ReportMeta[] =>
+  REPORTS.filter((r) => r.section === section && !r.parent);
+
+/** Every report of one section, child views included — the only slugs it may prefetch. */
+export const sectionReports = (section: ReportSection): readonly ReportMeta[] =>
   REPORTS.filter((r) => r.section === section);
+
+/**
+ * The parent-and-children family a report belongs to, parent first — the
+ * toggle's options. [] when the report has no children and is no child, so
+ * there is nothing to toggle between.
+ */
+export function reportVariants(slug: ReportSlug): readonly ReportMeta[] {
+  const root = reportMeta(slug).parent ?? slug;
+  const children = REPORTS.filter((r) => r.parent === root);
+  return children.length ? [reportMeta(root), ...children] : [];
+}
 
 export const reportSection = (slug: ReportSlug): ReportSection => reportMeta(slug).section;

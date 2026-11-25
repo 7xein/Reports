@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_WINDOW_DAYS,
   WINDOW_OPTIONS,
-  reportsFor,
   rowInScope,
+  sectionReports,
   type ReportResult,
   type ReportSection,
   type ReportSlug,
@@ -71,7 +71,8 @@ async function fetchReport(apiBase: string, slug: string, days: number | null, r
 }
 
 /**
- * After the visible report loads, read the other sub-tabs at their default window, one at a time.
+ * After the visible report loads, read the section's other reports (sub-tabs
+ * and their child views) at their default window, one at a time.
  *
  * Only this section's reports: the other section's are behind a different
  * password, so prefetching them would spend the requests on 401s.
@@ -80,7 +81,7 @@ async function prefetchOthers(apiBase: string, section: ReportSection, current: 
   if (prefetching) return;
   prefetching = true;
   try {
-    for (const r of reportsFor(section)) {
+    for (const r of sectionReports(section)) {
       if (r.slug === current) continue;
       const key = cacheKey(r.slug, r.windowed, DEFAULT_WINDOW_DAYS);
       if (reportCache.has(key)) continue;

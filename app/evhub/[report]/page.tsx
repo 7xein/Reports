@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { Shell } from '@/components/Shell';
 import { ReportView } from '@/components/reports/ReportView';
+import { ReportVariantToggle } from '@/components/reports/ReportVariantToggle';
 import { isReportSlug, reportMeta, reportSection, reportsFor } from '@/lib/reports/types';
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +21,8 @@ export default function EvhubReportPage({ params }: { params: { report: string }
       breadcrumbSection="EVHUB"
       breadcrumbPage={meta.label}
       subTabs={SUB_TABS}
+      // A child view (e.g. Open parts · Car-in) has no sub-tab; its parent's stays lit.
+      activeHref={`/evhub/${meta.parent ?? slug}`}
       hero={{
         eyebrow: 'EVHUB · Parts & purchasing · Live from Odoo',
         title: meta.hero.title,
@@ -27,8 +30,12 @@ export default function EvhubReportPage({ params }: { params: { report: string }
         sub: meta.hero.sub,
       }}
     >
-      {/* Keyed so switching sub-tab starts clean instead of showing the last report's rows under the new heading. */}
-      <ReportView key={slug} slug={slug} windowed={meta.windowed} section="evhub" apiBase="/api/evhub" />
+      <div className="space-y-4">
+        {/* Parent ↔ child views of one report; renders nothing for a report without any. */}
+        <ReportVariantToggle slug={slug} basePath="/evhub" />
+        {/* Keyed so switching sub-tab starts clean instead of showing the last report's rows under the new heading. */}
+        <ReportView key={slug} slug={slug} windowed={meta.windowed} section="evhub" apiBase="/api/evhub" />
+      </div>
     </Shell>
   );
 }

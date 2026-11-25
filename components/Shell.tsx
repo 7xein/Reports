@@ -27,6 +27,8 @@ interface HeroProps {
 type ShellProps = {
   breadcrumbSection: string;
   subTabs: SubTab[];
+  /** A sub-tab to show as active besides the one matching the URL — for a page that is a view of that tab. */
+  activeHref?: string;
   children: React.ReactNode;
 } & (
   | { loading?: false; breadcrumbPage: string; hero: HeroProps }
@@ -36,7 +38,7 @@ type ShellProps = {
 );
 
 export function Shell(props: ShellProps) {
-  const { breadcrumbSection, breadcrumbPage, subTabs, children } = props;
+  const { breadcrumbSection, breadcrumbPage, subTabs, activeHref, children } = props;
   const pathname = usePathname();
 
   return (
@@ -57,7 +59,7 @@ export function Shell(props: ShellProps) {
             {/* Sub-tabs */}
             <div className="flex gap-1">
               {subTabs.map((tab) => {
-                const active = pathname === tab.href;
+                const active = pathname === tab.href || tab.href === activeHref;
                 return (
                   <Link
                     key={tab.href}

@@ -5,6 +5,10 @@
  * "Parts without RFQ" stops at the first missing link (no RFQ at all); this
  * follows each part down the chain — RFQ, confirmation, receipt, issue to the
  * job — so a branch can see which step its backlog is piling up behind.
+ *
+ * Two reports share this one implementation: `report` (open-parts) covers every
+ * open repair order, and `carInReport` (open-parts-car-in) only those tagged
+ * CAR-IN — the same chain load, filtered, so the two never disagree on a part.
  */
 
 import {
@@ -12,7 +16,7 @@ import {
   type LinkedPo, type OpenRo, type PartsChain, type PoLine, type PoLines, type ShortLine,
 } from './parts-chain';
 import { daysBetween, gulfDate } from './common';
-import type { ReportColumn, ReportModule, ReportRow, ReportSummaryItem, Tone } from './types';
+import type { ReportBuild, ReportColumn, ReportModule, ReportRow, ReportSummaryItem, Tone } from './types';
 
 const REASON = {
   inStock: 'In stock, not issued',
@@ -116,86 +120,132 @@ function reasonFor(ro: OpenRo, part: ShortLine, lines: PoLines, match: Match | n
   return expected != null && now > expected ? REASON.overdue : REASON.ordered;
 }
 
-export const report: ReportModule = {
-  async build(params, opts) {
-    const chain = await loadPartsChain(params, opts?.refresh);
-    const lines = await chain.poLines();
-    const now = Date.now();
+const RFQ_LINK_NOTE =
+  'RFQs link to repair orders only through the vehicle: an RFQ or purchase order in any state but cancelled, raised for the same vehicle after the repair order was opened, counts for it — and a part is on it when one of its lines carries the same product. Where several lines match, the one furthest along decides the stage.';
 
-    const rows: ReportRow[] = [];
-    let unknown = 0;
-    for (const ro of chain.ros) {
-      for (const part of ro.short) {
-        const match = bestMatch(ro, part, chain, lines);
-        const reason = reasonFor(ro, part, lines, match, now);
-        if (reason == null) unknown++;
-        rows.push({
-          ro: ro.name,
-          branch: ro.branch,
-          site: ro.site,
-          vehicle: ro.vehicle,
-          part: part.product || null,
-          demand: part.demand,
-          done: part.done,
-          added: day(part.added),
-          age: part.added != null ? daysBetween(part.added, now) : null,
-          reason,
-          // Shown whenever a line matched, whatever the reason: for a part on the
-          // shelf it is where that part most likely came from.
-          po: match?.po.name || null,
-          poStatus: match?.po.stateLabel || null,
-          confirmed: day(match?.po.approved ?? null),
-          expected: day(match ? match.line.planned ?? match.po.planned : null),
-          received: match?.line.received ?? null,
-        });
+const HEAD = {
+  all: {
+    slug: 'open-parts',
+    title: 'Open parts and why',
+    description: 'Every part still short (Done below Demand) on an open repair order, with where it is stuck in the purchasing chain.',
+  },
+  carIn: {
+    slug: 'open-parts-car-in',
+    title: 'Open parts and why — car-in only',
+    description: 'Every part still short (Done below Demand) on an open repair order tagged CAR-IN in Tags or Stages Tags, with where it is stuck in the purchasing chain. Repair orders without a CAR-IN tag are left out.',
+  },
+} as const;
+
+/**
+ * Which repair orders a view covers, and the note saying so. `ros` is null when
+ * the view cannot be built at all — the note then says why, and no rows show.
+ */
+function population(chain: PartsChain, carInOnly: boolean): { ros: OpenRo[] | null; note: string | null } {
+  if (!carInOnly) return { ros: chain.ros, note: null };
+  const tags = chain.carInTags;
+  if (!tags) {
+    return { ros: null, note: 'repair.order has no tag field (Tags or Stages Tags) here, so no repair order could be recognised as car-in.' };
+  }
+  if (!tags.found) {
+    return { ros: null, note: 'No CAR-IN tag was found in Tags or Stages Tags, so no repair order could be recognised as car-in.' };
+  }
+  const matched = tags.names.length ? ` (matched: ${tags.names.join(', ')})` : '';
+  return {
+    ros: chain.ros.filter((ro) => ro.carIn === true),
+    note: `Counted as car-in: repair orders carrying CAR-IN in Tags or Stages Tags${matched}.`,
+  };
+}
+
+/** One open-parts report: every open repair order, or only the car-in ones. */
+export function makeOpenParts({ carInOnly }: { carInOnly: boolean }): ReportModule {
+  const head = carInOnly ? HEAD.carIn : HEAD.all;
+  const result = (rows: ReportRow[], notes: string[]): ReportBuild => ({
+    ...head,
+    windowDays: null,
+    columns: COLUMNS,
+    rows,
+    branchScoped: true,
+    badgeTones: { reason: REASON_TONES },
+    notes,
+  });
+
+  return {
+    async build(params, opts) {
+      const chain = await loadPartsChain(params, opts?.refresh);
+      const { ros, note: populationNote } = population(chain, carInOnly);
+      // Nothing to judge, so the purchase order lines are not worth reading.
+      if (ros === null) return result([], [populationNote!, ...chain.notes]);
+
+      const lines = await chain.poLines();
+      const now = Date.now();
+
+      const rows: ReportRow[] = [];
+      let unknown = 0;
+      for (const ro of ros) {
+        for (const part of ro.short) {
+          const match = bestMatch(ro, part, chain, lines);
+          const reason = reasonFor(ro, part, lines, match, now);
+          if (reason == null) unknown++;
+          rows.push({
+            ro: ro.name,
+            branch: ro.branch,
+            site: ro.site,
+            vehicle: ro.vehicle,
+            part: part.product || null,
+            demand: part.demand,
+            done: part.done,
+            added: day(part.added),
+            age: part.added != null ? daysBetween(part.added, now) : null,
+            reason,
+            // Shown whenever a line matched, whatever the reason: for a part on the
+            // shelf it is where that part most likely came from.
+            po: match?.po.name || null,
+            poStatus: match?.po.stateLabel || null,
+            confirmed: day(match?.po.approved ?? null),
+            expected: day(match ? match.line.planned ?? match.po.planned : null),
+            received: match?.line.received ?? null,
+          });
+        }
       }
-    }
 
-    // Oldest part first; a part with no date to age from goes last.
-    const age = (r: ReportRow) => (typeof r.age === 'number' ? r.age : -Infinity);
-    rows.sort((a, b) => age(b) - age(a) || String(a.ro).localeCompare(String(b.ro)));
+      // Oldest part first; a part with no date to age from goes last.
+      const age = (r: ReportRow) => (typeof r.age === 'number' ? r.age : -Infinity);
+      rows.sort((a, b) => age(b) - age(a) || String(a.ro).localeCompare(String(b.ro)));
 
-    const notes = [
-      'RFQs link to repair orders only through the vehicle: an RFQ or purchase order in any state but cancelled, raised for the same vehicle after the repair order was opened, counts for it — and a part is on it when one of its lines carries the same product. Where several lines match, the one furthest along decides the stage.',
-    ];
-    if (!chain.has.moveState) {
-      notes.push('Parts lines carry no state here, so a part already reserved in stock could not be recognised and “In stock, not issued” never appears.');
-    }
-    if (unknown) {
-      notes.push(`${unknown} part${plural(unknown)} ${unknown === 1 ? 'was' : 'were'} left without a reason because purchasing could not be read for ${unknown === 1 ? 'it' : 'them'}.`);
-    }
-    notes.push(...lines.notes, ...chain.notes);
+      const notes = [RFQ_LINK_NOTE];
+      if (populationNote) notes.push(populationNote);
+      if (!chain.has.moveState) {
+        notes.push('Parts lines carry no state here, so a part already reserved in stock could not be recognised and “In stock, not issued” never appears.');
+      }
+      if (unknown) {
+        notes.push(`${unknown} part${plural(unknown)} ${unknown === 1 ? 'was' : 'were'} left without a reason because purchasing could not be read for ${unknown === 1 ? 'it' : 'them'}.`);
+      }
+      notes.push(...lines.notes, ...chain.notes);
 
-    return {
-      slug: 'open-parts',
-      title: 'Open parts and why',
-      description: 'Every part still short (Done below Demand) on an open repair order, with where it is stuck in the purchasing chain.',
-      windowDays: null,
-      columns: COLUMNS,
-      rows,
-      branchScoped: true,
-      badgeTones: { reason: REASON_TONES },
-      notes,
-    };
-  },
+      return result(rows, notes);
+    },
 
-  summarise(rows): ReportSummaryItem[] {
-    const count = (...reasons: string[]) => rows.filter((r) => typeof r.reason === 'string' && reasons.includes(r.reason)).length;
-    const ros = new Set(rows.map((r) => r.ro)).size;
-    const noRfq = count(REASON.noRfq, REASON.notOnRfq);
-    const overdue = count(REASON.overdue);
-    const withPurchasing = count(REASON.unconfirmed, REASON.overdue, REASON.ordered);
-    const arrived = count(REASON.inStock, REASON.received);
-    return [
-      { label: 'Parts short', value: fmtCount(rows.length), hint: `on ${fmtCount(ros)} repair order${plural(ros)}` },
-      { label: 'No RFQ yet', value: fmtCount(noRfq), tone: noRfq > 0 ? 'bad' : undefined },
-      {
-        label: 'With purchasing',
-        value: fmtCount(withPurchasing),
-        tone: overdue > 0 ? 'warn' : undefined,
-        hint: `${fmtCount(overdue)} past the expected date`,
-      },
-      { label: 'Arrived, not issued', value: fmtCount(arrived), tone: arrived > 0 ? 'warn' : undefined },
-    ];
-  },
-};
+    summarise(rows): ReportSummaryItem[] {
+      const count = (...reasons: string[]) => rows.filter((r) => typeof r.reason === 'string' && reasons.includes(r.reason)).length;
+      const ros = new Set(rows.map((r) => r.ro)).size;
+      const noRfq = count(REASON.noRfq, REASON.notOnRfq);
+      const overdue = count(REASON.overdue);
+      const withPurchasing = count(REASON.unconfirmed, REASON.overdue, REASON.ordered);
+      const arrived = count(REASON.inStock, REASON.received);
+      return [
+        { label: 'Parts short', value: fmtCount(rows.length), hint: `on ${fmtCount(ros)} repair order${plural(ros)}` },
+        { label: 'No RFQ yet', value: fmtCount(noRfq), tone: noRfq > 0 ? 'bad' : undefined },
+        {
+          label: 'With purchasing',
+          value: fmtCount(withPurchasing),
+          tone: overdue > 0 ? 'warn' : undefined,
+          hint: `${fmtCount(overdue)} past the expected date`,
+        },
+        { label: 'Arrived, not issued', value: fmtCount(arrived), tone: arrived > 0 ? 'warn' : undefined },
+      ];
+    },
+  };
+}
+
+export const report: ReportModule = makeOpenParts({ carInOnly: false });
+export const carInReport: ReportModule = makeOpenParts({ carInOnly: true });

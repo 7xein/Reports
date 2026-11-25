@@ -14,7 +14,7 @@
 
 import { WORKSHOP_BRANCHES, type Branch } from '../types';
 import { call, notHistorical, type OdooDomain } from '../odoo';
-import { readFieldsMeta, resolvePartsFields, type FieldsMeta } from '../kpi';
+import { hasAnyTag, readFieldsMeta, resolvePartsFields, resolveTagMatches, type FieldsMeta } from '../kpi';
 import { companyIndex, companyIdsFor, idChunks, m2o, odooTime, poTime, searchReadAll, type Rec } from './common';
 import type { ReportParams } from './types';
 
@@ -26,6 +26,13 @@ const TTL_MS = 2 * 60 * 1000;
 /** Not yet committed to. Note the space in 'to approve' — that is the stored value, not a label. */
 export const RFQ_STATES: readonly string[] = ['draft', 'sent', 'to approve'];
 export const CONFIRMED_STATES: readonly string[] = ['purchase', 'done'];
+
+/**
+ * Tag names that mark the vehicle as in the workshop: "CAR-IN", "CAR IN",
+ * "car_in", "Car In" — but not "CAR OUT", and not "Car insurance", where the
+ * word does not end after "in".
+ */
+export const CAR_IN_RE = /car\s*[-_]?\s*in\b/i;
 
 // ── Shapes ─────────────────────────────────────────────────────────
 
@@ -63,6 +70,19 @@ export interface OpenRo {
    * RFQ" and "could not look" must never read the same.
    */
   poIds: number[] | null;
+  /**
+   * Carries a CAR-IN tag in Tags or Stages Tags. null when repair.order has
+   * neither tag field here, so "not tagged" and "could not look" never read the same.
+   */
+  carIn: boolean | null;
+}
+
+/** The CAR-IN tags found across repair.order's tag fields. */
+export interface CarInTags {
+  /** True when at least one tag in either field matched CAR_IN_RE. */
+  found: boolean;
+  /** Their names, sorted; may be empty while `found` is true if the names could not be read. */
+  names: string[];
 }
 
 export interface LinkedPo {
@@ -104,6 +124,8 @@ export interface PartsChain {
   pos: Map<number, LinkedPo>;
   /** Optional reads that worked here; each report words its own fallback. */
   has: { partsAvailable: boolean; moveState: boolean };
+  /** CAR-IN tags on repair.order; null when repair.order has no tag field here. */
+  carInTags: CarInTags | null;
   /** Caveats that apply to both reports. */
   notes: string[];
   /** The linked orders' lines — read on first ask, since only one report needs them. */
@@ -120,6 +142,35 @@ const plural = (n: number): string => (n === 1 ? '' : 's');
 function selectionLabel(meta: FieldsMeta | null, field: string, value: unknown): string {
   if (typeof value !== 'string' || !value) return '';
   return meta?.[field]?.selection?.find(([v]) => v === value)?.[1] ?? value;
+}
+
+type TagMatch = Awaited<ReturnType<typeof resolveTagMatches>>[number];
+
+/**
+ * The CAR-IN tags, matched by name in every tag field's comodel. The Admin
+ * presence tags are deliberately not used: they mix CAR-IN with CAR-OUT. The
+ * names are read only for the notes, so a failed read costs the names, not
+ * the match. null when repair.order has no tag field at all.
+ */
+async function resolveCarIn(meta: FieldsMeta): Promise<{ matches: TagMatch[]; tags: CarInTags } | null> {
+  const matches = await resolveTagMatches([], meta, CAR_IN_RE);
+  if (!matches.length) return null;
+  const names = new Set<string>();
+  const seen = new Set<string>();
+  for (const m of matches) {
+    const relation = meta[m.field]?.relation;
+    if (!relation || !m.ids.size || seen.has(relation)) continue;
+    seen.add(relation);
+    try {
+      for (const t of (await call(relation, 'read', [[...m.ids]], { fields: ['display_name'] })) as Rec[]) {
+        if (typeof t.display_name === 'string' && t.display_name) names.add(t.display_name);
+      }
+    } catch { /* names are for the notes only */ }
+  }
+  return {
+    matches,
+    tags: { found: matches.some((m) => m.ids.size > 0), names: [...names].sort((a, b) => a.localeCompare(b)) },
+  };
 }
 
 // ── Purchase order lines ───────────────────────────────────────────
@@ -196,13 +247,19 @@ async function load(params: ReportParams): Promise<PartsChain> {
   const ros: OpenRo[] = [];
   const pos = new Map<number, LinkedPo>();
   const has = { partsAvailable: false, moveState: false };
-  const done = (): PartsChain => ({ ros, pos, has, notes, poLines: lazyPoLines([...pos.keys()]) });
+  let carInTags: CarInTags | null = null;
+  const done = (): PartsChain => ({ ros, pos, has, carInTags, notes, poLines: lazyPoLines([...pos.keys()]) });
 
   // Thrown, not noted: without repair.order there is no population at all, and
   // an empty report would read as "nothing waiting" for the whole cache life.
   const meta = await readFieldsMeta('repair.order');
   if (!meta) throw new Error('repair.order could not be read, so the open parts could not be listed.');
   const roHas = (f: string) => hasOwn(meta, f);
+
+  // Resolved before anything can return early, so an empty population still
+  // says whether CAR-IN tags exist rather than reading as "none found".
+  const carIn = await resolveCarIn(meta);
+  carInTags = carIn?.tags ?? null;
 
   const parts = await resolvePartsFields(meta);
   if (!parts) {
@@ -228,7 +285,11 @@ async function load(params: ReportParams): Promise<PartsChain> {
     ['company_id', 'in', companyIds],
     ...(await notHistorical()),
   ];
-  const roFields = ['name', 'company_id', 'create_date', 'state', parts.lineField, ...['partner_id', 'fleet_id', 'repair_state'].filter(roHas)];
+  const roFields = [
+    'name', 'company_id', 'create_date', 'state', parts.lineField,
+    ...['partner_id', 'fleet_id', 'repair_state'].filter(roHas),
+    ...(carIn?.matches.map((m) => m.field) ?? []),
+  ];
   const roRecs = await searchReadAll('repair.order', domain, roFields);
   if (!roHas('fleet_id')) {
     notes.push('repair.order has no vehicle field (fleet_id) here, so no repair order could be linked to a purchase order.');
@@ -309,6 +370,7 @@ async function load(params: ReportParams): Promise<PartsChain> {
       partsAvailable: null,
       short,
       poIds: [],
+      carIn: carIn ? hasAnyTag(r, carIn.matches) : null,
     });
   }
 

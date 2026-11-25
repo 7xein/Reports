@@ -18,7 +18,7 @@ import {
 import { report as noRfq } from './no-rfq';
 import { report as rfqToPo } from './rfq-to-po';
 import { report as poToReceipt } from './po-to-receipt';
-import { report as openParts } from './open-parts';
+import { report as openParts, carInReport as openPartsCarIn } from './open-parts';
 import { report as cost } from './cost';
 import { report as attention } from './attention';
 import { report as openJobs } from './open-jobs';
@@ -30,6 +30,8 @@ export const REPORT_MODULES: Record<ReportSlug, ReportModule> = {
   'rfq-to-po': rfqToPo,
   'po-to-receipt': poToReceipt,
   'open-parts': openParts,
+  // A filtered view of open-parts, off the same shared chain load.
+  'open-parts-car-in': openPartsCarIn,
   cost,
   // The CEO section. All four read one shared population (ceo-core.ts), so a
   // visit that opens every tab costs a single Odoo read.
