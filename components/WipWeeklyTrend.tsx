@@ -9,17 +9,20 @@ import { formatNumber } from '@/lib/format';
 interface Props {
   history: WipWeeklyEntry[];
   metric: WipMetricKey;
+  /** The branches to total; omitted means every branch. A branch-restricted user passes theirs. */
+  branches?: readonly string[];
 }
 
-function weekTotal(entry: WipWeeklyEntry, metric: WipMetricKey): number {
-  return BRANCHES.reduce((sum, b) => sum + ((entry.values[metric]?.[b]) ?? 0), 0);
+function weekTotal(entry: WipWeeklyEntry, metric: WipMetricKey, branches: readonly string[]): number {
+  const values = entry.values[metric] as Record<string, number> | undefined;
+  return branches.reduce((sum, b) => sum + (values?.[b] ?? 0), 0);
 }
 
 function fmtWeek(weekEnding: string): string {
   return new Date(weekEnding + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 
-export function WipWeeklyTrend({ history, metric }: Props) {
+export function WipWeeklyTrend({ history, metric, branches = BRANCHES }: Props) {
   const meta = WIP_METRICS.find((m) => m.key === metric)!;
 
   if (history.length < 2) {
@@ -32,7 +35,7 @@ export function WipWeeklyTrend({ history, metric }: Props) {
 
   const data = [...history]
     .sort((a, b) => a.weekEnding.localeCompare(b.weekEnding))
-    .map((e) => ({ week: fmtWeek(e.weekEnding), value: weekTotal(e, metric) }));
+    .map((e) => ({ week: fmtWeek(e.weekEnding), value: weekTotal(e, metric, branches) }));
 
   return (
     <ResponsiveContainer width="100%" height={220}>

@@ -463,14 +463,19 @@ const METRIC_EXPORT: Record<WipMetricKey, { model: string; domain: () => OdooDom
  */
 export async function fetchMetricRecords(
   metric: WipMetricKey,
-  branch?: Branch,
+  /** One branch, several (a branch-restricted user's "export all"), or omitted for every tracked company. */
+  branch?: Branch | readonly Branch[],
   range?: { start: string; end: string },
 ): Promise<Record<string, unknown>[]> {
   cachedUid = null;
   companyIdCache = null;
 
   const def = METRIC_EXPORT[metric];
-  const ids = branch ? await branchCompanyIds(branch) : await allTrackedCompanyIds();
+  const ids = branch === undefined
+    ? await allTrackedCompanyIds()
+    : typeof branch === 'string'
+      ? await branchCompanyIds(branch)
+      : (await Promise.all(branch.map((b) => branchCompanyIds(b)))).flat();
 
   let extra: OdooDomain = [];
   if (range) {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { KPI_BRANCHES } from '@/lib/types';
 import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
 import {
   KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL, DEFAULT_KPI_TARGET, targetOf,
@@ -372,7 +373,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                       </span>
                     )}
                   </div>
-                  <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · all branches</div>
+                  <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · {tree.branches.length >= KPI_BRANCHES.length ? 'all branches' : tree.branches.map((b) => b.name).join(', ')}</div>
                 </div>
 
                 {/* Needs attention */}

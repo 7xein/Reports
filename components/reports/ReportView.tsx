@@ -11,7 +11,9 @@ import {
   type ReportSlug,
 } from '@/lib/reports/types';
 import { getSubBranches, subKey } from '@/lib/types';
+import { NO_BRANCH_ACCESS_MESSAGE } from '@/lib/access';
 import { BranchScopePicker } from '@/components/BranchScopePicker';
+import { NoBranchAccess } from '@/components/NoBranchAccess';
 import { Spinner } from '@/components/Spinner';
 import { BADGE_TONE, CHIP_ACTIVE_TONE, SEARCHABLE_KINDS, TILE_BORDER_TONE, VALUE_TONE, isEmpty } from './cells';
 import { ReportTable } from './ReportTable';
@@ -377,7 +379,11 @@ export function ReportView({
         </div>
       </div>
 
-      {error && (
+      {/* A user with no branch is refused a branch-scoped report with this exact
+          message — an empty state, not a failure to retry. */}
+      {error === NO_BRANCH_ACCESS_MESSAGE && <NoBranchAccess />}
+
+      {error && error !== NO_BRANCH_ACCESS_MESSAGE && (
         <div className="bg-white rounded-lg shadow-sm p-5 flex flex-wrap items-center gap-3">
           <p className="text-sm text-danger">{error}</p>
           <button

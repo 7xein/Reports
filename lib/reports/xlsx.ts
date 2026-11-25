@@ -48,7 +48,8 @@ function sheet(aoa: (string | number | null)[][]): XLSX.WorkSheet {
   return ws;
 }
 
-export function reportWorkbook(result: ReportResult): ArrayBuffer {
+/** `scopeOverride` replaces the Scope line, e.g. for a user who sees only some branches. */
+export function reportWorkbook(result: ReportResult, scopeOverride?: string): ArrayBuffer {
   const wb = XLSX.utils.book_new();
 
   const table: (string | number | null)[][] = [
@@ -75,7 +76,7 @@ export function reportWorkbook(result: ReportResult): ArrayBuffer {
     ['Description', result.description],
     ['Generated', gulfStamp(result.generatedAt)],
     ['Window', result.windowDays != null ? `${result.windowDays} days` : result.slug === 'cost' ? 'Last 12 months' : 'Current backlog'],
-    ['Scope', scopeText(result.scope)],
+    ['Scope', scopeOverride ?? scopeText(result.scope)],
     [],
     ...result.summary.map((s) => (s.hint ? [s.label, s.value, s.hint] : [s.label, s.value])),
     [],

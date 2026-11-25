@@ -16,13 +16,15 @@ interface TrendChartProps {
   /** 'all', a branch name, or a `${branch}__${station}` key — same scope the page uses. */
   scope: string;
   onScopeChange: (s: string) => void;
+  /** The branches to total and offer; omitted means every branch. A branch-restricted user passes theirs. */
+  branches?: readonly string[];
 }
 
-function sumBranches(values: Record<string, Record<string, number>>, key: string): number {
-  return BRANCHES.reduce((sum, b) => sum + ((values[key]?.[b]) ?? 0), 0);
+function sumBranches(values: Record<string, Record<string, number>>, key: string, branches: readonly string[]): number {
+  return branches.reduce((sum, b) => sum + ((values[key]?.[b]) ?? 0), 0);
 }
 
-export function TrendChart({ entries, metric, scope, onScopeChange }: TrendChartProps) {
+export function TrendChart({ entries, metric, scope, onScopeChange, branches = BRANCHES }: TrendChartProps) {
   const metaMeta = WIP_METRICS.find((m) => m.key === metric)!;
   const { branch: scopeBranch, sub: scopeSub } = parseScope(scope);
 
@@ -40,7 +42,7 @@ export function TrendChart({ entries, metric, scope, onScopeChange }: TrendChart
       date: e.date,
       value:
         scope === 'all'
-          ? sumBranches(e.values as Record<string, Record<string, number>>, metric)
+          ? sumBranches(e.values as Record<string, Record<string, number>>, metric, branches)
           : scopeSub
             // Stations only exist in subValues — snapshots from before they were recorded read 0.
             ? (e.subValues?.[metric]?.[scope] ?? 0)
@@ -52,7 +54,7 @@ export function TrendChart({ entries, metric, scope, onScopeChange }: TrendChart
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-ink-muted">
           {scope === 'all'
-            ? `Total across all ${BRANCHES.length} branches`
+            ? `Total across all ${branches.length} branches`
             : scopeSub
               ? `Station: ${scopeSub} — ${scopeBranch}`
               : `Branch: ${scopeBranch}`}
@@ -65,7 +67,7 @@ export function TrendChart({ entries, metric, scope, onScopeChange }: TrendChart
           style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath d=\'M1 1l4 4 4-4\' stroke=\'%2378C41A\' strokeWidth=\'1.5\' fill=\'none\'/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center' }}
         >
           <option value="all">All Branches</option>
-          {BRANCHES.map((b) =>
+          {branches.map((b) =>
             // Option labels stay self-describing, so the collapsed select always reads like the pill.
             hasSubBranches(b) ? (
               <optgroup key={b} label={b}>

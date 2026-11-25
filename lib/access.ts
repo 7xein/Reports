@@ -4,8 +4,11 @@
  *
  * Pure data and pure functions, no imports — this file is used by the edge
  * middleware, by Node route handlers AND by client components (the sidebar),
- * so it must not pull in anything runtime-specific.
+ * so it must not pull in anything runtime-specific. lib/types is plain
+ * constants, so importing it is safe everywhere.
  */
+
+import { BRANCHES, type Branch } from './types';
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
@@ -56,7 +59,15 @@ export interface UserRecord {
   createdAt: string;
   /** Bumped to sign the user out everywhere: a session must carry this exact value. */
   sessionVersion: number;
+  /**
+   * The branches whose data the user may see: 'all' (every branch, including
+   * any added later) or an explicit list. Missing on records created before
+   * branch access existed, which reads as 'all'. Stations follow their branch.
+   */
+  branches?: BranchAccess;
 }
+
+export type BranchAccess = 'all' | Branch[];
 
 /** What may leave the server about a user — never the password hash. */
 export interface PublicUser {
@@ -66,6 +77,8 @@ export interface PublicUser {
   tabs: TabId[];
   isOwner: boolean;
   createdAt: string;
+  /** Stored branch access ('all' or a list); see effectiveBranches for what applies. */
+  branches: BranchAccess;
 }
 
 const DEFAULT_OWNER_EMAIL = 'hussein.eldomor@evsuae.com';
@@ -91,6 +104,41 @@ export function effectiveTabs(user: Pick<UserRecord, 'email' | 'tabs'>): TabId[]
   return cleanTabs(user.tabs ?? []);
 }
 
+/** Keep only known branch names, drop duplicates, and put them in BRANCHES order. */
+export function cleanBranches(branches: readonly unknown[]): Branch[] {
+  const wanted = new Set(branches.filter((b): b is Branch => typeof b === 'string' && (BRANCHES as readonly string[]).includes(b)));
+  return BRANCHES.filter((b) => wanted.has(b));
+}
+
+/** A stored or submitted value as BranchAccess: 'all', or a cleaned list. */
+export function cleanBranchAccess(v: unknown): BranchAccess {
+  if (v === 'all' || v == null) return 'all';
+  return Array.isArray(v) ? cleanBranches(v) : 'all';
+}
+
+/**
+ * The branches a user can actually see. The owner, and anyone with the Admin
+ * tab (Admin edits every branch's data), see all of them; otherwise the stored
+ * access, where 'all' or a missing value means every branch.
+ */
+export function effectiveBranches(user: Pick<UserRecord, 'email' | 'tabs' | 'branches'>): Branch[] {
+  if (effectiveTabs(user).includes('admin')) return [...BRANCHES];
+  const access = cleanBranchAccess(user.branches);
+  return access === 'all' ? [...BRANCHES] : access;
+}
+
+/** True when the user sees every branch, so nothing needs filtering. */
+export function seesAllBranches(user: Pick<UserRecord, 'email' | 'tabs' | 'branches'>): boolean {
+  return effectiveBranches(user).length === BRANCHES.length;
+}
+
+/**
+ * What a user with no branch at all is told, in place of a tab's content. One
+ * string because the report pages recognise it in an API error and show it as
+ * an empty state rather than as a failure.
+ */
+export const NO_BRANCH_ACCESS_MESSAGE = "You don't have access to any branch yet. Contact Hussein.";
+
 export function toPublicUser(user: UserRecord): PublicUser {
   return {
     email: user.email,
@@ -98,6 +146,7 @@ export function toPublicUser(user: UserRecord): PublicUser {
     tabs: effectiveTabs(user),
     isOwner: isOwnerEmail(user.email),
     createdAt: user.createdAt,
+    branches: cleanBranchAccess(user.branches),
   };
 }
 

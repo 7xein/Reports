@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Shell } from '@/components/Shell';
-import { TABS, normalizeEmail, type PublicUser, type TabId } from '@/lib/access';
+import { TABS, normalizeEmail, type BranchAccess, type PublicUser, type TabId } from '@/lib/access';
+import { BRANCHES, type Branch } from '@/lib/types';
 import { ADMIN_SUB_TABS } from '../admin-sub-tabs';
 
 const SHORT_LABEL: Record<TabId, string> = {
@@ -37,6 +38,173 @@ function toggle(tabs: TabId[], tab: TabId, on: boolean): TabId[] {
   if (on) set.add(tab);
   else set.delete(tab);
   return TABS.map((t) => t.id).filter((id) => set.has(id));
+}
+
+const ADMIN_BRANCHES_TITLE = 'Admin access includes every branch';
+const NO_BRANCHES_TITLE = 'They will see empty pages until you pick a branch';
+const POPOVER_MIN_WIDTH = 200;
+
+function branchLabel(access: BranchAccess): string {
+  if (access === 'all') return 'All branches';
+  if (access.length === 0) return 'No branches';
+  if (access.length <= 2) return access.join(', ');
+  return `${access.length} branches`;
+}
+
+function toggleBranch(access: BranchAccess, branch: Branch, on: boolean): Branch[] {
+  const set = new Set<Branch>(access === 'all' ? BRANCHES : access);
+  if (on) set.add(branch);
+  else set.delete(branch);
+  return BRANCHES.filter((b) => set.has(b));
+}
+
+function Chevron() {
+  return (
+    <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/**
+ * The Branches cell: a button showing the access, opening a popover of
+ * checkboxes. The popover is position: fixed (from the button's rect) so the
+ * table's overflow-x-auto wrapper cannot clip it; it closes on outside click,
+ * Escape, scroll or resize, since a fixed popover would otherwise drift.
+ */
+function BranchPicker({
+  user,
+  adminLocked,
+  busy,
+  disabled,
+  onChange,
+}: {
+  user: PublicUser;
+  adminLocked: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onChange: (access: BranchAccess) => void;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const open = pos !== null && !adminLocked;
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setPos(null);
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t) || buttonRef.current?.contains(t)) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        close();
+        buttonRef.current?.focus();
+      }
+    };
+    const onScroll = (e: Event) => {
+      if (popoverRef.current && e.target instanceof Node && popoverRef.current.contains(e.target)) return;
+      close();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  function toggleOpen() {
+    if (open) {
+      setPos(null);
+      return;
+    }
+    const r = buttonRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const maxLeft = Math.max(8, window.innerWidth - POPOVER_MIN_WIDTH - 24);
+    setPos({ top: r.bottom + 4, left: Math.min(r.left, maxLeft) });
+  }
+
+  if (adminLocked) {
+    return (
+      <button
+        type="button"
+        disabled
+        title={ADMIN_BRANCHES_TITLE}
+        className="inline-flex items-center gap-1 border border-border rounded text-sm px-2 py-1 whitespace-nowrap text-ink-muted cursor-not-allowed"
+      >
+        All (Admin)
+        <Chevron />
+      </button>
+    );
+  }
+
+  const access = user.branches;
+  const none = access !== 'all' && access.length === 0;
+  const title =
+    access === 'all' ? 'Every branch, including ones added in future' : none ? NO_BRANCHES_TITLE : access.join(', ');
+  const ticked = (b: Branch) => access === 'all' || access.includes(b);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Branches for ${user.name}: ${branchLabel(access)}`}
+        disabled={disabled}
+        onClick={toggleOpen}
+        className={`inline-flex items-center gap-1 border rounded text-sm px-2 py-1 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed ${
+          none ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-border text-ink'
+        }`}
+      >
+        {branchLabel(access)}
+        <Chevron />
+      </button>
+      {open && pos && (
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label={`Branches for ${user.name}`}
+          className="fixed z-20 bg-white shadow-lg rounded-lg p-3 min-w-[200px] text-left"
+          style={{ top: pos.top, left: pos.left }}
+        >
+          <label className="flex items-center gap-2 py-1 font-bold text-ink cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-4 h-4 accent-evs-green cursor-pointer disabled:cursor-not-allowed"
+              checked={access === 'all'}
+              disabled={busy}
+              onChange={(e) => onChange(e.target.checked ? 'all' : [...BRANCHES])}
+            />
+            All branches
+          </label>
+          <div className="border-t border-border my-2" />
+          <p className="text-xs text-ink-muted mb-1">All includes branches added in future</p>
+          {BRANCHES.map((b) => (
+            <label key={b} className="flex items-center gap-2 py-1 text-ink cursor-pointer">
+              <input
+                type="checkbox"
+                className="w-4 h-4 accent-evs-green cursor-pointer disabled:cursor-not-allowed"
+                checked={ticked(b)}
+                disabled={busy}
+                onChange={(e) => onChange(toggleBranch(access, b, e.target.checked))}
+              />
+              {b}
+            </label>
+          ))}
+        </div>
+      )}
+    </>
+  );
 }
 
 export function UsersAdmin({
@@ -88,6 +256,33 @@ export function UsersAdmin({
     }
   }
 
+  const applyBranches = (email: string, branches: BranchAccess) =>
+    setUsers((prev) => prev.map((u) => (u.email === email ? { ...u, branches } : u)));
+
+  async function onBranches(user: PublicUser, branches: BranchAccess) {
+    const key = `${user.email}:branches`;
+    const previous = user.branches;
+    setError(null);
+    applyBranches(user.email, branches);
+    setBusy(key, true);
+    try {
+      const res = await fetch('/api/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email, branches }),
+      });
+      if (!res.ok) {
+        applyBranches(user.email, previous);
+        setError(await errorMessage(res));
+      }
+    } catch {
+      applyBranches(user.email, previous);
+      setError('Could not reach the server. Please try again.');
+    } finally {
+      setBusy(key, false);
+    }
+  }
+
   async function onDelete(user: PublicUser) {
     if (!window.confirm(`Delete ${user.email}? They will be signed out and will need to sign up again.`)) return;
     const key = `${user.email}:delete`;
@@ -119,7 +314,7 @@ export function UsersAdmin({
         eyebrow: 'Admin Panel',
         title: 'User',
         titleEm: 'Access',
-        sub: 'Tick the sections each person can open. Changes apply on their next click.',
+        sub: 'Tick the sections and branches each person can open. Changes apply on their next click.',
       }}
     >
       <div className="bg-white rounded-lg shadow-sm p-6 mb-5">
@@ -138,6 +333,7 @@ export function UsersAdmin({
                     {SHORT_LABEL[t.id] ?? t.label}
                   </th>
                 ))}
+                <th className="py-2 px-2 font-semibold whitespace-nowrap">Branches</th>
                 <th className="py-2 pl-2 w-16" aria-label="Actions" />
               </tr>
             </thead>
@@ -178,6 +374,15 @@ export function UsersAdmin({
                         </td>
                       );
                     })}
+                    <td className="py-3 px-2">
+                      <BranchPicker
+                        user={u}
+                        adminLocked={u.isOwner || u.tabs.includes('admin')}
+                        busy={pending.has(`${u.email}:branches`)}
+                        disabled={deleting}
+                        onChange={(b) => onBranches(u, b)}
+                      />
+                    </td>
                     <td className="py-3 pl-2 text-right whitespace-nowrap">
                       {u.isOwner ? (
                         <span className="rounded-full bg-evs-green/15 text-evs-green-dark text-xs font-semibold px-2 py-0.5">

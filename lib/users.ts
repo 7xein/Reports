@@ -13,8 +13,8 @@
 
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 import {
-  cleanTabs, isOwnerEmail, normalizeEmail, toPublicUser,
-  type PublicUser, type TabId, type UserRecord,
+  cleanBranchAccess, cleanTabs, isOwnerEmail, normalizeEmail, toPublicUser,
+  type BranchAccess, type PublicUser, type TabId, type UserRecord,
 } from './access';
 import { USERS_SET_KEY, getRedis, loadUserRecord, userKey } from './user-record';
 
@@ -147,6 +147,7 @@ export async function createUser(input: { name: string; email: string; password:
     tabs: [],
     createdAt: new Date().toISOString(),
     sessionVersion: 1,
+    branches: 'all',
   };
   // NX: two signups racing for one email cannot both win.
   const created = await redis.set(userKey(email), user, { nx: true });
@@ -166,6 +167,21 @@ export async function setUserTabs(email: string, tabs: readonly TabId[]): Promis
   const user = await getUser(email);
   if (!user) throw new UserStoreError('No such user.', 404);
   const updated: UserRecord = { ...user, tabs: cleanTabs(tabs) };
+  await redis.set(userKey(user.email), updated);
+  return toPublicUser(updated);
+}
+
+/**
+ * Replace a user's branch access: 'all' or a list (unknown names are dropped).
+ * Takes effect on their next request. Throws 404 for an unknown user and
+ * OwnerProtectedError for the owner.
+ */
+export async function setUserBranches(email: string, access: BranchAccess): Promise<PublicUser> {
+  if (isOwnerEmail(email)) throw new OwnerProtectedError();
+  const redis = requireRedis();
+  const user = await getUser(email);
+  if (!user) throw new UserStoreError('No such user.', 404);
+  const updated: UserRecord = { ...user, branches: cleanBranchAccess(access) };
   await redis.set(userKey(user.email), updated);
   return toPublicUser(updated);
 }

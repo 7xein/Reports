@@ -26,6 +26,8 @@ interface Props {
   onExport?: (branch?: string) => void;
   /** Key of the export currently in flight: '__all__' or a branch name. */
   exportingKey?: string | null;
+  /** The branches to list; omitted means every branch. A branch-restricted user passes theirs. */
+  branches?: readonly string[];
 }
 
 function Spinner() {
@@ -46,15 +48,15 @@ function DownloadIcon() {
   );
 }
 
-export function BranchBreakdownBars({ meta, current, previous, subValues, title, onExport, exportingKey }: Props) {
+export function BranchBreakdownBars({ meta, current, previous, subValues, title, onExport, exportingKey, branches = BRANCHES }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggle = (b: string) => setExpanded((p) => ({ ...p, [b]: !p[b] }));
 
   const hasSubData = !!subValues;
   const subVal = (branch: string, sub: string) => subValues?.[subKey(branch, sub)] ?? 0;
 
-  const ordered = [...BRANCHES].sort((a, b) => (current[b] ?? 0) - (current[a] ?? 0));
-  const maxVal = Math.max(...BRANCHES.map((b) => current[b] ?? 0), 1);
+  const ordered = [...branches].sort((a, b) => (current[b] ?? 0) - (current[a] ?? 0));
+  const maxVal = Math.max(...branches.map((b) => current[b] ?? 0), 1);
 
   return (
     <div className="bg-white rounded-lg shadow-sm" style={{ padding: '24px 26px' }}>

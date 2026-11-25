@@ -8,9 +8,10 @@
  * once per build and kept with it.
  */
 
-import { BRANCHES, WORKSHOP_BRANCHES, GROUP_SCOPES, getSubBranches, subKey } from '../types';
+import { BRANCHES, WORKSHOP_BRANCHES, GROUP_SCOPES, getSubBranches, isGroupScope, subKey } from '../types';
+import { canSeeBranch, restrictNotes, visibleBranches, type BranchAccessView } from '../branch-scope';
 import {
-  reportMeta, rowInScope,
+  BRANCH_KEY, reportMeta, rowInScope,
   type ReportBuild, type ReportModule, type ReportParams, type ReportResult, type ReportSlug,
   type ReportSummaryItem,
 } from './types';
@@ -92,7 +93,16 @@ function validScopes(branches: readonly string[]): string[] {
 export async function getReport(
   slug: ReportSlug,
   params: ReportParams,
-  opts: { scope: string; refresh: boolean },
+  opts: {
+    scope: string;
+    refresh: boolean;
+    /**
+     * The user's branch access. Omitted, or `all`, returns the report exactly
+     * as before. Applied after the cache, per request — the cached build and
+     * its summaries stay whole and shared.
+     */
+    access?: BranchAccessView;
+  },
 ): Promise<ReportResult> {
   const mod = REPORT_MODULES[slug];
   const meta = reportMeta(slug);
@@ -117,6 +127,14 @@ export async function getReport(
     built.summaries = summaries;
   }
 
+  // A branch-restricted user on a branch-scoped report. A report that is not
+  // branch-scoped (EV Hub cost analysis) has no branch to narrow by: its tab
+  // decides who reads it, so it falls through to the unrestricted path below.
+  const access = opts.access;
+  if (access && !access.all && build.branchScoped) {
+    return restrictedView(mod, params, build, built.summaries, at, branches, opts.scope, access);
+  }
+
   const scope = scopes.includes(opts.scope) ? opts.scope : 'all';
   const rows = scope === 'all' ? build.rows : build.rows.filter((r) => rowInScope(r, scope));
 
@@ -128,5 +146,53 @@ export async function getReport(
     branches,
     summary: built.summaries[scope],
     summaries: built.summaries,
+  };
+}
+
+/**
+ * A branch-scoped report as a restricted user may see it: only rows booked to
+ * their branches, only their branches' pills, and summaries for exactly the
+ * scopes they can reach.
+ *
+ * A branch's or a station's tiles depend on that branch's rows alone, so the
+ * cached ones are reused. 'All' and the two groups span branches, so their
+ * tiles are summarised again over the user's rows — never the network's. A row
+ * with no branch, or one outside the user's set, is dropped: it belongs to no
+ * branch they were given. The caveats go through restrictNotes, since they are
+ * written once for the whole network.
+ */
+function restrictedView(
+  mod: ReportModule,
+  params: ReportParams,
+  build: ReportBuild,
+  cached: Record<string, ReportSummaryItem[]>,
+  at: number,
+  allBranches: readonly string[],
+  requestedScope: string,
+  access: BranchAccessView,
+): ReportResult {
+  const branches = [...visibleBranches(access, allBranches)];
+  const visibleRows = build.rows.filter((r) => canSeeBranch(access, r[BRANCH_KEY]));
+  const scopes = validScopes(branches);
+
+  const summaries: Record<string, ReportSummaryItem[]> = {};
+  for (const s of scopes) {
+    summaries[s] = s === 'all' || isGroupScope(s)
+      ? mod.summarise(s === 'all' ? visibleRows : visibleRows.filter((r) => rowInScope(r, s)), params)
+      : cached[s];
+  }
+
+  const scope = scopes.includes(requestedScope) ? requestedScope : 'all';
+  const rows = scope === 'all' ? visibleRows : visibleRows.filter((r) => rowInScope(r, scope));
+
+  return {
+    ...build,
+    rows,
+    notes: restrictNotes(build.notes, access),
+    generatedAt: new Date(at).toISOString(),
+    scope,
+    branches,
+    summary: summaries[scope],
+    summaries,
   };
 }

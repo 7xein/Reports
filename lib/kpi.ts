@@ -49,6 +49,7 @@ import {
 } from './types';
 import { call, kpiCompanyIds, mainCompanyIdFor, OdooDomain, notHistorical, HISTORICAL_FIELD, isHistorical } from './odoo';
 import { businessMsBetween, businessHours } from './business-hours';
+import { canSeeBranch, restrictNotes, type BranchAccessView } from './branch-scope';
 
 // ── Week helpers ───────────────────────────────────────────────────
 const GULF_OFFSET_MS = 4 * 3600 * 1000;
@@ -3736,5 +3737,56 @@ export function summariseTree(tree: KpiTree): KpiWeekSummary {
     branches: Object.fromEntries(
       tree.branches.map((b) => [b.name, { achievement: b.achievement, sections: b.sections, kpis: pcts(b.kpis) }]),
     ),
+  };
+}
+
+/**
+ * The tree as a branch-restricted user may see it: their branches' nodes only,
+ * with the company line rebuilt over those branches.
+ *
+ * A company cell is the same aggregate as a branch cell over a wider population
+ * — the engine books every evaluation to one of KPI_BRANCHES — so over a subset
+ * it is the sum of that subset's branch cells, and the achievement and section
+ * and role averages follow through the same functions the engine uses. The
+ * violations are the subset's, capped as aggregate() caps them.
+ *
+ * The caveats are written once for the whole network, so they pass through
+ * restrictNotes, which also drops any that names a rostered person who has no
+ * card in these branches.
+ *
+ * Returns the tree untouched for a user who sees every branch, and never
+ * mutates it: the caller's tree is the shared, cached one.
+ */
+export function restrictKpiTree(tree: KpiTree, access: BranchAccessView, config: KpiConfig): KpiTree {
+  if (access.all) return tree;
+  const branches = tree.branches.filter((b) => canSeeBranch(access, b.name));
+  const kpis: KpiCell[] = tree.company.kpis.map((c) => {
+    const parts = branches
+      .map((b) => b.kpis.find((k) => k.id === c.id))
+      .filter((k): k is KpiCell => !!k);
+    const compliant = parts.reduce((s, k) => s + k.compliant, 0);
+    const applicable = parts.reduce((s, k) => s + k.applicable, 0);
+    return {
+      ...c,
+      compliant,
+      applicable,
+      pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
+      violations: parts.flatMap((k) => k.violations).slice(0, VIOLATION_CAP),
+    };
+  });
+  const onCards = new Set(branches.flatMap((b) => b.serviceAdvisors.map((s) => s.odooUserId)));
+  const otherPeople = (config.saRoster ?? [])
+    .filter((r) => !onCards.has(r.odooUserId))
+    .map((r) => r.name || `User ${r.odooUserId}`);
+  return {
+    ...tree,
+    company: {
+      achievement: overall(kpis),
+      sections: sectionTotals(kpis, config),
+      roleAverages: roleTotals(kpis, config),
+      kpis,
+    },
+    branches,
+    notes: restrictNotes(tree.notes, access, otherPeople),
   };
 }

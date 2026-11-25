@@ -10,10 +10,12 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { computeKpiTree, weekStartFor, summariseTree, KpiTree } from '@/lib/kpi';
+import { computeKpiTree, weekStartFor, summariseTree, KpiTree, restrictKpiTree } from '@/lib/kpi';
 import { readData, writeData } from '@/lib/data-store';
 import { getCurrentUser, hasTab } from '@/lib/auth';
-import { withKpiDefaults, KpiWeekSummary } from '@/lib/types';
+import { NO_BRANCH_ACCESS_MESSAGE } from '@/lib/access';
+import { branchAccessOf, restrictKpiHistory, type BranchAccessView } from '@/lib/branch-scope';
+import { withKpiDefaults, KpiWeekSummary, KpiConfig } from '@/lib/types';
 
 // 300, not 60: computing all 21 KPIs for every branch is the heaviest read in
 // the app, and it outgrew a minute — production timed out on 9 Nov 2026. The
@@ -46,10 +48,26 @@ function recentHistory(all: Record<string, KpiWeekSummary> | undefined, weekStar
     .slice(-HISTORY_WEEKS);
 }
 
+/**
+ * The tree and its history as this user may see them. Branch access is applied
+ * here, per request, on the way out — the cached tree and the stored week
+ * summaries stay whole, so one user's view can never become another's.
+ */
+function forUser(tree: KpiTree, history: KpiWeekSummary[], access: BranchAccessView, config: KpiConfig) {
+  if (access.all) return { tree, history };
+  const shown = restrictKpiTree(tree, access, config);
+  return { tree: shown, history: restrictKpiHistory(history, access, shown.branches.map((b) => b.name)) };
+}
+
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!hasTab(user, 'kpi')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  const access = branchAccessOf(user);
+  // No branch, nothing to show: refuse before the expensive compute.
+  if (!access.all && access.branches.length === 0) {
+    return NextResponse.json({ error: NO_BRANCH_ACCESS_MESSAGE }, { status: 403 });
   }
 
   const required = ['ODOO_URL', 'ODOO_DB', 'ODOO_LOGIN', 'ODOO_API_KEY'];
@@ -80,7 +98,8 @@ export async function GET(req: NextRequest) {
       try {
         const cached = await (await redis()).get<KpiTree>(key);
         if (cached) {
-          return NextResponse.json({ ...cached, cached: true, history: recentHistory(data.kpiHistory, weekStart) });
+          const out = forUser(cached, recentHistory(data.kpiHistory, weekStart), access, config);
+          return NextResponse.json({ ...out.tree, cached: true, history: out.history });
         }
       } catch { /* cache miss/unavailable — fall through to a live compute */ }
     }
@@ -104,7 +123,8 @@ export async function GET(req: NextRequest) {
       history = recentHistory(data.kpiHistory, weekStart);
     }
 
-    return NextResponse.json({ ...tree, cached: false, history });
+    const out = forUser(tree, history, access, config);
+    return NextResponse.json({ ...out.tree, cached: false, history: out.history });
   } catch (error) {
     console.error('❌ [api/kpi] failed:', error);
     return NextResponse.json(

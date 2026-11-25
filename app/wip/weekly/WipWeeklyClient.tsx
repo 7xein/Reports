@@ -9,17 +9,17 @@ import { WipMetricsLegend } from '@/components/WipMetricsLegend';
 import { WORKSHOP_BRANCHES, WIP_METRICS, WipWeeklyEntry, WipMetricKey, Branch } from '@/lib/types';
 import { downloadMetricCsv } from '@/lib/export-csv';
 
-function emptyBranchValues(): Record<WipMetricKey, Record<Branch, number>> {
+function emptyBranchValues(branches: readonly Branch[]): Record<WipMetricKey, Record<Branch, number>> {
   return Object.fromEntries(
-    WIP_METRICS.map((m) => [m.key, Object.fromEntries(WORKSHOP_BRANCHES.map((b) => [b, 0]))])
+    WIP_METRICS.map((m) => [m.key, Object.fromEntries(branches.map((b) => [b, 0]))])
   ) as Record<WipMetricKey, Record<Branch, number>>;
 }
 
-function sumTotals(values: Record<WipMetricKey, Record<Branch, number>>): Record<WipMetricKey, number> {
+function sumTotals(values: Record<WipMetricKey, Record<Branch, number>>, branches: readonly Branch[]): Record<WipMetricKey, number> {
   return Object.fromEntries(
     WIP_METRICS.map((m) => [
       m.key,
-      WORKSHOP_BRANCHES.reduce((sum, b) => sum + (values[m.key]?.[b] ?? 0), 0),
+      branches.reduce((sum, b) => sum + (values[m.key]?.[b] ?? 0), 0),
     ])
   ) as Record<WipMetricKey, number>;
 }
@@ -42,7 +42,16 @@ function addDays(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
+export function WipWeeklyClient({ history, branches }: {
+  history: WipWeeklyEntry[];
+  /**
+   * The branches this user may see, when restricted; omitted means every branch.
+   * The server has already stripped every other branch from `history` — this
+   * only keeps their rows off the page.
+   */
+  branches?: readonly Branch[];
+}) {
+  const workshopBranches = branches ? WORKSHOP_BRANCHES.filter((b) => branches.includes(b)) : WORKSHOP_BRANCHES;
   const [selectedIdx, setSelectedIdx] = useState(history.length > 0 ? history.length - 1 : 0);
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
   const [exportingKey, setExportingKey] = useState<string | null>(null);
@@ -59,10 +68,10 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
   const prior    = selectedIdx > 0 ? history[selectedIdx - 1] : undefined;
 
   const currentValues  = selected.values as unknown as Record<WipMetricKey, Record<Branch, number>>;
-  const previousValues = prior ? (prior.values as unknown as Record<WipMetricKey, Record<Branch, number>>) : emptyBranchValues();
+  const previousValues = prior ? (prior.values as unknown as Record<WipMetricKey, Record<Branch, number>>) : emptyBranchValues(workshopBranches);
 
-  const currentTotals  = sumTotals(currentValues);
-  const previousTotals = sumTotals(previousValues);
+  const currentTotals  = sumTotals(currentValues, workshopBranches);
+  const previousTotals = sumTotals(previousValues, workshopBranches);
 
   const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
   const ws = weekStartOf(selected.weekEnding);
@@ -117,7 +126,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
           <span className="text-xs text-ink-muted">Click a metric card above to change</span>
         </div>
         <div className="text-base font-bold text-ink mb-3">{selectedMeta.label}</div>
-        <WipWeeklyTrend history={history} metric={selectedMetric} />
+        <WipWeeklyTrend history={history} metric={selectedMetric} branches={branches} />
       </div>
 
       {/* Branch comparison for the selected metric (this week) */}
@@ -134,6 +143,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
           { start: addDays(selected.weekEnding, -7), end: selected.weekEnding },
         )}
         exportingKey={exportingKey}
+        branches={branches}
       />
 
       {/* Full grid, collapsed by default */}
@@ -142,7 +152,7 @@ export function WipWeeklyClient({ history }: { history: WipWeeklyEntry[] }) {
           <span className="text-evs-green-dark transition-transform group-open:rotate-90">▸</span>
           Show full table — all metrics by branch
         </summary>
-        <MetricsTable branches={WORKSHOP_BRANCHES} current={currentValues} previous={previousValues} subValues={selected.subValues} />
+        <MetricsTable branches={workshopBranches} current={currentValues} previous={previousValues} subValues={selected.subValues} />
       </details>
 
       <WipMetricsLegend />

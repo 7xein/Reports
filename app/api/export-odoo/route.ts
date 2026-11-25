@@ -12,6 +12,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx-js-style';
 import { fetchMetricRecords, fetchRepairOrdersForExport, fetchInvoiceSalesForExport, RepairOrderExportRow, EXPORT_BRANCHES } from '@/lib/odoo';
 import { getCurrentUser, hasAnyTab, hasTab } from '@/lib/auth';
+import { NO_BRANCH_ACCESS_MESSAGE } from '@/lib/access';
+import { branchAccessOf, canSeeBranch } from '@/lib/branch-scope';
 import { autoWidth, boldHeaderRow } from '@/lib/xlsx';
 import { WIP_METRICS, WipMetricKey, BRANCHES, Branch } from '@/lib/types';
 
@@ -207,11 +209,27 @@ export async function POST(req: NextRequest) {
     : undefined;
   const range = body.start && body.end ? { start: body.start, end: body.end } : undefined;
 
+  // Branch access. One branch must be one of theirs; "export all" for a
+  // restricted user means all of THEIR branches, never every company.
+  const access = branchAccessOf(user);
+  if (!access.all) {
+    if (access.branches.length === 0) {
+      return NextResponse.json({ error: NO_BRANCH_ACCESS_MESSAGE }, { status: 403 });
+    }
+    if (branch && !canSeeBranch(access, branch)) {
+      return NextResponse.json({ error: 'You do not have access to that branch' }, { status: 403 });
+    }
+  }
+  const scope: Branch | readonly Branch[] | undefined = branch ?? (access.all ? undefined : access.branches);
+
   try {
-    const records = await fetchMetricRecords(metric, branch, range);
+    const records = await fetchMetricRecords(metric, scope, range);
     const csv = toCsv(records);
     const date = range ? range.end : new Date().toISOString().split('T')[0];
-    const slug = `${metric}-${branch ? branch.replace(/\s+/g, '') : 'all'}-${date}`;
+    const scopeSlug = branch
+      ? branch.replace(/\s+/g, '')
+      : access.all ? 'all' : access.branches.map((b) => b.replace(/\s+/g, '')).join('+');
+    const slug = `${metric}-${scopeSlug}-${date}`;
     return new NextResponse(csv, {
       status: 200,
       headers: {

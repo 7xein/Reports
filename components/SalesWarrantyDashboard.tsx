@@ -1,3 +1,4 @@
+import { BRANCHES } from '@/lib/types';
 import { formatCurrency, formatCurrencySigned } from '@/lib/format';
 
 const BRANCH_COLORS: Record<string, string> = {
@@ -50,7 +51,7 @@ export function SalesWarrantyDashboard({
   const attTextColor = achColor(att);
 
   const cards = [
-    { lab: 'Total Sales',            val: overall,  foot: `all branches · ${cap}`,            accent: '#1a1a1a' },
+    { lab: 'Total Sales',            val: overall,  foot: `${rows.length >= BRANCHES.length ? 'all branches' : rows.map((r) => r.branch).join(', ')} · ${cap}`,            accent: '#1a1a1a' },
     { lab: 'Sales Without Warranty', val: withoutW, foot: `${woShare.toFixed(0)}% of revenue`, accent: '#888888' },
   ];
 

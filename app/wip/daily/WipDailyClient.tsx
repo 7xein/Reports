@@ -16,12 +16,12 @@ function emptyMetricTotals(): Record<WipMetricKey, number> {
   return Object.fromEntries(WIP_METRICS.map((m) => [m.key, 0])) as Record<WipMetricKey, number>;
 }
 
-/** Sum all branches for every metric */
-function sumAllBranches(entry: WipDailyEntry): Record<WipMetricKey, number> {
+/** Sum the shown branches for every metric */
+function sumAllBranches(entry: WipDailyEntry, branches: readonly Branch[]): Record<WipMetricKey, number> {
   return Object.fromEntries(
     WIP_METRICS.map((m) => [
       m.key,
-      WORKSHOP_BRANCHES.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
+      branches.reduce((sum, b) => sum + ((entry.values[m.key]?.[b]) ?? 0), 0),
     ])
   ) as Record<WipMetricKey, number>;
 }
@@ -41,15 +41,24 @@ function singleSubTotals(entry: WipDailyEntry, scopeKey: string): Record<WipMetr
 }
 
 /** Figures for whatever the page is scoped to: all branches, one branch, or one station */
-function totalsForScope(entry: WipDailyEntry, scope: string): Record<WipMetricKey, number> {
-  if (scope === 'all') return sumAllBranches(entry);
+function totalsForScope(entry: WipDailyEntry, scope: string, branches: readonly Branch[]): Record<WipMetricKey, number> {
+  if (scope === 'all') return sumAllBranches(entry, branches);
   // Stations live in subValues; a branch scope keeps reading the authoritative branch total.
   return parseScope(scope).sub
     ? singleSubTotals(entry, scope)
     : singleBranchTotals(entry, scope as Branch);   // every non-station scope is a branch name
 }
 
-export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) {
+export function WipDailyClient({ wipHistory, branches }: {
+  wipHistory: WipDailyEntry[];
+  /**
+   * The branches this user may see, when restricted; omitted means every branch.
+   * The server has already stripped every other branch from `wipHistory` — this
+   * only keeps their pills, rows and options off the page.
+   */
+  branches?: readonly Branch[];
+}) {
+  const workshopBranches = branches ? WORKSHOP_BRANCHES.filter((b) => branches.includes(b)) : WORKSHOP_BRANCHES;
   const [selectedMetric, setSelectedMetric] = useState<WipMetricKey>('openRepairOrders');
   // One scope drives the whole page: 'all', a branch name, or a `${branch}__${station}` key.
   const [scope, setScope] = useState<string>('all');
@@ -63,15 +72,15 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
   // Parent branch of the current scope — '' only while the scope is 'all', which never renders the panel.
   const panelBranch = scopeBranch ?? '';
 
-  const currentTotals  = latest ? totalsForScope(latest, scope) : emptyMetricTotals();
-  const previousTotals = prior  ? totalsForScope(prior,  scope) : emptyMetricTotals();
+  const currentTotals  = latest ? totalsForScope(latest, scope, workshopBranches) : emptyMetricTotals();
+  const previousTotals = prior  ? totalsForScope(prior,  scope, workshopBranches) : emptyMetricTotals();
 
   const selectedMeta = WIP_METRICS.find((m) => m.key === selectedMetric)!;
 
   return (
     <>
       {/* Branch selector — branches with stations split into pill + chevron that drills in */}
-      <BranchScopePicker branches={WORKSHOP_BRANCHES} scope={scope} onChange={setScope} />
+      <BranchScopePicker branches={workshopBranches} scope={scope} onChange={setScope} />
 
       {/* All-metrics KPI grid */}
       <div className="grid grid-cols-7 gap-2 mb-4">
@@ -125,6 +134,7 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
           metric={selectedMetric}
           scope={scope}
           onScopeChange={setScope}
+          branches={branches}
         />
       </div>
 
@@ -137,6 +147,7 @@ export function WipDailyClient({ wipHistory }: { wipHistory: WipDailyEntry[] }) 
           subValues={latest?.subValues?.[selectedMetric]}
           onExport={(branch) => downloadMetricCsv(selectedMetric, branch as Branch | undefined, setExportingKey)}
           exportingKey={exportingKey}
+          branches={branches}
         />
       ) : (
         <SingleBranchPanel

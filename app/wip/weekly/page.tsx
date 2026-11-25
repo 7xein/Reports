@@ -1,12 +1,18 @@
 import { Shell } from '@/components/Shell';
 import { WIP_SUB_TABS } from '@/lib/nav';
 import { WipWeeklyClient } from './WipWeeklyClient';
+import { NoBranchAccess } from '@/components/NoBranchAccess';
 import { readData } from '@/lib/data-store';
+import { currentBranchAccess } from '@/lib/branch-access';
+import { restrictData } from '@/lib/branch-scope';
 
 export const dynamic = 'force-dynamic';
 
 export default async function WipWeeklyPage() {
-  const data = await readData();
+  // A restricted user's blob carries only their branches, so every figure on the page is theirs.
+  const access = await currentBranchAccess();
+  const data = restrictData(await readData(), access);
+  const noBranch = !access.all && access.branches.length === 0;
   const history = [...(data.wipWeeklyHistory ?? [])].sort((a, b) => a.weekEnding.localeCompare(b.weekEnding));
 
   return (
@@ -21,7 +27,9 @@ export default async function WipWeeklyPage() {
         sub: "This week's counts only — not cumulative. Entered every Thursday. Select a week below.",
       }}
     >
-      <WipWeeklyClient history={history} />
+      {noBranch
+        ? <NoBranchAccess />
+        : <WipWeeklyClient history={history} branches={access.all ? undefined : access.branches} />}
     </Shell>
   );
 }

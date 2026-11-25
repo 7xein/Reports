@@ -3,7 +3,10 @@ import { SALES_SUB_TABS } from '@/lib/nav';
 import { SalesDashboardClient } from '@/components/SalesDashboardClient';
 import { WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
+import { NoBranchAccess } from '@/components/NoBranchAccess';
 import { readData } from '@/lib/data-store';
+import { currentBranchAccess } from '@/lib/branch-access';
+import { restrictData, visibleBranches } from '@/lib/branch-scope';
 import { BRANCHES } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
 import { getDailyTarget, sumSalesFor, sumNonWarrantyFor, latestLogDate } from '@/lib/sales-utils';
@@ -11,7 +14,11 @@ import { getDailyTarget, sumSalesFor, sumNonWarrantyFor, latestLogDate } from '@
 export const dynamic = 'force-dynamic';
 
 export default async function SalesDailyPage() {
-  const data = await readData();
+  // A restricted user's log and targets carry only their branches, so every total below is theirs.
+  const access = await currentBranchAccess();
+  const data = restrictData(await readData(), access);
+  const branches = visibleBranches(access, BRANCHES);
+  const noBranch = !access.all && access.branches.length === 0;
   const { salesLog, branchConfig } = data.regional;
   const date = latestLogDate(salesLog);
 
@@ -23,7 +30,7 @@ export default async function SalesDailyPage() {
 
   const onDay = (e: { date: string }) => e.date === date;
 
-  const rows: WarrantyBranchRow[] = (BRANCHES as unknown as string[]).map((b) => {
+  const rows: WarrantyBranchRow[] = (branches as readonly string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
     const overall = sumSalesFor(salesLog, b, onDay);
     const target  = getDailyTarget(cfg);
@@ -50,12 +57,13 @@ export default async function SalesDailyPage() {
         title: 'Daily Sales',
         titleEm: 'Performance',
         sub: 'Revenue split by warranty attachment, vs daily target',
-        stats: [
+        stats: noBranch ? undefined : [
           { value: formatCurrency(totalActual), label: 'Actual' },
           ...(pct !== null ? [{ value: `${pct.toFixed(1)}%`, label: 'Of Target', sub: totalActual >= totalTarget ? 'On track' : 'Below target' }] : []),
         ],
       }}
     >
+      {noBranch ? <NoBranchAccess /> : <>
       <SalesDashboardClient
         rows={rows}
         salesLabel="Sales Today"
@@ -76,8 +84,9 @@ export default async function SalesDailyPage() {
             {currentMonth ? new Date(currentMonth + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : 'Current Month'}
           </span>
         </div>
-        <SalesTrendChart salesLog={currentMonthSalesLog} branches={BRANCHES} />
+        <SalesTrendChart salesLog={currentMonthSalesLog} branches={branches} />
       </div>
+      </>}
     </Shell>
   );
 }

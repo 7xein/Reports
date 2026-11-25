@@ -3,7 +3,10 @@ import { SALES_SUB_TABS } from '@/lib/nav';
 import { SalesDashboardClient } from '@/components/SalesDashboardClient';
 import { WarrantyBranchRow } from '@/components/SalesWarrantyDashboard';
 import { SalesTrendChart } from '@/components/SalesTrendChart';
+import { NoBranchAccess } from '@/components/NoBranchAccess';
 import { readData } from '@/lib/data-store';
+import { currentBranchAccess } from '@/lib/branch-access';
+import { restrictData, visibleBranches } from '@/lib/branch-scope';
 import { BRANCHES } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
 import { sumSalesFor, sumNonWarrantyFor, latestLogDate, getMonthStart } from '@/lib/sales-utils';
@@ -11,7 +14,11 @@ import { sumSalesFor, sumNonWarrantyFor, latestLogDate, getMonthStart } from '@/
 export const dynamic = 'force-dynamic';
 
 export default async function SalesMonthlyPage() {
-  const data = await readData();
+  // A restricted user's log and targets carry only their branches, so every total below is theirs.
+  const access = await currentBranchAccess();
+  const data = restrictData(await readData(), access);
+  const branches = visibleBranches(access, BRANCHES);
+  const noBranch = !access.all && access.branches.length === 0;
   const { salesLog, branchConfig } = data.regional;
   const latestDate = latestLogDate(salesLog);
   const monthStart = latestDate ? getMonthStart(latestDate) : '';
@@ -22,7 +29,7 @@ export default async function SalesMonthlyPage() {
   const calendarDaysInMonth = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0).getDate();
   const inMonth = (e: { date: string }) => monthStart ? e.date >= monthStart && e.date <= latestDate : false;
 
-  const rows: WarrantyBranchRow[] = (BRANCHES as unknown as string[]).map((b) => {
+  const rows: WarrantyBranchRow[] = (branches as readonly string[]).map((b) => {
     const cfg    = branchConfig[b] ?? { monthlyTarget: 0, daysInMonth: 26 };
     // Prorate the monthly target by calendar progress so MTD never exceeds the monthly target.
     const mtdTarget = (cfg.monthlyTarget * mtdDay) / calendarDaysInMonth;
@@ -49,12 +56,13 @@ export default async function SalesMonthlyPage() {
         title: 'Monthly Sales',
         titleEm: 'Performance',
         sub: 'Revenue split by warranty attachment, month-to-date',
-        stats: [
+        stats: noBranch ? undefined : [
           { value: formatCurrency(totalActual), label: 'Actual MTD' },
           { value: formatCurrency(totalTarget), label: 'Target', sub: pct !== null ? `${pct.toFixed(1)}% achieved` : undefined },
         ],
       }}
     >
+      {noBranch ? <NoBranchAccess /> : <>
       <SalesDashboardClient
         rows={rows}
         salesLabel="MTD Sales"
@@ -75,8 +83,9 @@ export default async function SalesMonthlyPage() {
           </div>
           <span className="text-xs bg-evs-green/10 text-evs-green-dark font-semibold px-3 py-1 rounded-full">All Months</span>
         </div>
-        <SalesTrendChart salesLog={salesLog} branches={BRANCHES} groupBy="month" />
+        <SalesTrendChart salesLog={salesLog} branches={branches} groupBy="month" />
       </div>
+      </>}
     </Shell>
   );
 }

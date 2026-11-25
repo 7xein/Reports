@@ -1,12 +1,18 @@
 import { Shell } from '@/components/Shell';
 import { KPI_SUB_TABS } from '@/lib/nav';
 import { KpiClient } from './KpiClient';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { NoBranchAccess } from '@/components/NoBranchAccess';
+import { getCurrentUser, hasTab } from '@/lib/auth';
+import { branchAccessOf } from '@/lib/branch-scope';
 
 export const dynamic = 'force-dynamic';
 
 export default async function KpiPage() {
-  const isAdmin = await isAdminAuthenticated();
+  const user = await getCurrentUser();
+  const isAdmin = hasTab(user, 'admin');
+  const access = branchAccessOf(user);
+  // The tree itself is narrowed by /api/kpi; a user with no branch gets nothing to load.
+  const noBranch = !access.all && access.branches.length === 0;
   return (
     <Shell
       breadcrumbSection="KPI"
@@ -19,7 +25,7 @@ export default async function KpiPage() {
         sub: 'Company → branch → service advisor · click through to see the exact records failing each rule',
       }}
     >
-      <KpiClient isAdmin={isAdmin} />
+      {noBranch ? <NoBranchAccess /> : <KpiClient isAdmin={isAdmin} />}
     </Shell>
   );
 }
