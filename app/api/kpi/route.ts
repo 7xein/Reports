@@ -12,6 +12,8 @@
  * (restrictKpiTree), then — for a user limited to one KPI person — that
  * person's cards only (restrictKpiTreeToPerson). The response's `person` names
  * that person ({ odooUserId, name }), or is null for a user who sees all KPIs.
+ * Company-wide figures go to the owner and Admin only: any other "All KPIs"
+ * user gets the company level emptied and `companyHidden: true` (see forUser).
  *
  * `leaderboard` (kpiLeaderboard) is the one part every KPI user gets whole: the
  * top six of every KPI branch, name and overall score only. It is built from
@@ -23,12 +25,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  computeKpiTree, weekStartFor, summariseTree, KpiTree, restrictKpiTree, restrictKpiTreeToPerson, kpiLeaderboard,
+  computeKpiTree, weekStartFor, summariseTree, KpiTree, restrictKpiTree, restrictKpiTreeToPerson, kpiLeaderboard, hideCompanyKpis,
 } from '@/lib/kpi';
 import { readData, writeData } from '@/lib/data-store';
 import { getCurrentUser, hasTab } from '@/lib/auth';
-import { NO_BRANCH_ACCESS_MESSAGE, effectiveKpiPerson } from '@/lib/access';
-import { branchAccessOf, restrictKpiHistory, type BranchAccessView } from '@/lib/branch-scope';
+import { NO_BRANCH_ACCESS_MESSAGE, effectiveKpiPerson, seesCompanyKpis } from '@/lib/access';
+import { branchAccessOf, restrictKpiHistory, hideCompanyHistory, type BranchAccessView } from '@/lib/branch-scope';
 import { withKpiDefaults, KpiWeekSummary, KpiConfig } from '@/lib/types';
 
 // 300, not 60: computing all 21 KPIs for every branch is the heaviest read in
@@ -71,6 +73,17 @@ function recentHistory(all: Record<string, KpiWeekSummary> | undefined, weekStar
  * narrowed further to that person's cards in those branches. The stored week
  * summaries hold only company and branch figures — no per-person series — so
  * such a user gets no history at all rather than other people's numbers.
+ *
+ * Company-wide figures are the owner's and Admin's only (seesCompanyKpis). Any
+ * other user on "All KPIs" gets the branches and people of their branches and
+ * NO company level: not the network figure and not one rebuilt from their
+ * branches. Their tree always takes the restricted path (restrictKpiTree), even
+ * when they may see every branch, because that path is what narrows the
+ * caveats — a caveat is written once for the whole network, so any number in
+ * it is a company-level count, and restrictNotes drops every caveat carrying a
+ * figure. The company line is then emptied (hideCompanyKpis) and the history
+ * keeps only its per-branch series (hideCompanyHistory). A one-person user is
+ * left as before: their "company" line is their own cards combined.
  */
 function forUser(
   tree: KpiTree,
@@ -78,22 +91,31 @@ function forUser(
   access: BranchAccessView,
   config: KpiConfig,
   personId: number | null,
-) {
-  // 1. Branch access — exactly what every user got before KPI people existed.
-  let shown = tree;
-  let shownHistory = history;
-  if (!access.all) {
-    shown = restrictKpiTree(tree, access, config);
-    shownHistory = restrictKpiHistory(history, access, shown.branches.map((b) => b.name));
+  companyVisible: boolean,
+): { tree: KpiTree; history: KpiWeekSummary[]; companyHidden: boolean } {
+  // One person, within the branches they may see — unchanged by the company rule.
+  if (personId != null) {
+    const shown = access.all ? tree : restrictKpiTree(tree, access, config);
+    return { tree: restrictKpiTreeToPerson(shown, personId, config), history: [], companyHidden: false };
   }
-  if (personId == null) return { tree: shown, history: shownHistory };
-  // 2. One person, within the branches step 1 left.
-  return { tree: restrictKpiTreeToPerson(shown, personId, config), history: [] as KpiWeekSummary[] };
+  // Owner and Admin: the whole tree (they always see every branch).
+  if (companyVisible) {
+    if (access.all) return { tree, history, companyHidden: false };
+    const shown = restrictKpiTree(tree, access, config);
+    return { tree: shown, history: restrictKpiHistory(history, access, shown.branches.map((b) => b.name)), companyHidden: false };
+  }
+  // Everyone else on "All KPIs": their branches, no company level.
+  const restricted: BranchAccessView = { all: false, branches: access.branches };
+  const shown = restrictKpiTree(tree, restricted, config);
+  const shownHistory = restrictKpiHistory(history, restricted, shown.branches.map((b) => b.name));
+  return { tree: hideCompanyKpis(shown), history: hideCompanyHistory(shownHistory), companyHidden: true };
 }
 
 /**
  * The response body: the tree and history narrowed for this user, plus the
- * leaderboard built from the full, unrestricted tree.
+ * leaderboard built from the full, unrestricted tree. `companyHidden` tells the
+ * page the company level was withheld, so it shows no company hero, lines or
+ * deltas rather than empty ones.
  */
 function responseBody(
   full: KpiTree,
@@ -101,14 +123,16 @@ function responseBody(
   access: BranchAccessView,
   config: KpiConfig,
   personId: number | null,
+  companyVisible: boolean,
   cached: boolean,
 ) {
-  const out = forUser(full, history, access, config, personId);
+  const out = forUser(full, history, access, config, personId, companyVisible);
   return {
     ...out.tree,
     cached,
     history: out.history,
     person: personOf(personId, config),
+    companyHidden: out.companyHidden,
     leaderboard: kpiLeaderboard(full),
   };
 }
@@ -128,6 +152,8 @@ export async function GET(req: NextRequest) {
   const access = branchAccessOf(user);
   // Null for the owner, Admin and anyone on "All KPIs".
   const personId = effectiveKpiPerson(user);
+  // Company-wide figures: the owner and Admin only.
+  const companyVisible = seesCompanyKpis(user);
   // No branch, nothing to show: refuse before the expensive compute.
   if (!access.all && access.branches.length === 0) {
     return NextResponse.json({ error: NO_BRANCH_ACCESS_MESSAGE }, { status: 403 });
@@ -162,7 +188,7 @@ export async function GET(req: NextRequest) {
         const cached = await (await redis()).get<KpiTree>(key);
         if (cached) {
           return NextResponse.json(
-            responseBody(cached, recentHistory(data.kpiHistory, weekStart), access, config, personId, true),
+            responseBody(cached, recentHistory(data.kpiHistory, weekStart), access, config, personId, companyVisible, true),
           );
         }
       } catch { /* cache miss/unavailable — fall through to a live compute */ }
@@ -187,7 +213,7 @@ export async function GET(req: NextRequest) {
       history = recentHistory(data.kpiHistory, weekStart);
     }
 
-    return NextResponse.json(responseBody(tree, history, access, config, personId, false));
+    return NextResponse.json(responseBody(tree, history, access, config, personId, companyVisible, false));
   } catch (error) {
     console.error('❌ [api/kpi] failed:', error);
     return NextResponse.json(

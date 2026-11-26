@@ -157,6 +157,19 @@ export function effectiveKpiPerson(user: Pick<UserRecord, 'email' | 'tabs' | 'kp
 }
 
 /**
+ * Whether a user may see COMPANY-WIDE KPI figures (the company achievement, its
+ * KPI lines, sections, role averages and their week-on-week history): the owner
+ * and anyone with the Admin tab only. Everyone else on the KPI tab sees branch
+ * and people figures for their branches, never a company total — neither the
+ * true one nor one rebuilt from their branches. (A user limited to one KPI
+ * person is shown their own combined score in its place, which is theirs, not
+ * the company's.)
+ */
+export function seesCompanyKpis(user: Pick<UserRecord, 'email' | 'tabs'>): boolean {
+  return effectiveTabs(user).includes('admin');
+}
+
+/**
  * What a user with no branch at all is told, in place of a tab's content. One
  * string because the report pages recognise it in an API error and show it as
  * an empty state rather than as a failure.

@@ -286,6 +286,12 @@ type TreeWithHistory = KpiTree & {
   person?: { odooUserId: number; name: string } | null;
   /** Every KPI branch's top people, name and overall score only; absent hides the section. */
   leaderboard?: KpiLeaderboard;
+  /**
+   * Set when the user may not see company-wide figures (anyone but the owner
+   * and Admin, on "All KPIs"). The server has emptied the company level and its
+   * history, so the page shows no company hero, KPI lines or deltas.
+   */
+  companyHidden?: boolean;
 };
 
 export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
@@ -328,6 +334,8 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
   const branchNode: BranchNode | undefined = tree?.branches.find((b) => b.name === branch);
   const saNode: SaNode | undefined = branchNode?.serviceAdvisors.find((s) => s.odooUserId === sa);
   const person = tree?.person ?? null;
+  // No company level for this user: branches and people only.
+  const companyHidden = !!tree?.companyHidden && !person;
   // The person's own cards, one per branch they appear in.
   const personCards = person
     ? (tree?.branches ?? []).flatMap((b) =>
@@ -339,7 +347,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
   const past = history.filter((h) => h.weekStart !== tree?.week.start);
   const prev = past.length ? past[past.length - 1] : null;
 
-  const companyDelta = prev && tree?.company.achievement != null && prev.company.achievement != null
+  const companyDelta = !companyHidden && prev && tree?.company.achievement != null && prev.company.achievement != null
     ? tree.company.achievement - prev.company.achievement : null;
 
   const branchDelta = (name: string) => {
@@ -417,7 +425,16 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
           {!branchNode && (!person || personCards.length > 0) && (
             <>
               <div className="grid lg:grid-cols-2 gap-4 mb-4">
-                {/* Company achievement */}
+                {/* Company achievement — or, with the company level withheld, just
+                    the week and the branches shown, in the same hero styling. */}
+                {companyHidden ? (
+                <div className="rounded-lg p-6 shadow-sm flex flex-col justify-between"
+                  style={{ background: 'linear-gradient(135deg,#0d1f08 0%,#1a3a0d 60%,#0f2a09 100%)' }}>
+                  <div className="text-xs text-white/45">
+                    <span className="uppercase tracking-widest text-white/50">KPI</span> · {fmtWeek(tree.week.start, tree.week.end)} · {tree.branches.length >= KPI_BRANCHES.length ? 'all branches' : tree.branches.map((b) => b.name).join(', ')}
+                  </div>
+                </div>
+                ) : (
                 <div className="rounded-lg p-6 shadow-sm flex flex-col justify-between"
                   style={{ background: 'linear-gradient(135deg,#0d1f08 0%,#1a3a0d 60%,#0f2a09 100%)' }}>
                   <div className="text-xs uppercase tracking-widest text-white/50">{person ? 'KPI Achievement' : 'Company KPI Achievement'}</div>
@@ -434,6 +451,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   </div>
                   <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · {person ? person.name : tree.branches.length >= KPI_BRANCHES.length ? 'all branches' : tree.branches.map((b) => b.name).join(', ')}</div>
                 </div>
+                )}
 
                 {/* Needs attention */}
                 {!person && (
@@ -442,7 +460,9 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                     <AlertIcon />
                     <span className="text-xs font-bold uppercase tracking-wider text-ink">Needs Attention</span>
                   </div>
-                  <div className="grid sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-border">
+                  <div className={`grid ${companyHidden ? '' : 'sm:grid-cols-2'} divide-y sm:divide-y-0 sm:divide-x divide-border`}>
+                    {/* Lowest KPIs are company lines: withheld with the company level. */}
+                    {!companyHidden && (
                     <div className="p-3">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-ink-muted mb-2">Lowest KPIs</div>
                       {[...tree.company.kpis].filter((c) => c.pct !== null)
@@ -460,6 +480,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                         <div className="text-[11px] text-ink-muted py-1.5">No scored KPIs this week.</div>
                       )}
                     </div>
+                    )}
                     <div className="p-3">
                       <div className="text-[10px] font-bold uppercase tracking-wider text-ink-muted mb-2">Lowest Branches</div>
                       {[...tree.branches].filter((b) => b.achievement !== null)
@@ -537,7 +558,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
               )}
 
-              {!person && <KpiGroups cells={tree.company.kpis} deltaFor={kpiDelta} />}
+              {!person && !companyHidden && <KpiGroups cells={tree.company.kpis} deltaFor={kpiDelta} />}
             </>
           )}
 

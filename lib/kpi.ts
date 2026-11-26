@@ -3865,6 +3865,30 @@ export function restrictKpiTreeToPerson(tree: KpiTree, personId: number | null, 
   };
 }
 
+/**
+ * The tree with its company level emptied, for a user who may not see
+ * company-wide figures (seesCompanyKpis false, on "All KPIs").
+ *
+ * The company line keeps its shape — the page and the type still find a
+ * `company` — but carries nothing: no achievement, no KPI cells (so no counts or
+ * violations either), and every section and role average null. Branches and
+ * their people are passed through as given; notes too, so the caller must
+ * already have narrowed them (see restrictKpiTree). Never mutates `tree`.
+ */
+export function hideCompanyKpis(tree: KpiTree): KpiTree {
+  const nulls = <K extends string>(r: Record<K, number | null>) =>
+    Object.fromEntries(Object.keys(r ?? {}).map((k) => [k, null])) as Record<K, number | null>;
+  return {
+    ...tree,
+    company: {
+      achievement: null,
+      sections: nulls(tree.company.sections),
+      roleAverages: nulls(tree.company.roleAverages),
+      kpis: [],
+    },
+  };
+}
+
 /** The cross-branch "Top performers" board: per KPI branch, the best people by overall score. */
 export type KpiLeaderboard = { branch: string; people: { name: string; achievement: number }[] }[];
 

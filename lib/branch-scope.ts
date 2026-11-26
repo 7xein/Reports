@@ -219,3 +219,14 @@ export function restrictKpiHistory(
     };
   });
 }
+
+/**
+ * Stored KPI week summaries with every company-level figure removed, for a user
+ * who may not see company-wide KPIs (seesCompanyKpis false). The company entry
+ * keeps its shape but is empty — no achievement, no per-KPI figures, no
+ * sections — so the page shows no company trend or delta. The per-branch series
+ * are kept exactly as given; narrow them first (restrictKpiHistory).
+ */
+export function hideCompanyHistory(history: readonly KpiWeekSummary[]): KpiWeekSummary[] {
+  return history.map((h) => ({ ...h, company: { achievement: null, kpis: {} } }));
+}
