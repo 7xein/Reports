@@ -213,6 +213,8 @@ export function tabsForApi(pathname: string, method: string): readonly TabId[] |
     pathname === '/api/kpi/odoo-options' ||
     pathname === '/api/kpi/role-proposal' ||
     pathname === '/api/kpi/roster-suggestion' ||
+    // Site → Odoo company links (Admin → Companies).
+    pathname === '/api/companies' ||
     under(pathname, '/api/seed') ||
     under(pathname, '/api/sync-odoo') ||
     under(pathname, '/api/users')

@@ -13,6 +13,14 @@ import {
   BRANCHES, WORKSHOP_BRANCHES, KPI_BRANCHES, MAIN_STATION, subKey, SUB_BRANCH_COMPANY, resolveAgeField,
   KPI_OWNER_FLOOR, KPI_OWNER_WINDOW_DAYS,
 } from './types';
+import {
+  companyIdFor, resolveCompanyLinks,
+  type CompanyResolution, type ConfiguredSite, type OdooCompany,
+} from './company-links';
+import { readCompanyLinks, learnCompanyLinks } from './company-links-store';
+
+export { companyIdFor };
+export type { CompanyResolution };
 
 // ── Env ────────────────────────────────────────────────────────────
 function requireEnv(name: string): string {
@@ -92,37 +100,65 @@ export async function call(model: string, method: string, args: unknown[], kwarg
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
-let companyIdCache: Record<string, number> | null = null;
+// Companies: the configured names in BRANCH_CLUSTERS are our LABELS for each
+// site, linked to a stable Odoo company id (lib/company-links.ts). Every caller
+// resolves through resolveCompanies(), so a company renamed in Odoo keeps its
+// link instead of silently zeroing its branch.
 
-export async function getCompanyIds(): Promise<Record<string, number>> {
-  if (companyIdCache) return companyIdCache;
-  // Use search_read to get the actual 'name' field (not display_name from name_search)
-  const companies: { id: number; name: string }[] = await call('res.company', 'search_read', [[]], {
-    fields: ['name'],
-    limit: 200,
-  });
-  companyIdCache = {};
-  for (const c of companies) companyIdCache[c.name] = c.id;
-  return companyIdCache;
+/** How long a resolution is reused — short, so an Admin relink on another instance lands within minutes. */
+const COMPANY_TTL_MS = 5 * 60 * 1000;
+
+let companyCache: { at: number; promise: Promise<CompanyResolution> } | null = null;
+
+/** Every configured site, in BRANCH_CLUSTERS order, flagged when it is its branch's main company. */
+export function configuredSites(): ConfiguredSite[] {
+  return (Object.entries(BRANCH_CLUSTERS) as [Branch, string[]][]).flatMap(([branch, labels]) =>
+    labels.map((label) => ({ branch, label, main: mainCompanyFor(branch) === label })));
+}
+
+/** Every Odoo company, id and current name. */
+export async function readOdooCompanies(): Promise<OdooCompany[]> {
+  // search_read for the real 'name' field (not display_name from name_search).
+  const rows = (await call('res.company', 'search_read', [[]], { fields: ['name'], limit: 200 })) as { id: number; name?: unknown }[];
+  return rows.map((c) => ({ id: c.id, name: typeof c.name === 'string' ? c.name : `#${c.id}` }));
+}
+
+async function loadCompanyResolution(): Promise<CompanyResolution> {
+  const [companies, links] = await Promise.all([readOdooCompanies(), readCompanyLinks()]);
+  const res = resolveCompanyLinks(configuredSites(), companies, links);
+  // Learn the links a name match found. Never fails the read: a failed write
+  // just leaves those sites resolving by name until the next attempt.
+  if (Object.keys(res.learned).length && (await learnCompanyLinks(res.learned))) {
+    for (const s of res.sites) if (s.label in res.learned) s.how = 'link';
+  }
+  return res;
+}
+
+/** Drop this instance's cached resolution, so the next read sees Odoo and the stored links afresh. */
+export function invalidateCompanyIds(): void {
+  companyCache = null;
 }
 
 /**
- * Company id for a configured name.
- *
- * Exact match first, then case- and whitespace-insensitive. Odoo company names
- * are typed by people and get re-typed on every rename, so "Almushrif" vs
- * "AlMushrif" is a matter of time — and an exact-only match turns that into a
- * silent zero rather than an error. The relaxed pass costs nothing and removes
- * a whole class of invisible breakage.
+ * The configured sites resolved to Odoo companies. Cached for COMPANY_TTL_MS
+ * (the in-flight promise too, so parallel queries share one res.company read);
+ * `fresh` skips the cache and replaces it. A failed read is never cached.
  */
-export function companyIdFor(map: Record<string, number>, name: string): number | undefined {
-  const exact = map[name];
-  if (exact) return exact;
-  const want = name.trim().toLowerCase();
-  for (const [known, id] of Object.entries(map)) {
-    if (known.trim().toLowerCase() === want) return id;
-  }
-  return undefined;
+export async function resolveCompanies(opts: { fresh?: boolean } = {}): Promise<CompanyResolution> {
+  const hit = companyCache;
+  if (!opts.fresh && hit && Date.now() - hit.at < COMPANY_TTL_MS) return hit.promise;
+  const entry = { at: Date.now(), promise: loadCompanyResolution() };
+  companyCache = entry;
+  entry.promise.catch(() => { if (companyCache === entry) companyCache = null; });
+  return entry.promise;
+}
+
+/**
+ * Odoo company name → id, overlaid with every resolved configured label → its
+ * linked id. Ask it by configured label through companyIdFor, as before.
+ */
+export async function getCompanyIds(): Promise<Record<string, number>> {
+  return (await resolveCompanies()).map;
 }
 
 export async function branchCompanyIds(branch: Branch): Promise<number[]> {
@@ -133,18 +169,15 @@ export async function branchCompanyIds(branch: Branch): Promise<number[]> {
 }
 
 /**
- * Configured company names with no match in Odoo, as "Name (Branch)".
+ * Configured sites that resolve to no Odoo company, as "Label (Branch)".
  *
- * Branch filters match on exact name, so a rename produces a silent zero rather
- * than an error. Callers surface this so the zero is explained at the point it
- * appears instead of only in the server log.
+ * Neither a stored link nor a name match found them, so they silently count
+ * zero. Callers surface this so the zero is explained at the point it appears
+ * instead of only in the server log; Admin → Companies is where it is fixed.
  */
 export async function unresolvedCompanies(): Promise<string[]> {
-  const map = await getCompanyIds();
-  return Object.entries(BRANCH_CLUSTERS)
-    .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })))
-    .filter((c) => !companyIdFor(map, c.name))
-    .map((c) => `${c.name} (${c.branch})`);
+  const { sites } = await resolveCompanies();
+  return sites.filter((s) => s.how === 'missing').map((s) => `${s.label} (${s.branch})`);
 }
 
 export async function allTrackedCompanyIds(): Promise<number[]> {
@@ -194,15 +227,15 @@ export async function kpiCompanyIds(): Promise<number[]> {
   return ids;
 }
 
-/** Reverse of getCompanyIds: company id → name. */
-async function companyNameById(): Promise<Record<number, string>> {
-  const map = await getCompanyIds();
-  const out: Record<number, string> = {};
-  for (const [name, id] of Object.entries(map)) out[id] = name;
-  return out;
+/**
+ * Company id → the configured label that claims it. Keyed off the resolved id,
+ * never Odoo's current name, so a renamed company still lands on its label.
+ */
+async function companyLabelById(): Promise<Record<number, string>> {
+  return (await resolveCompanies()).labelById;
 }
 
-/** Per-company counts (keyed by company NAME) via a single read_group. */
+/** Per-company counts (keyed by configured company LABEL) via a single read_group. */
 async function groupCountByCompany(model: string, domain: OdooDomain): Promise<Record<string, number>> {
   const trackedIds = await allTrackedCompanyIds();
   const fullDomain: OdooDomain = [...domain, ['company_id', 'in', trackedIds]];
@@ -211,17 +244,17 @@ async function groupCountByCompany(model: string, domain: OdooDomain): Promise<R
     groupby: ['company_id'],
     lazy: true,
   });
-  const idToName = await companyNameById();
+  const idToLabel = await companyLabelById();
   const out: Record<string, number> = {};
   for (const g of groups) {
     const cid = g.company_id?.[0];
     const count = (g.company_id_count ?? g.__count ?? 0) as number;
-    if (cid && idToName[cid]) out[idToName[cid]] = count;
+    if (cid && idToLabel[cid]) out[idToLabel[cid]] = count;
   }
   return out;
 }
 
-/** Per-company counts (keyed by company NAME) via one search_count per company.
+/** Per-company counts (keyed by configured company LABEL) via one search_count per company.
  *  Use when read_group miscounts (e.g. many2many tag_ids filters). */
 async function searchCountByCompany(model: string, domain: OdooDomain): Promise<Record<string, number>> {
   const map = await getCompanyIds();
@@ -280,7 +313,7 @@ function rollUp(perCompany: Record<string, number>): {
 }
 
 // ── Metric queries (per-company; mirror Odoo saved filters) ────────
-// Each returns a Record<companyName, count>, later rolled up into branch
+// Each returns a Record<configured company label, count>, later rolled up into branch
 // totals + per-sub-branch values. `extra` carries an optional date range.
 
 // Base domains — defined once and shared by the count builders AND the record
@@ -468,7 +501,7 @@ export async function fetchMetricRecords(
   range?: { start: string; end: string },
 ): Promise<Record<string, unknown>[]> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const def = METRIC_EXPORT[metric];
   const ids = branch === undefined
@@ -589,7 +622,7 @@ export async function fetchRepairOrdersForExport(
   opts: { wipOnly: boolean; startDate?: string },
 ): Promise<RepairOrderExportRow[]> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   // Only the MAIN company of each export branch — drop station companies
   // (Emarat sites, Almushrif), EV Hub and Qatar.
@@ -700,7 +733,7 @@ export async function fetchRepairOrdersForExport(
  */
 export async function fetchInvoiceSalesForExport(dateStr: string): Promise<Record<string, number>> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const companyMap = await getCompanyIds();
   const idToBranch: Record<number, string> = {};
@@ -756,7 +789,7 @@ function buildSnapshot(
  */
 export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapshot> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const snapshotDate = dateStr || new Date().toISOString().split('T')[0];
 
@@ -794,7 +827,7 @@ export async function fetchWipSnapshot(dateStr?: string): Promise<OdooWipSnapsho
 
 export async function fetchWipWeeklySnapshot(startDate: string, endDate: string): Promise<OdooWipSnapshot> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const dateRange: OdooDomain = [
     ['create_date', '>=', startDate],
@@ -978,7 +1011,7 @@ export interface OdooSalesRange {
  */
 export async function fetchSalesRange(start: string, end: string): Promise<OdooSalesRange> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const idToBranch: Record<number, string> = {};
   for (const branch of BRANCHES) {
@@ -1031,7 +1064,7 @@ export async function fetchSalesRange(start: string, end: string): Promise<OdooS
 
 export async function fetchDailySales(dateStr?: string): Promise<OdooSalesSnapshot> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   // Default to yesterday
   if (!dateStr) {
@@ -1126,7 +1159,7 @@ async function chatterTrackingCounts(fields: string[]): Promise<Record<string, n
  */
 export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   // `store` and `readonly` are requested so the report below can tell a real
   // database column from a computed, non-stored field. Odoo's button-visibility
@@ -1221,9 +1254,12 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
   // that day, or invoices that exist but never match the filter. Counting them
   // over 30 days with and without the posted filter separates the two.
   try {
-    const companyMap = await getCompanyIds();
-    const idToName: Record<number, string> = {};
-    for (const [n, id] of Object.entries(companyMap)) idToName[id] = n;
+    // Keyed by company id, never by name: a tracked company shows under its
+    // configured label whatever Odoo calls it today, and only a company no label
+    // is linked to counts as a stray.
+    const { labelById, odoo } = await resolveCompanies();
+    const odooNameById: Record<number, string> = {};
+    for (const c of odoo) odooNameById[c.id] = c.name;
     const since30 = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
 
     const tally = async (extra: OdooDomain) => {
@@ -1234,11 +1270,11 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
         // on a company no branch claims, and that only shows if we count them all.
         ...extra,
       ]], { fields: ['company_id', 'amount_untaxed'], groupby: ['company_id'], lazy: true })) as ReadGroupResult[];
-      const out: Record<string, { n: number; amt: number }> = {};
+      const out: Record<number, { n: number; amt: number }> = {};
       for (const g of groups) {
-        const name = g.company_id?.[0] != null ? idToName[g.company_id[0]] : undefined;
-        if (!name) continue;
-        out[name] = {
+        const cid = g.company_id?.[0];
+        if (cid == null || !odooNameById[cid]) continue;
+        out[cid] = {
           n: (g.company_id_count ?? g.__count ?? 0) as number,
           amt: (g.amount_untaxed as number) || 0,
         };
@@ -1247,24 +1283,24 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     };
 
     const [posted, any] = await Promise.all([tally([['state', '=', 'posted']]), tally([])]);
-    const fmt = (name: string) => {
-      const pp = posted[name], aa = any[name];
+    const fmt = (name: string, id: number | undefined) => {
+      const pp = id != null ? posted[id] : undefined, aa = id != null ? any[id] : undefined;
       if (!aa) return `${name}: none`;
       return `${name}: ${pp?.n ?? 0} posted of ${aa.n} (AED ${Math.round(pp?.amt ?? 0).toLocaleString('en-US')})`;
     };
 
+    const companyMap = await getCompanyIds();
     const tracked = Object.values(BRANCH_CLUSTERS).flat();
-    notes.push(`Invoices per COUNTED company, last 30 days — ${tracked.map(fmt).join(' · ')}`);
+    notes.push(`Invoices per COUNTED company, last 30 days — ${tracked.map((label) => fmt(label, companyIdFor(companyMap, label))).join(' · ')}`);
 
-    // Anything invoicing that no branch claims. This is where a renamed or
-    // duplicated company hides.
-    const knownNames = new Set(tracked.map((n) => n.trim().toLowerCase()));
-    const strays = Object.keys(any)
-      .filter((n) => !knownNames.has(n.trim().toLowerCase()))
+    // Anything invoicing that no branch claims. This is where a duplicated
+    // company, or one no site is linked to, hides.
+    const strays = Object.keys(any).map(Number)
+      .filter((id) => !(id in labelById))
       .sort((x, y) => (posted[y]?.amt ?? 0) - (posted[x]?.amt ?? 0))
       .slice(0, 15);
     notes.push(strays.length
-      ? `⚠ Invoicing companies NOT counted by any branch — ${strays.map(fmt).join(' · ')}`
+      ? `⚠ Invoicing companies NOT counted by any branch — ${strays.map((id) => fmt(odooNameById[id], id)).join(' · ')}`
       : 'Every invoicing company in Odoo is claimed by a branch.');
   } catch (e) {
     notes.push(`Invoice probe failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1347,21 +1383,23 @@ export async function fetchKpiOdooOptions(): Promise<KpiOdooOptions> {
     }
   } catch { /* non-fatal diagnostic */ }
 
-  // Company-name resolution. Branch filters match on exact NAME, so a company
-  // renamed in Odoo silently contributes zero rather than erroring — the failure
-  // mode that took out Abu Dhabi and Sharjah. Name both sides of any mismatch.
+  // Company resolution. Each site is linked to its Odoo company by id (Admin →
+  // Companies), so a rename no longer zeroes a branch — but a site with neither
+  // a link nor a matching name still contributes zero, the failure mode that
+  // took out Abu Dhabi and Sharjah. Name both sides of any gap.
   try {
-    const companyMap = await getCompanyIds();
-    const configured = Object.entries(BRANCH_CLUSTERS)
-      .flatMap(([branch, names]) => names.map((n) => ({ branch, name: n })));
-    const missing = configured.filter((c) => !companyIdFor(companyMap, c.name));
-    const known = new Set(configured.map((c) => c.name));
-    const unmatched = Object.keys(companyMap).filter((n) => !known.has(n));
+    const { sites, odoo, labelById } = await resolveCompanies();
+    const missing = sites.filter((s) => s.how === 'missing');
+    const renamed = sites.filter((s) => s.odooName != null && s.odooName !== s.label);
+    const unmatched = odoo.filter((c) => !(c.id in labelById));
 
     notes.push(missing.length
-      ? `⚠ CONFIGURED BUT NOT FOUND IN ODOO: ${missing.map((c) => `"${c.name}" (${c.branch})`).join(' · ')} — these contribute 0 to their branch.`
-      : `All ${configured.length} configured companies resolved in Odoo.`);
-    notes.push(`Odoo companies not counted by any branch: ${unmatched.map((n) => `"${n}"`).join(' · ') || '(none)'}`);
+      ? `⚠ CONFIGURED BUT NOT FOUND IN ODOO: ${missing.map((s) => `"${s.label}" (${s.branch})`).join(' · ')} — these contribute 0 to their branch until linked under Admin → Companies.`
+      : `All ${sites.length} configured companies resolved in Odoo.`);
+    if (renamed.length) {
+      notes.push(`Named differently in Odoo, still counted through their link: ${renamed.map((s) => `"${s.label}" is "${s.odooName}" (#${s.id})`).join(' · ')}`);
+    }
+    notes.push(`Odoo companies not counted by any branch: ${unmatched.map((c) => `"${c.name}"`).join(' · ') || '(none)'}`);
   } catch { notes.push('Company-name check failed.'); }
 
   // Which of the candidate fields the chatter actually records — decisive for
@@ -1516,7 +1554,7 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
  */
 export async function fetchRosterSuggestion(): Promise<{ people: RosterSuggestion[]; notes: string[] }> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
 
   const notes: string[] = [];
   const since = new Date(Date.now() - ROSTER_DAYS * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
@@ -2937,7 +2975,7 @@ export async function fetchKpiOwners(
   budgetMs: number = KPI_OWNER_BUDGET_MS,
 ): Promise<KpiOwnersResult> {
   cachedUid = null;
-  companyIdCache = null;
+  invalidateCompanyIds();
   const prev: KpiOwners = previous ?? {};
   const computedAt = new Date().toISOString();
 

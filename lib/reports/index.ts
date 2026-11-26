@@ -24,6 +24,8 @@ import { report as attention } from './attention';
 import { report as openJobs } from './open-jobs';
 import { report as notInvoiced } from './not-invoiced';
 import { report as unposted } from './unposted';
+import { clearPartsChainMemo } from './parts-chain';
+import { clearCeoDataMemo } from './ceo-core';
 
 export const REPORT_MODULES: Record<ReportSlug, ReportModule> = {
   'no-rfq': noRfq,
@@ -54,6 +56,18 @@ type Built = {
 type Entry = { promise: Promise<Built>; settled?: Built };
 
 const cache = new Map<string, Entry>();
+
+/**
+ * Drop every cached build and the shared population memos behind them, on this
+ * instance. Called after an Admin company relink so a site that read zero does
+ * not keep reading zero for the rest of the TTL. Other warm instances keep
+ * theirs until it expires.
+ */
+export function clearReportCaches(): void {
+  cache.clear();
+  clearPartsChainMemo();
+  clearCeoDataMemo();
+}
 
 /**
  * The cached build for a key, or a fresh one. The in-flight promise is cached

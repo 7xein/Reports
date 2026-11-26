@@ -865,3 +865,8 @@ export function loadCeoData(params: ReportParams, refresh = false): Promise<CeoD
   memo = entry;
   return entry.promise;
 }
+
+/** Forget the memo, so the next load reads Odoo afresh — after an Admin company relink. */
+export function clearCeoDataMemo(): void {
+  memo = null;
+}

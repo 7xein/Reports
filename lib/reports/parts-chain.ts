@@ -488,3 +488,8 @@ export function loadPartsChain(params: ReportParams, refresh = false): Promise<P
   memo = entry;
   return entry.promise;
 }
+
+/** Forget the memo, so the next load reads Odoo afresh — after an Admin company relink. */
+export function clearPartsChainMemo(): void {
+  memo = null;
+}
