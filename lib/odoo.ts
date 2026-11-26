@@ -1999,17 +1999,18 @@ export type OwnershipBucketKey = typeof OWNERSHIP_ORDER[number];
  *  - KPI 13 (Customer follow-up) is always whoever opened the repair order —
  *    the owner's rule — so it rides on opensJobCards, and uploadsFollowUp maps
  *    to no KPI at all (still measured, for the diagnostic).
- *  - KPIs 20 (Parts placed) and 6 (Awaiting parts) sit on receivesParts: the
- *    receipt is the only point in the parts chain where a person is recorded.
+ *  - KPI 20 (Parts placed) sits on receivesParts: the receipt is where a
+ *    person is recorded. KPI 6 (Awaiting parts) is charged to whoever raised
+ *    the RFQ, so it sits on raisesRfqs with KPI 18.
  */
 export const OWNERSHIP_BUCKET_KPIS: Record<OwnershipBucketKey, readonly number[]> = {
   opensJobCards: [5, 8, 13],
   movesToInspection: [14, 15],
   writesQuotations: [12, 21],
   confirmsQuotations: [2, 3, 4],
-  raisesRfqs: [18],
+  raisesRfqs: [18, 6],
   confirmsPos: [19],
-  receivesParts: [20, 6],
+  receivesParts: [20],
   movesThroughQa: [16],
   marksRepaired: [22],
   postsInvoices: [1, 11],

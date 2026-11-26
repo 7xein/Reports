@@ -3178,14 +3178,19 @@ export async function computeKpiEvaluations(
      * `snapshotBaselineDays` is still the outer bound, and a vehicle stuck past
      * the limit from before the window still counts against us exactly as before.
      */
-    const scoreWaiting = (kpiId: number, waiting: Map<number, Rec>, overdue: Map<number, Rec>) => {
+    const scoreWaiting = (
+      kpiId: number,
+      waiting: Map<number, Rec>,
+      overdue: Map<number, Rec>,
+      chargeOf: (r: Rec) => Performer | null = roOpener,
+    ) => {
       const seen = new Set<number>();
       let judged = 0;
-      // A vehicle waiting is a state, not an act: nobody performs "awaiting
-      // parts". KPI 6 is therefore charged to whoever opened the repair order,
-      // per the owner's rule for verdicts nobody performed. KPI 7 is in
-      // BRANCH_ONLY_KPI_IDS: it names nobody and reaches no card at all.
-      const chargedFor = (r: Rec) => (BRANCH_ONLY_KPI_IDS.includes(kpiId) ? null : roOpener(r));
+      // Who a waiting verdict is charged to is the caller's: KPI 6 passes the
+      // creator of the RFQ raised for the job (see its block), falling back to
+      // whoever opened the repair order. KPI 7 is in BRANCH_ONLY_KPI_IDS: it
+      // names nobody and reaches no card at all.
+      const chargedFor = (r: Rec) => (BRANCH_ONLY_KPI_IDS.includes(kpiId) ? null : chargeOf(r));
       for (const [id, r] of waiting) {
         if (!inWindow.has(id)) continue;   // older than the baseline window, unless it is overdue below
         seen.add(id);
@@ -3215,7 +3220,7 @@ export async function computeKpiEvaluations(
         ...selectorDomain(sel),
         ['company_id', 'in', kpiIds],
         ...notHist,
-      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField], limit: 0 })) as Rec[];
+      ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', ageField, ...(has('fleet_id') ? ['fleet_id'] : [])], limit: 0 })) as Rec[];
       const tf = trackedField(sel, meta, stageNames);
       // The LATEST arrival, on purpose, and the one place in the engine where
       // that is the right reading: this asks how long a car has been sitting in
@@ -3267,7 +3272,7 @@ export async function computeKpiEvaluations(
           ...selectorDomainNot(config.stageMap.closed),
           ['company_id', 'in', kpiIds],
           ...notHist,
-        ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', parts.lineField], limit: 0 })) as Rec[];
+        ]], { fields: ['name', 'create_uid', 'company_id', 'create_date', parts.lineField, ...(has('fleet_id') ? ['fleet_id'] : [])], limit: 0 })) as Rec[];
 
         const lineIds = [...new Set(openROs.flatMap((r) => (r[parts.lineField] as number[] | undefined) ?? []))];
         const lineInfo = await readPartsLines(parts, lineIds);
@@ -3309,7 +3314,56 @@ export async function computeKpiEvaluations(
         awaitingPartsMethod = 'the mapped state';
         ({ waiting, overdue } = await overdueByState(config.stageMap.awaitingParts, days, 'Awaiting parts'));
       }
-      const { judged } = scoreWaiting(6, waiting, overdue);
+      // Charged to whoever raised the RFQ for the job — the creator of the
+      // purchase order on the vehicle. A purchase order carries no link back to
+      // a repair order, so the vehicle is the route, exactly as KPI 18 takes it:
+      // an RFQ counts for THIS job only if it was created on or after the job
+      // card, and the EARLIEST such RFQ is the one raised for it. Fetched only
+      // when something is waiting. Only the person charged changes: the
+      // compliance, timing and start-date cut-off all still read the repair
+      // order itself.
+      const rfqsByFleet: Record<number, { t: number; by: Performer | null }[]> = {};
+      const waitFleetIds = [...new Set([...waiting.values()].map((r) => m2o(r.fleet_id)?.[0]).filter((x): x is number => x != null))];
+      // purchase.order dates are datetimes on some versions and plain dates on others.
+      const rfqTime = (raw: unknown): number | null => {
+        if (typeof raw !== 'string' || !raw) return null;
+        if (raw.length > 10) return odooTime(raw);
+        const t = Date.parse(`${raw}T00:00:00Z`);
+        return Number.isNaN(t) ? null : t;
+      };
+      for (let i = 0; i < waitFleetIds.length; i += 2000) {
+        try {
+          const pos = (await call('purchase.order', 'search_read', [[
+            ['fleet_id', 'in', waitFleetIds.slice(i, i + 2000)],
+          ]], { fields: ['fleet_id', 'create_date', 'create_uid', 'company_id'], limit: 0 })) as Rec[];
+          for (const po of pos) {
+            const cid = m2o(po.company_id)?.[0];
+            if (cid == null || !kpiIds.includes(cid)) continue;
+            const fleet = m2o(po.fleet_id)?.[0];
+            const t = rfqTime(po.create_date);
+            const u = m2o(po.create_uid);
+            if (fleet != null && t != null) (rfqsByFleet[fleet] ??= []).push({ t, by: u ? { id: u[0], name: u[1] } : null });
+          }
+        } catch { /* this chunk's vehicles fall back to the RO opener */ }
+      }
+      // No vehicle, no RFQ after the job card was opened, or an RFQ with no
+      // readable creator: charged to whoever opened the repair order, per the
+      // owner's rule for verdicts nobody can be named for.
+      let rfqFallbacks = 0;
+      const rfqRaiser = (r: Rec): Performer | null => {
+        const fleet = m2o(r.fleet_id)?.[0];
+        const roCreated = odooTime(r.create_date);
+        const first = fleet == null ? undefined : (rfqsByFleet[fleet] ?? [])
+          .filter((x) => roCreated == null || x.t >= roCreated)
+          .sort((a, b) => a.t - b.t)[0];
+        if (first?.by) return first.by;
+        rfqFallbacks++;
+        return roOpener(r);
+      };
+      const { judged } = scoreWaiting(6, waiting, overdue, rfqRaiser);
+      if (rfqFallbacks) {
+        notes.push(`Awaiting parts charged ${rfqFallbacks} repair order(s) to whoever opened them because no RFQ was found for the vehicle after the job card was opened.`);
+      }
       // The denominator changed, and the figure drops by roughly thirty points
       // because of it. Said in full, because a drop nobody can account for reads
       // as the branches collapsing.
