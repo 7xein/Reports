@@ -570,6 +570,14 @@ export interface KpiConfig {
    *  state → the mapped "Awaiting parts" state (e.g. priority matrix P)
    */
   awaitingPartsSource?: 'parts' | 'state';
+  /**
+   * KPI start date (YYYY-MM-DD, Gulf calendar date). For every week that starts
+   * on or after it, verdicts on repair orders — or, for verdicts tied to no
+   * repair order, on quotations / purchase orders — created before Gulf
+   * midnight of this date are ignored by every KPI. Weeks that started before it
+   * are computed exactly as before. Null / absent = no cutoff.
+   */
+  kpiStartDate?: string | null;
   /** Set on save — part of the KPI cache key so config edits take effect immediately. */
   updatedAt?: string;
 }

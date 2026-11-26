@@ -226,6 +226,8 @@ export function tabsForApi(pathname: string, method: string): readonly TabId[] |
     pathname === '/api/kpi/odoo-options' ||
     pathname === '/api/kpi/role-proposal' ||
     pathname === '/api/kpi/roster-suggestion' ||
+    // Every currently failing KPI item, uncapped, as Excel (Admin → KPI Configuration).
+    pathname === '/api/kpi/open-flags' ||
     // Site → Odoo company links (Admin → Companies).
     pathname === '/api/companies' ||
     under(pathname, '/api/seed') ||

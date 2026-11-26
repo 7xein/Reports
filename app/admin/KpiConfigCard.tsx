@@ -216,6 +216,39 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
   // by the refresh route (and nightly by the sync cron). Read-only here.
   const [refreshingOwners, setRefreshingOwners] = useState(false);
   const [ownersReport, setOwnersReport] = useState<OwnersReport | null>(null);
+  const [downloadingFlags, setDownloadingFlags] = useState(false);
+
+  /**
+   * Every KPI item failing this week, uncapped, as Excel — computed without the
+   * KPI start date, so the carry-over is captured even after the date is set.
+   */
+  async function downloadOpenFlags() {
+    setDownloadingFlags(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/kpi/open-flags', { credentials: 'include' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setMessage(`Open flags download failed: ${body?.detail || body?.error || res.statusText}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const fn = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/);
+      a.href = url;
+      a.download = fn ? fn[1] : 'kpi-open-flags.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage('✓ Open flags downloaded.');
+    } catch (err) {
+      setMessage(`Open flags download failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setDownloadingFlags(false);
+    }
+  }
 
   useEffect(() => {
     fetch('/api/kpi/odoo-options', { credentials: 'include' })
@@ -702,6 +735,53 @@ export function KpiConfigCard({ initialConfig }: { initialConfig?: KpiConfig }) 
             </span>
           )}
         </label>
+      </div>
+
+      {/* 2d. KPI start date */}
+      <div className="text-sm font-bold text-ink mb-1">2d. KPI start date</div>
+      <p className="text-xs text-ink-muted mb-2">
+        Repair orders, quotations and purchase orders created before this date are ignored by every KPI. Weeks that started before it are unaffected.
+      </p>
+      <div className="mb-6 flex items-end gap-3 flex-wrap">
+        <label className="text-sm text-ink-muted flex flex-col gap-2">
+          KPI start date
+          <input type="date"
+            className="w-48 px-3 py-1.5 border border-border rounded text-ink focus:border-evs-green focus:outline-none text-sm"
+            value={cfg.kpiStartDate ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              setCfg((p) => ({ ...p, kpiStartDate: v || null }));
+            }} />
+        </label>
+        <button type="button"
+          onClick={() => setCfg((p) => ({ ...p, kpiStartDate: null }))}
+          disabled={!cfg.kpiStartDate}
+          className="px-4 py-1.5 text-sm font-semibold rounded-md border-2 border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark transition-all duration-200 disabled:opacity-50">
+          Clear
+        </button>
+        <button type="button"
+          onClick={downloadOpenFlags}
+          disabled={downloadingFlags}
+          aria-busy={downloadingFlags}
+          title="Every KPI item failing in the current week, one row each, computed without the KPI start date. Takes up to a few minutes."
+          className={`
+            inline-flex items-center gap-2 px-4 py-1.5 text-sm font-semibold rounded-md
+            border-2 transition-all duration-200
+            ${downloadingFlags
+              ? 'border-amber-400 bg-amber-50 text-amber-700 cursor-wait'
+              : 'border-ink/20 bg-white text-ink hover:border-evs-green hover:text-evs-green-dark'}
+            disabled:opacity-50
+          `}>
+          {downloadingFlags ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Reading Odoo…
+            </>
+          ) : 'Download open flags (Excel)'}
+        </button>
       </div>
 
       {/* 3. Tracked people roster */}

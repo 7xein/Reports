@@ -21,6 +21,12 @@
  * can strip or widen it. Every week the picker offers — past ones too — is a
  * full tree computed from Odoo (or its 15-minute cache), never the stored week
  * summaries, so per-person scores always exist and the board follows the week.
+ *
+ * `branchBoard` (non-admin "All KPIs" users only, i.e. `companyHidden`): every
+ * KPI branch's name, achievement and week-on-week delta, from the full tree and
+ * full history, so the Branch Leaderboard ranks all branches while drill-down
+ * stays limited to the user's own. Admins have the full tree; one-person users
+ * get none.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -134,7 +140,34 @@ function responseBody(
     person: personOf(personId, config),
     companyHidden: out.companyHidden,
     leaderboard: kpiLeaderboard(full),
+    // Figures-only board of every branch, for the companyHidden case only.
+    ...(out.companyHidden ? { branchBoard: branchBoard(full, history) } : {}),
   };
+}
+
+/** One row of the figures-only branch board: name, overall achievement, week-on-week change. */
+type BranchBoardRow = { name: string; achievement: number | null; delta: number | null };
+
+/**
+ * Every KPI branch's name, achievement and week-on-week delta, from the FULL
+ * tree and the FULL (unrestricted) history. For a non-admin "All KPIs" user
+ * only, so the Branch Leaderboard can rank all branches while drill-down stays
+ * limited to their own. Nothing else about a branch is exposed — no KPIs, no
+ * people, no notes. The delta mirrors the page's branchDelta exactly: the last
+ * stored week other than this one, achievement now minus achievement then, in
+ * points.
+ */
+function branchBoard(full: KpiTree, history: KpiWeekSummary[]): BranchBoardRow[] {
+  const past = history.filter((h) => h.weekStart !== full.week.start);
+  const prev = past.length ? past[past.length - 1] : null;
+  return full.branches.map((b) => {
+    const before = prev?.branches?.[b.name]?.achievement;
+    return {
+      name: b.name,
+      achievement: b.achievement ?? null,
+      delta: b.achievement != null && before != null ? b.achievement - before : null,
+    };
+  });
 }
 
 /** Who a person-limited user's KPIs belong to, for the page's copy; null for all KPIs. */

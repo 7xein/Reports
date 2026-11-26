@@ -292,6 +292,12 @@ type TreeWithHistory = KpiTree & {
    * history, so the page shows no company hero, KPI lines or deltas.
    */
   companyHidden?: boolean;
+  /**
+   * Every KPI branch's name, achievement and week-on-week delta (points), sent
+   * only with companyHidden. The Branch Leaderboard ranks from it; only the
+   * branches in `branches` can be drilled into.
+   */
+  branchBoard?: { name: string; achievement: number | null; delta: number | null }[];
 };
 
 export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
@@ -533,26 +539,39 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                   <span className="text-xs font-bold uppercase tracking-wider text-ink">Branch Leaderboard</span>
                   <span className="text-[11px] text-ink-muted ml-auto">best → worst · click to drill down</span>
                 </div>
-                {[...tree.branches]
+                {(tree.branchBoard
+                  ? tree.branchBoard
+                  : tree.branches.map((b) => ({ name: b.name, achievement: b.achievement, delta: branchDelta(b.name) })))
+                  .slice()
                   .sort((a, b) => (b.achievement ?? -1) - (a.achievement ?? -1))
                   .map((b, i) => {
                     const bb = band(b.achievement);
-                    return (
+                    // Drill-down only into branches this user's tree carries.
+                    const open = tree.branches.some((x) => x.name === b.name);
+                    const row = (
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-bold text-ink-muted tabular-nums w-5 shrink-0">#{i + 1}</span>
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: BRANCH_COLORS[b.name] ?? '#999' }} />
+                        <span className={`text-[13px] font-semibold w-24 shrink-0 truncate ${open ? 'text-ink' : 'text-ink-muted'}`}>{b.name}</span>
+                        <span className="hidden sm:block flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                          <span className="block h-full rounded-full"
+                            style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
+                        </span>
+                        <span className="flex-1 sm:hidden" />
+                        <Delta value={b.delta} className="w-14 text-right" />
+                        <span className={`text-sm font-bold tabular-nums w-16 text-right ${bb.text}`}>{fmtPct(b.achievement)}</span>
+                      </div>
+                    );
+                    return open ? (
                       <button key={b.name} onClick={() => { setBranch(b.name); setSa(null); }}
                         className="w-full text-left px-4 py-2.5 border-b border-border last:border-b-0 hover:bg-surface transition-colors cursor-pointer">
-                        <div className="flex items-center gap-3">
-                          <span className="text-[11px] font-bold text-ink-muted tabular-nums w-5 shrink-0">#{i + 1}</span>
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: BRANCH_COLORS[b.name] ?? '#999' }} />
-                          <span className="text-[13px] font-semibold text-ink w-24 shrink-0 truncate">{b.name}</span>
-                          <span className="hidden sm:block flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-                            <span className="block h-full rounded-full"
-                              style={{ background: bb.hex, width: `${Math.min(b.achievement ?? 0, 100)}%` }} />
-                          </span>
-                          <span className="flex-1 sm:hidden" />
-                          <Delta value={branchDelta(b.name)} className="w-14 text-right" />
-                          <span className={`text-sm font-bold tabular-nums w-16 text-right ${bb.text}`}>{fmtPct(b.achievement)}</span>
-                        </div>
+                        {row}
                       </button>
+                    ) : (
+                      <div key={b.name} title="You don't have access to this branch"
+                        className="w-full text-left px-4 py-2.5 border-b border-border last:border-b-0 cursor-default">
+                        {row}
+                      </div>
                     );
                   })}
               </div>
