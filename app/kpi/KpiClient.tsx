@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { KPI_BRANCHES } from '@/lib/types';
-import type { KpiTree, BranchNode, SaNode, KpiCell } from '@/lib/kpi';
+import type { KpiTree, BranchNode, SaNode, KpiCell, KpiLeaderboard } from '@/lib/kpi';
 import {
   KPI_DEFINITIONS, KpiWeekSummary, EXCLUDED_FROM_OVERALL, DEFAULT_KPI_TARGET, targetOf,
 } from '@/lib/types';
@@ -240,8 +240,53 @@ function KpiGroups({ cells, deltaFor, expandable = false }: {
   );
 }
 
+// ── Top performers ─────────────────────────────────────────────────
+/**
+ * The top people of every KPI branch by overall score, shown to everyone who
+ * can open the tab. Name and score only — the server sends nothing more — and
+ * no click-through: a restricted user can see who leads, not their KPIs.
+ */
+function TopPerformers({ board }: { board: KpiLeaderboard }) {
+  return (
+    <div className="mb-4">
+      <div className="text-sm font-bold uppercase tracking-wide text-ink-muted mb-3">Top performers</div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {board.map(({ branch, people }) => (
+          <div key={branch} className="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
+              <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-wider text-ink">{branch}</span>
+            </div>
+            {people.length === 0 ? (
+              <div className="px-4 py-2.5 text-[11px] text-ink-muted">No scores yet this week</div>
+            ) : (
+              people.map((p, i) => (
+                <div key={`${i}-${p.name}`} className="px-4 py-2.5 border-b border-border last:border-b-0 flex items-center gap-3">
+                  <span className="text-[11px] font-bold text-ink-muted tabular-nums w-5 shrink-0">#{i + 1}</span>
+                  <span className="text-[13px] font-semibold text-ink truncate flex-1" title={p.name}>{p.name}</span>
+                  <span className={`text-sm font-bold tabular-nums w-16 text-right shrink-0 ${band(p.achievement).text}`}>{fmtPct(p.achievement)}</span>
+                </div>
+              ))
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────
-type TreeWithHistory = KpiTree & { history?: KpiWeekSummary[] };
+type TreeWithHistory = KpiTree & {
+  history?: KpiWeekSummary[];
+  /**
+   * Set when the user sees one KPI person's KPIs only (Admin → Users → KPIs).
+   * The server has already narrowed the tree to that person's cards, so the
+   * page shows the hero and those cards and hides every comparison.
+   */
+  person?: { odooUserId: number; name: string } | null;
+  /** Every KPI branch's top people, name and overall score only; absent hides the section. */
+  leaderboard?: KpiLeaderboard;
+};
 
 export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
   const weeks = recentWeekStarts();
@@ -282,6 +327,12 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
 
   const branchNode: BranchNode | undefined = tree?.branches.find((b) => b.name === branch);
   const saNode: SaNode | undefined = branchNode?.serviceAdvisors.find((s) => s.odooUserId === sa);
+  const person = tree?.person ?? null;
+  // The person's own cards, one per branch they appear in.
+  const personCards = person
+    ? (tree?.branches ?? []).flatMap((b) =>
+        b.serviceAdvisors.filter((s) => s.odooUserId === person.odooUserId).map((s) => ({ branch: b.name, card: s })))
+    : [];
 
   // ── History-derived deltas ───────────────────────────────────────
   const history = tree?.history ?? [];
@@ -338,7 +389,7 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
       {(branch || sa) && (
         <div className="flex items-center gap-2 mb-4 text-sm">
           <button onClick={() => { setBranch(null); setSa(null); }} className="text-evs-green-dark font-semibold hover:underline cursor-pointer">KPI</button>
-          {branch && <><span className="text-ink-muted">/</span>
+          {branch && !person && <><span className="text-ink-muted">/</span>
             <button onClick={() => setSa(null)} className={sa ? 'text-evs-green-dark font-semibold hover:underline cursor-pointer' : 'text-ink font-semibold'}>{branch}</button></>}
           {saNode && <><span className="text-ink-muted">/</span><span className="text-ink font-semibold">{saNode.name}</span></>}
         </div>
@@ -352,16 +403,24 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
+      {tree && !loading && person && !branchNode && personCards.length === 0 && (
+        <>
+          <div className="bg-white rounded-lg p-6 text-sm text-ink-muted shadow-sm mb-4">No KPIs for you this week.</div>
+          {tree.leaderboard && <TopPerformers board={tree.leaderboard} />}
+        </>
+      )}
+
       {tree && !loading && (
         <>
-          {/* ── Level 1 — overview ── */}
-          {!branchNode && (
+          {/* ── Level 1 — overview ── For one person: the hero (their own
+              achievement) and their own cards; every comparison is hidden. */}
+          {!branchNode && (!person || personCards.length > 0) && (
             <>
               <div className="grid lg:grid-cols-2 gap-4 mb-4">
                 {/* Company achievement */}
                 <div className="rounded-lg p-6 shadow-sm flex flex-col justify-between"
                   style={{ background: 'linear-gradient(135deg,#0d1f08 0%,#1a3a0d 60%,#0f2a09 100%)' }}>
-                  <div className="text-xs uppercase tracking-widest text-white/50">Company KPI Achievement</div>
+                  <div className="text-xs uppercase tracking-widest text-white/50">{person ? 'KPI Achievement' : 'Company KPI Achievement'}</div>
                   <div className="flex items-end gap-4 mt-3 flex-wrap">
                     <span className="text-5xl font-black tabular-nums leading-none"
                       style={{ color: band(tree.company.achievement).hex }}>
@@ -373,10 +432,11 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                       </span>
                     )}
                   </div>
-                  <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · {tree.branches.length >= KPI_BRANCHES.length ? 'all branches' : tree.branches.map((b) => b.name).join(', ')}</div>
+                  <div className="text-white/45 text-xs mt-4">{fmtWeek(tree.week.start, tree.week.end)} · {person ? person.name : tree.branches.length >= KPI_BRANCHES.length ? 'all branches' : tree.branches.map((b) => b.name).join(', ')}</div>
                 </div>
 
                 {/* Needs attention */}
+                {!person && (
                 <div className="bg-white rounded-lg shadow-sm overflow-hidden">
                   <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
                     <AlertIcon />
@@ -420,9 +480,32 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                     </div>
                   </div>
                 </div>
+                )}
               </div>
 
+              {/* Directly below the hero, above everything else, for everyone. */}
+              {tree.leaderboard && <TopPerformers board={tree.leaderboard} />}
+
+              {/* One person: their own cards, one per branch they appear in. */}
+              {person && (
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {personCards.map(({ branch: b, card: s }) => {
+                    const sb = band(s.achievement);
+                    return (
+                      <button key={b} onClick={() => { setBranch(b); setSa(s.odooUserId); }}
+                        className="text-left bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-all cursor-pointer border-t-2"
+                        style={{ borderTopColor: sb.hex }}>
+                        <div className="font-bold text-ink truncate">{s.name}</div>
+                        <div className={`text-2xl font-black tabular-nums mt-1 ${sb.text}`}>{fmtPct(s.achievement)}</div>
+                        <div className="text-xs text-ink-muted mt-1.5">{b} · {s.roCount} RO{s.roCount !== 1 ? 's' : ''} this week</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Branch leaderboard */}
+              {!person && (
               <div className="bg-white rounded-lg shadow-sm overflow-hidden mb-4">
                 <div className="bg-surface border-b border-border px-4 py-2 flex items-center gap-2">
                   <span className="w-1 h-3.5 rounded-full bg-evs-green shrink-0" />
@@ -452,13 +535,14 @@ export function KpiClient({ isAdmin }: { isAdmin: boolean }) {
                     );
                   })}
               </div>
+              )}
 
-              <KpiGroups cells={tree.company.kpis} deltaFor={kpiDelta} />
+              {!person && <KpiGroups cells={tree.company.kpis} deltaFor={kpiDelta} />}
             </>
           )}
 
-          {/* ── Level 2 — branch ── */}
-          {branchNode && !saNode && (
+          {/* ── Level 2 — branch ── (not for one person: their branch line is their card) */}
+          {branchNode && !saNode && !person && (
             <>
               <div className="bg-white rounded-lg shadow-sm p-5 mb-4 flex items-center gap-4 flex-wrap">
                 <div>

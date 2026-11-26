@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readData, writeData } from '@/lib/data-store';
 import { getCurrentUser, hasAnyTab, isAdminAuthenticated } from '@/lib/auth';
 import { branchAccessOf } from '@/lib/branch-scope';
+import { effectiveKpiPerson } from '@/lib/access';
 
 export async function GET() {
-  // Same rule as the middleware (lib/access.ts): any section that shows this data.
+  // Same rule as the middleware (lib/access.ts): Admin only.
   const user = await getCurrentUser();
-  if (!hasAnyTab(user, ['wip', 'sales', 'kpi', 'admin'])) {
+  if (!hasAnyTab(user, ['admin'])) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   // The raw blob holds every branch's figures, the KPI roster and the stored KPI
@@ -14,6 +15,11 @@ export async function GET() {
   // and narrow it per user — so a branch-restricted user is simply refused it.
   if (!branchAccessOf(user).all) {
     return NextResponse.json({ error: 'You do not have access to every branch' }, { status: 403 });
+  }
+  // Likewise a user limited to one KPI person: the blob's KPI history is every
+  // branch's figures and its roster is everyone, none of which is theirs.
+  if (user && effectiveKpiPerson(user) !== null) {
+    return NextResponse.json({ error: 'You do not have access to every KPI' }, { status: 403 });
   }
   try {
     const data = await readData();

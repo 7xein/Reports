@@ -65,6 +65,12 @@ export interface UserRecord {
    * branch access existed, which reads as 'all'. Stations follow their branch.
    */
   branches?: BranchAccess;
+  /**
+   * The one person from the KPI roster (an Odoo user id) whose KPIs the user
+   * sees on the KPI tab. Missing or null means every person's — the behaviour
+   * before this existed. Ignored for the owner and Admin, who see all KPIs.
+   */
+  kpiPerson?: number | null;
 }
 
 export type BranchAccess = 'all' | Branch[];
@@ -79,6 +85,8 @@ export interface PublicUser {
   createdAt: string;
   /** Stored branch access ('all' or a list); see effectiveBranches for what applies. */
   branches: BranchAccess;
+  /** Stored KPI person (an Odoo user id), or null for all KPIs; see effectiveKpiPerson for what applies. */
+  kpiPerson: number | null;
 }
 
 const DEFAULT_OWNER_EMAIL = 'hussein.eldomor@evsuae.com';
@@ -132,6 +140,22 @@ export function seesAllBranches(user: Pick<UserRecord, 'email' | 'tabs' | 'branc
   return effectiveBranches(user).length === BRANCHES.length;
 }
 
+/** A stored or submitted KPI person as an Odoo user id: a positive integer, else null (all KPIs). */
+export function cleanKpiPerson(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * The one KPI person whose KPIs a user sees, or null for every person's. The
+ * owner and anyone with the Admin tab always see all KPIs, like branches.
+ * Branch access still applies on top: a person's KPIs are shown only in the
+ * branches the user may see.
+ */
+export function effectiveKpiPerson(user: Pick<UserRecord, 'email' | 'tabs' | 'kpiPerson'>): number | null {
+  if (effectiveTabs(user).includes('admin')) return null;
+  return cleanKpiPerson(user.kpiPerson);
+}
+
 /**
  * What a user with no branch at all is told, in place of a tab's content. One
  * string because the report pages recognise it in an API error and show it as
@@ -147,6 +171,7 @@ export function toPublicUser(user: UserRecord): PublicUser {
     isOwner: isOwnerEmail(user.email),
     createdAt: user.createdAt,
     branches: cleanBranchAccess(user.branches),
+    kpiPerson: cleanKpiPerson(user.kpiPerson),
   };
 }
 
@@ -195,8 +220,9 @@ export function tabsForApi(pathname: string, method: string): readonly TabId[] |
     return ['admin'];
   }
   if (pathname === '/api/data') {
-    // Reading is for anyone on a section that shows this data; writing is Admin's.
-    return m === 'GET' || m === 'HEAD' ? ['wip', 'sales', 'kpi', 'admin'] : ['admin'];
+    // The raw blob (every branch, the KPI roster, KPI history) is Admin's to read
+    // and write. No page fetches it from the browser; pages read it server-side.
+    return ['admin'];
   }
   // The WIP pages' metric CSV, plus Admin's Excel export (which the route
   // itself narrows to admin).

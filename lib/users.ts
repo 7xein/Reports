@@ -13,7 +13,7 @@
 
 import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 import {
-  cleanBranchAccess, cleanTabs, isOwnerEmail, normalizeEmail, toPublicUser,
+  cleanBranchAccess, cleanKpiPerson, cleanTabs, isOwnerEmail, normalizeEmail, toPublicUser,
   type BranchAccess, type PublicUser, type TabId, type UserRecord,
 } from './access';
 import { USERS_SET_KEY, getRedis, loadUserRecord, userKey } from './user-record';
@@ -182,6 +182,22 @@ export async function setUserBranches(email: string, access: BranchAccess): Prom
   const user = await getUser(email);
   if (!user) throw new UserStoreError('No such user.', 404);
   const updated: UserRecord = { ...user, branches: cleanBranchAccess(access) };
+  await redis.set(userKey(user.email), updated);
+  return toPublicUser(updated);
+}
+
+/**
+ * Set whose KPIs a user sees: one roster person (an Odoo user id) or null for
+ * all KPIs. The caller checks the id is on the KPI roster. Takes effect on
+ * their next request. Throws 404 for an unknown user and OwnerProtectedError
+ * for the owner.
+ */
+export async function setUserKpiPerson(email: string, odooUserId: number | null): Promise<PublicUser> {
+  if (isOwnerEmail(email)) throw new OwnerProtectedError();
+  const redis = requireRedis();
+  const user = await getUser(email);
+  if (!user) throw new UserStoreError('No such user.', 404);
+  const updated: UserRecord = { ...user, kpiPerson: cleanKpiPerson(odooUserId) };
   await redis.set(userKey(user.email), updated);
   return toPublicUser(updated);
 }

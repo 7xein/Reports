@@ -7,13 +7,27 @@
  * `week` is the Saturday the week starts on (omit for the current week).
  * Cached in Redis for 15 minutes under `kpi:{weekStart}`; `refresh=1` busts the
  * cache and requires admin auth.
+ *
+ * Narrowed per user on the way out, in this order: branch access first
+ * (restrictKpiTree), then — for a user limited to one KPI person — that
+ * person's cards only (restrictKpiTreeToPerson). The response's `person` names
+ * that person ({ odooUserId, name }), or is null for a user who sees all KPIs.
+ *
+ * `leaderboard` (kpiLeaderboard) is the one part every KPI user gets whole: the
+ * top six of every KPI branch, name and overall score only. It is built from
+ * the FULL tree, before either restriction, and attached after them, so neither
+ * can strip or widen it. Every week the picker offers — past ones too — is a
+ * full tree computed from Odoo (or its 15-minute cache), never the stored week
+ * summaries, so per-person scores always exist and the board follows the week.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { computeKpiTree, weekStartFor, summariseTree, KpiTree, restrictKpiTree } from '@/lib/kpi';
+import {
+  computeKpiTree, weekStartFor, summariseTree, KpiTree, restrictKpiTree, restrictKpiTreeToPerson, kpiLeaderboard,
+} from '@/lib/kpi';
 import { readData, writeData } from '@/lib/data-store';
 import { getCurrentUser, hasTab } from '@/lib/auth';
-import { NO_BRANCH_ACCESS_MESSAGE } from '@/lib/access';
+import { NO_BRANCH_ACCESS_MESSAGE, effectiveKpiPerson } from '@/lib/access';
 import { branchAccessOf, restrictKpiHistory, type BranchAccessView } from '@/lib/branch-scope';
 import { withKpiDefaults, KpiWeekSummary, KpiConfig } from '@/lib/types';
 
@@ -52,19 +66,68 @@ function recentHistory(all: Record<string, KpiWeekSummary> | undefined, weekStar
  * The tree and its history as this user may see them. Branch access is applied
  * here, per request, on the way out — the cached tree and the stored week
  * summaries stay whole, so one user's view can never become another's.
+ *
+ * Branch access always applies first. A user limited to one KPI person is then
+ * narrowed further to that person's cards in those branches. The stored week
+ * summaries hold only company and branch figures — no per-person series — so
+ * such a user gets no history at all rather than other people's numbers.
  */
-function forUser(tree: KpiTree, history: KpiWeekSummary[], access: BranchAccessView, config: KpiConfig) {
-  if (access.all) return { tree, history };
-  const shown = restrictKpiTree(tree, access, config);
-  return { tree: shown, history: restrictKpiHistory(history, access, shown.branches.map((b) => b.name)) };
+function forUser(
+  tree: KpiTree,
+  history: KpiWeekSummary[],
+  access: BranchAccessView,
+  config: KpiConfig,
+  personId: number | null,
+) {
+  // 1. Branch access — exactly what every user got before KPI people existed.
+  let shown = tree;
+  let shownHistory = history;
+  if (!access.all) {
+    shown = restrictKpiTree(tree, access, config);
+    shownHistory = restrictKpiHistory(history, access, shown.branches.map((b) => b.name));
+  }
+  if (personId == null) return { tree: shown, history: shownHistory };
+  // 2. One person, within the branches step 1 left.
+  return { tree: restrictKpiTreeToPerson(shown, personId, config), history: [] as KpiWeekSummary[] };
+}
+
+/**
+ * The response body: the tree and history narrowed for this user, plus the
+ * leaderboard built from the full, unrestricted tree.
+ */
+function responseBody(
+  full: KpiTree,
+  history: KpiWeekSummary[],
+  access: BranchAccessView,
+  config: KpiConfig,
+  personId: number | null,
+  cached: boolean,
+) {
+  const out = forUser(full, history, access, config, personId);
+  return {
+    ...out.tree,
+    cached,
+    history: out.history,
+    person: personOf(personId, config),
+    leaderboard: kpiLeaderboard(full),
+  };
+}
+
+/** Who a person-limited user's KPIs belong to, for the page's copy; null for all KPIs. */
+function personOf(personId: number | null, config: KpiConfig): { odooUserId: number; name: string } | null {
+  if (personId == null) return null;
+  const entry = (config.saRoster ?? []).find((r) => r.odooUserId === personId);
+  return { odooUserId: personId, name: entry?.name || `User ${personId}` };
 }
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
-  if (!hasTab(user, 'kpi')) {
+  if (!user || !hasTab(user, 'kpi')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   const access = branchAccessOf(user);
+  // Null for the owner, Admin and anyone on "All KPIs".
+  const personId = effectiveKpiPerson(user);
   // No branch, nothing to show: refuse before the expensive compute.
   if (!access.all && access.branches.length === 0) {
     return NextResponse.json({ error: NO_BRANCH_ACCESS_MESSAGE }, { status: 403 });
@@ -98,8 +161,9 @@ export async function GET(req: NextRequest) {
       try {
         const cached = await (await redis()).get<KpiTree>(key);
         if (cached) {
-          const out = forUser(cached, recentHistory(data.kpiHistory, weekStart), access, config);
-          return NextResponse.json({ ...out.tree, cached: true, history: out.history });
+          return NextResponse.json(
+            responseBody(cached, recentHistory(data.kpiHistory, weekStart), access, config, personId, true),
+          );
         }
       } catch { /* cache miss/unavailable — fall through to a live compute */ }
     }
@@ -123,8 +187,7 @@ export async function GET(req: NextRequest) {
       history = recentHistory(data.kpiHistory, weekStart);
     }
 
-    const out = forUser(tree, history, access, config);
-    return NextResponse.json({ ...out.tree, cached: false, history: out.history });
+    return NextResponse.json(responseBody(tree, history, access, config, personId, false));
   } catch (error) {
     console.error('❌ [api/kpi] failed:', error);
     return NextResponse.json(

@@ -3790,3 +3790,110 @@ export function restrictKpiTree(tree: KpiTree, access: BranchAccessView, config:
     notes: restrictNotes(tree.notes, access, otherPeople),
   };
 }
+
+/**
+ * The tree as a user restricted to one KPI person sees it: that person's cards
+ * only, and every figure above them rebuilt from those cards alone.
+ *
+ * Applied AFTER restrictKpiTree, so the branches here are already the ones the
+ * user may see and the person's cards outside them are gone with their branch.
+ *
+ * Each branch the person appears in keeps their one card, and the branch line
+ * becomes that card's figures — a branch figure covers everyone in it, and
+ * showing it would show other people's numbers. Branches without them are
+ * dropped. The company line is the person's cards combined the way
+ * restrictKpiTree combines branches: compliant and applicable summed per KPI,
+ * then the achievement, section and role averages through the engine's own
+ * functions. The caveats are dropped outright — they are written for the
+ * whole network and name other people and their numbers.
+ *
+ * A person on no card (not this week, no longer on the roster, or excluded from
+ * scoring) gets an empty tree, which the page shows as "no KPIs for you" rather
+ * than as an error. Returns the tree untouched for `personId` null, and never
+ * mutates it: the caller's tree may be the shared, cached one.
+ */
+export function restrictKpiTreeToPerson(tree: KpiTree, personId: number | null, config: KpiConfig): KpiTree {
+  if (personId == null) return tree;
+  const cards: SaNode[] = [];
+  const branches: BranchNode[] = [];
+  for (const b of tree.branches) {
+    const card = b.serviceAdvisors.find((s) => s.odooUserId === personId);
+    if (!card) continue;
+    cards.push(card);
+    branches.push({
+      name: b.name,
+      achievement: card.achievement,
+      sections: card.sections,
+      roleAverages: card.roleAverages,
+      applicableTotal: card.kpis.reduce((s, c) => s + c.applicable, 0),
+      kpis: card.kpis,
+      serviceAdvisors: [card],
+    });
+  }
+  // A card carries only the KPIs that person answers for, so the company line
+  // is the union of their cards' KPIs, in definition order as aggregate() emits.
+  const order = new Map<number, number>(KPI_DEFINITIONS.map((d, i) => [d.id, i]));
+  const ids = [...new Set(cards.flatMap((c) => c.kpis.map((k) => k.id)))]
+    .sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity));
+  const kpis: KpiCell[] = ids.map((id) => {
+    const parts = cards
+      .map((c) => c.kpis.find((k) => k.id === id))
+      .filter((k): k is KpiCell => !!k);
+    const compliant = parts.reduce((s, k) => s + k.compliant, 0);
+    const applicable = parts.reduce((s, k) => s + k.applicable, 0);
+    return {
+      ...parts[0],
+      compliant,
+      applicable,
+      pct: applicable > 0 ? Math.min((compliant / applicable) * 100, 100) : null,
+      violations: parts.flatMap((k) => k.violations).slice(0, VIOLATION_CAP),
+    };
+  });
+  // Field by field rather than `...tree`, so nothing else on the shared tree
+  // can ride along to a user who may see one person only.
+  return {
+    week: tree.week,
+    generatedAt: tree.generatedAt,
+    company: {
+      achievement: overall(kpis),
+      sections: sectionTotals(kpis, config),
+      roleAverages: roleTotals(kpis, config),
+      kpis,
+    },
+    branches,
+    notes: [],
+  };
+}
+
+/** The cross-branch "Top performers" board: per KPI branch, the best people by overall score. */
+export type KpiLeaderboard = { branch: string; people: { name: string; achievement: number }[] }[];
+
+const LEADERBOARD_SIZE = 6;
+
+/**
+ * The top people of every KPI branch by overall achievement, from the outside
+ * only: a name and an overall score, nothing else — no KPI cells, violations,
+ * RO counts, roles or Odoo ids. Shown to everyone who can open the KPI tab,
+ * branch- and person-restricted users included, so it must be built from the
+ * FULL tree (before any restriction) and must carry nothing more than this.
+ *
+ * Per branch, in KPI_BRANCHES order: that branch's cards with a score, best
+ * first, ties by name, at most six. Someone on several branches ranks in each
+ * with that branch's card. A card whose name is only the engine's
+ * `User <id>` fallback is left out, since showing it would show an Odoo id.
+ */
+export function kpiLeaderboard(tree: KpiTree): KpiLeaderboard {
+  return KPI_BRANCHES.map((branch) => {
+    const node = tree.branches.find((b) => b.name === branch);
+    const people = (node?.serviceAdvisors ?? [])
+      .filter((s): s is SaNode & { achievement: number } =>
+        typeof s.achievement === 'number' && Number.isFinite(s.achievement))
+      .map((s) => ({ name: (s.name ?? '').trim(), achievement: s.achievement, id: s.odooUserId }))
+      .filter((p) => p.name !== '' && p.name !== `User ${p.id}`)
+      .sort((a, b) => b.achievement - a.achievement || a.name.localeCompare(b.name))
+      .slice(0, LEADERBOARD_SIZE)
+      // Rebuilt field by field so nothing else on the card can ride along.
+      .map((p) => ({ name: p.name, achievement: p.achievement }));
+    return { branch, people };
+  });
+}

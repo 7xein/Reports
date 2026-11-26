@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Shell } from '@/components/Shell';
 import { TABS, normalizeEmail, type BranchAccess, type PublicUser, type TabId } from '@/lib/access';
 import { BRANCHES, type Branch } from '@/lib/types';
+import type { KpiPersonOption } from '@/lib/user-admin';
 import { ADMIN_SUB_TABS } from '../admin-sub-tabs';
 
 const SHORT_LABEL: Record<TabId, string> = {
@@ -67,28 +68,16 @@ function Chevron() {
 }
 
 /**
- * The Branches cell: a button showing the access, opening a popover of
- * checkboxes. The popover is position: fixed (from the button's rect) so the
+ * A cell's button-and-popover mechanics, shared by the Branches and KPIs
+ * cells. The popover is position: fixed (from the button's rect) so the
  * table's overflow-x-auto wrapper cannot clip it; it closes on outside click,
  * Escape, scroll or resize, since a fixed popover would otherwise drift.
  */
-function BranchPicker({
-  user,
-  adminLocked,
-  busy,
-  disabled,
-  onChange,
-}: {
-  user: PublicUser;
-  adminLocked: boolean;
-  busy: boolean;
-  disabled: boolean;
-  onChange: (access: BranchAccess) => void;
-}) {
+function useCellPopover(locked: boolean) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const open = pos !== null && !adminLocked;
+  const open = pos !== null && !locked;
 
   useEffect(() => {
     if (!open) return;
@@ -131,18 +120,42 @@ function BranchPicker({
     setPos({ top: r.bottom + 4, left: Math.min(r.left, maxLeft) });
   }
 
+  return { pos, open, buttonRef, popoverRef, toggleOpen };
+}
+
+/** The locked button an owner or Admin row shows in place of a picker. */
+function AdminLockedButton({ title }: { title: string }) {
+  return (
+    <button
+      type="button"
+      disabled
+      title={title}
+      className="inline-flex items-center gap-1 border border-border rounded text-sm px-2 py-1 whitespace-nowrap text-ink-muted cursor-not-allowed"
+    >
+      All (Admin)
+      <Chevron />
+    </button>
+  );
+}
+
+/** The Branches cell: a button showing the access, opening a popover of checkboxes. */
+function BranchPicker({
+  user,
+  adminLocked,
+  busy,
+  disabled,
+  onChange,
+}: {
+  user: PublicUser;
+  adminLocked: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onChange: (access: BranchAccess) => void;
+}) {
+  const { pos, open, buttonRef, popoverRef, toggleOpen } = useCellPopover(adminLocked);
+
   if (adminLocked) {
-    return (
-      <button
-        type="button"
-        disabled
-        title={ADMIN_BRANCHES_TITLE}
-        className="inline-flex items-center gap-1 border border-border rounded text-sm px-2 py-1 whitespace-nowrap text-ink-muted cursor-not-allowed"
-      >
-        All (Admin)
-        <Chevron />
-      </button>
-    );
+    return <AdminLockedButton title={ADMIN_BRANCHES_TITLE} />;
   }
 
   const access = user.branches;
@@ -207,12 +220,138 @@ function BranchPicker({
   );
 }
 
+const ADMIN_KPIS_TITLE = 'Admin access includes every KPI';
+const UNKNOWN_PERSON_TITLE = 'No longer on the KPI roster — they will see no KPIs until you pick someone';
+
+/**
+ * The KPIs cell: whose KPIs the user sees on the KPI tab — "All KPIs" or one
+ * person from the KPI roster. Same button and popover as the Branches cell,
+ * with radios and a name search in place of checkboxes.
+ */
+function KpiPersonPicker({
+  user,
+  people,
+  adminLocked,
+  busy,
+  disabled,
+  onChange,
+}: {
+  user: PublicUser;
+  people: KpiPersonOption[];
+  adminLocked: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onChange: (odooUserId: number | null) => void;
+}) {
+  const { pos, open, buttonRef, popoverRef, toggleOpen } = useCellPopover(adminLocked);
+  const [query, setQuery] = useState('');
+
+  // A fresh search each time the popover opens.
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  if (adminLocked) {
+    return <AdminLockedButton title={ADMIN_KPIS_TITLE} />;
+  }
+
+  const selected = user.kpiPerson;
+  const person = selected === null ? null : people.find((p) => p.odooUserId === selected) ?? null;
+  const unknown = selected !== null && !person;
+  const label = selected === null ? 'All KPIs' : person ? person.name : 'Unknown person';
+  const title =
+    selected === null
+      ? "Every person's KPIs, in the branches they can see"
+      : person
+        ? `Only ${person.name}'s KPIs${person.branches.length ? ` · ${person.branches.join(', ')}` : ''}`
+        : UNKNOWN_PERSON_TITLE;
+  const q = query.trim().toLowerCase();
+  const shown = q ? people.filter((p) => p.name.toLowerCase().includes(q)) : people;
+  const group = `kpi-person-${user.email}`;
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`KPIs for ${user.name}: ${label}`}
+        disabled={disabled}
+        onClick={toggleOpen}
+        className={`inline-flex items-center gap-1 border rounded text-sm px-2 py-1 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed ${
+          unknown ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-border text-ink'
+        }`}
+      >
+        {label}
+        <Chevron />
+      </button>
+      {open && pos && (
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label={`KPIs for ${user.name}`}
+          className="fixed z-20 bg-white shadow-lg rounded-lg p-3 min-w-[200px] text-left"
+          style={{ top: pos.top, left: pos.left }}
+        >
+          <label className="flex items-center gap-2 py-1 font-bold text-ink cursor-pointer">
+            <input
+              type="radio"
+              name={group}
+              className="w-4 h-4 accent-evs-green cursor-pointer disabled:cursor-not-allowed"
+              checked={selected === null}
+              disabled={busy}
+              onChange={() => onChange(null)}
+            />
+            All KPIs
+          </label>
+          <div className="border-t border-border my-2" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by name"
+            aria-label="Search people by name"
+            className="w-full border border-border rounded text-sm px-2 py-1 mb-1 text-ink"
+          />
+          <div className="max-h-64 overflow-y-auto">
+            {shown.map((p) => (
+              <label key={p.odooUserId} className="flex items-center gap-2 py-1 text-ink cursor-pointer">
+                <input
+                  type="radio"
+                  name={group}
+                  className="w-4 h-4 accent-evs-green cursor-pointer disabled:cursor-not-allowed"
+                  checked={selected === p.odooUserId}
+                  disabled={busy}
+                  onChange={() => onChange(p.odooUserId)}
+                />
+                <span className="whitespace-nowrap">{p.name}</span>
+                {p.branches.length > 0 && (
+                  <span className="text-xs text-ink-muted whitespace-nowrap">{p.branches.join(', ')}</span>
+                )}
+              </label>
+            ))}
+            {shown.length === 0 && (
+              <p className="text-xs text-ink-muted py-1">
+                {people.length === 0 ? 'No one is on the KPI roster yet.' : 'No one matches.'}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function UsersAdmin({
   initialUsers,
+  kpiPeople,
   currentEmail,
   loadError,
 }: {
   initialUsers: PublicUser[];
+  kpiPeople: KpiPersonOption[];
   currentEmail: string;
   loadError: string | null;
 }) {
@@ -283,6 +422,33 @@ export function UsersAdmin({
     }
   }
 
+  const applyKpiPerson = (email: string, kpiPerson: number | null) =>
+    setUsers((prev) => prev.map((u) => (u.email === email ? { ...u, kpiPerson } : u)));
+
+  async function onKpiPerson(user: PublicUser, kpiPerson: number | null) {
+    const key = `${user.email}:kpiPerson`;
+    const previous = user.kpiPerson;
+    setError(null);
+    applyKpiPerson(user.email, kpiPerson);
+    setBusy(key, true);
+    try {
+      const res = await fetch('/api/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email, kpiPerson }),
+      });
+      if (!res.ok) {
+        applyKpiPerson(user.email, previous);
+        setError(await errorMessage(res));
+      }
+    } catch {
+      applyKpiPerson(user.email, previous);
+      setError('Could not reach the server. Please try again.');
+    } finally {
+      setBusy(key, false);
+    }
+  }
+
   async function onDelete(user: PublicUser) {
     if (!window.confirm(`Delete ${user.email}? They will be signed out and will need to sign up again.`)) return;
     const key = `${user.email}:delete`;
@@ -334,6 +500,7 @@ export function UsersAdmin({
                   </th>
                 ))}
                 <th className="py-2 px-2 font-semibold whitespace-nowrap">Branches</th>
+                <th className="py-2 px-2 font-semibold whitespace-nowrap">KPIs</th>
                 <th className="py-2 pl-2 w-16" aria-label="Actions" />
               </tr>
             </thead>
@@ -381,6 +548,16 @@ export function UsersAdmin({
                         busy={pending.has(`${u.email}:branches`)}
                         disabled={deleting}
                         onChange={(b) => onBranches(u, b)}
+                      />
+                    </td>
+                    <td className="py-3 px-2">
+                      <KpiPersonPicker
+                        user={u}
+                        people={kpiPeople}
+                        adminLocked={u.isOwner || u.tabs.includes('admin')}
+                        busy={pending.has(`${u.email}:kpiPerson`)}
+                        disabled={deleting}
+                        onChange={(id) => onKpiPerson(u, id)}
                       />
                     </td>
                     <td className="py-3 pl-2 text-right whitespace-nowrap">
