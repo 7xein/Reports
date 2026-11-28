@@ -1934,6 +1934,40 @@ export async function computeKpiEvaluations(
     }
   }
 
+  /**
+   * Quotations whose repair order carries an insurance tag (either tag field).
+   * Shared by Quote approval (KPI 2) and Quotation approval rate (KPI 21): on an
+   * insurance job the insurer decides, so neither the clock nor the yes/no is the
+   * advisor's. Deliberately does NOT exclude historical orders — "was this an
+   * insurance job" stays true after the order is moved to Historical.
+   * A chunk whose read fails stays unexempted but is counted in `unchecked`.
+   */
+  let insuranceTagsMemo: Awaited<ReturnType<typeof resolveTagMatches>> | null = null;
+  const insuranceQuotations = async (soIds: number[]) => {
+    const exempt = new Set<number>();
+    insuranceTagsMemo ??= await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
+    const tags = insuranceTagsMemo;
+    const tagsFound = tags.some((m) => m.ids.size);
+    let unchecked = 0;
+    if (tagsFound && has('sale_order_id')) {
+      for (let i = 0; i < soIds.length; i += 2000) {
+        try {
+          const insured = (await call('repair.order', 'search_read', [[
+            ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
+            ...anyTagDomain(tags),   // keep the OR-block last; it is prefix notation
+          ]], { fields: ['sale_order_id'], limit: 0 })) as Rec[];
+          for (const r of insured) {
+            const id = m2o(r.sale_order_id)?.[0];
+            if (id != null) exempt.add(id);
+          }
+        } catch {
+          unchecked += Math.min(2000, soIds.length - i);
+        }
+      }
+    }
+    return { exempt, tagsFound, unchecked };
+  };
+
   // ── KPI 2 — quotation approval within the configured business hours ──
   if (on(2)) {
     const limitMs = businessHours(thresholds.quoteApprovalHours ?? 48);
@@ -1992,33 +2026,13 @@ export async function computeKpiEvaluations(
     // question of fact — was this an insurance job — and that stays true after
     // the order is moved to Historical. Filtering here would quietly revoke the
     // exemption and start charging advisors for the insurer's delay.
-    const insuranceExempt = new Set<number>();
-    const insuranceTags = await resolveTagMatches(config.stageMap.insuranceTags?.values ?? [], meta, INSURANCE_TAG_RE);
-    let insuranceUnchecked = 0;
+    const { exempt: insuranceExempt, tagsFound: insuranceTagsFound, unchecked: insuranceUnchecked } = await insuranceQuotations(soIds);
     // Said out loud, because a missing exemption is silent in the figure: every
     // insurance job would sit on the approval clock and read as the advisor's delay.
-    if (!insuranceTags.some((m) => m.ids.size)) {
+    if (!insuranceTagsFound) {
       notes.push('Quote approval could not find any insurance tag on the repair orders, so no insurance job is exempt this run — the insurer\'s approval time is being counted against whoever confirmed the quotation. Pick the insurance tags under Admin → KPI Configuration if the auto-detection is missing them.');
     } else if (!has('sale_order_id')) {
       notes.push('Quote approval could not exempt insurance jobs: repair.order carries no sale_order_id on this instance, so a quotation cannot be traced to its repair order\'s tags.');
-    }
-    if (insuranceTags.some((m) => m.ids.size) && has('sale_order_id')) {
-      for (let i = 0; i < soIds.length; i += 2000) {
-        try {
-          const insured = (await call('repair.order', 'search_read', [[
-            ['sale_order_id', 'in', soIds.slice(i, i + 2000)],
-            ...anyTagDomain(insuranceTags),   // keep the OR-block last; it is prefix notation
-          ]], { fields: ['sale_order_id'], limit: 0 })) as Rec[];
-          for (const r of insured) {
-            const id = m2o(r.sale_order_id)?.[0];
-            if (id != null) insuranceExempt.add(id);
-          }
-        } catch {
-          // Unexempted rather than dropping the KPI — but counted, so the note
-          // below can say some insurance jobs may be on the clock this run.
-          insuranceUnchecked += Math.min(2000, soIds.length - i);
-        }
-      }
     }
     if (insuranceUnchecked) {
       notes.push(`Quote approval could not check ${insuranceUnchecked} quotation${insuranceUnchecked === 1 ? '' : 's'} for an insurance tag, so any insurance jobs among them are being scored as ordinary jobs this run — the insurer's approval time counted against the advisor.`);
@@ -2100,10 +2114,16 @@ export async function computeKpiEvaluations(
     // and retail orders out of the rate: they carry no repair order, and they
     // were approved on the spot, so they read as a near-perfect approval rate
     // for work no advisor was ever being judged on.
-    const { out: outOfScope, unchecked } = await quotationsOutOfScope(quotes.map((q) => q.id as number));
+    const quoteIds = quotes.map((q) => q.id as number);
+    const { out: outOfScope, unchecked } = await quotationsOutOfScope(quoteIds);
+    // Insurance jobs are out of the rate as they are out of Quote approval: the
+    // insurer approves or declines, not the customer the advisor is quoting.
+    const { exempt: insured, tagsFound: insTagsFound, unchecked: insUnchecked } = await insuranceQuotations(quoteIds);
     let historicalSkipped = 0;
+    let insuranceSkipped = 0;
     const byState: Record<string, number> = {};
     for (const q of quotes) {
+      if (insured.has(q.id as number)) { insuranceSkipped++; continue; }
       if (outOfScope.has(q.id as number)) { historicalSkipped++; continue; }
       const st = String(q.state ?? 'unknown');
       byState[st] = (byState[st] ?? 0) + 1;
@@ -2128,6 +2148,15 @@ export async function computeKpiEvaluations(
         .sort((a, b) => (order.indexOf(a[0]) + 1 || 99) - (order.indexOf(b[0]) + 1 || 99))
         .map(([st, n]) => `${st} ${n}`);
       notes.push(`Quotation approval rate — this week's quotations by state: ${parts.join(' \u00b7 ')}.`);
+    }
+    if (insuranceSkipped) {
+      notes.push(`Quotation approval rate excluded ${insuranceSkipped} insurance quotation${insuranceSkipped === 1 ? '' : 's'} — the insurer decides those, not the customer.`);
+    }
+    if (!insTagsFound) {
+      notes.push('Quotation approval rate could not find any insurance tag on the repair orders, so insurance jobs are still counted in the rate this run. Pick the insurance tags under Admin → KPI Configuration if the auto-detection is missing them.');
+    }
+    if (insUnchecked) {
+      notes.push(`Quotation approval rate could not check ${insUnchecked} quotation${insUnchecked === 1 ? '' : 's'} for an insurance tag, so any insurance jobs among them are still counted this run.`);
     }
     if (historicalSkipped) {
       notes.push(`Quotation approval rate now counts only quotations attached to a job card in the Orders tab, and excluded ${historicalSkipped} quotation${historicalSkipped === 1 ? '' : 's'} that ${historicalSkipped === 1 ? 'is' : 'are'} not: either every repair order behind ${historicalSkipped === 1 ? 'it' : 'them'} has been moved to Historical, or ${historicalSkipped === 1 ? 'it is' : 'they are'} not workshop work at all — counter parts sales and retail orders carry no job card and were approved on the spot, which lifted this rate for work nobody here is scored on. Expect the figure to move for that reason rather than because the week changed.`);
@@ -3575,7 +3604,7 @@ export async function computeKpiEvaluations(
     18: 'Measured from the quotation being approved to a purchase order being raised against the vehicle — Odoo records no link from a purchase order back to a repair order, so the vehicle is the only way to see that an RFQ exists. Counted only for ROs still short of parts; ones with no vehicle set are skipped, because without one an RFQ cannot be seen either way. Purchase orders raised outside the five scored companies do not count as the RFQ, which is the same company scope RFQ confirmed and Parts placed use. An RFQ raised before approval counts as early, not late. Timed in calendar days, not business hours.',
     19: 'Measured from a purchase order being created to its Confirmation Date. Counted only for purchases that belong to a job card in the Orders tab: the order must carry a vehicle, and that vehicle must have a non-historical job card that was already open when the order was raised — the same test Parts placed uses, asked at creation instead of confirmation. That leaves out shop consumables and stationery, purchases for job cards moved to Historical, and purchases for vehicles with no open job. Cancelled requests are left out, and so are confirmed ones carrying no confirmation date, since there is nothing to measure to. Timed in calendar days, not business hours.',
     20: 'Measured from a purchase order\'s Confirmation Date to its Arrival date, judged against the whole job card\'s parts rather than this order\'s own lines — one job\'s parts routinely arrive across several orders, and the vehicle is only unblocked when the last of them is in. The job is matched through the vehicle: the newest non-historical job card that was already open when the order was confirmed — a job card already closed by then belongs to a different visit and cannot receive these parts. Orders with no such job card are skipped, and ones whose parts are complete but which carry no Arrival date are accepted as on time. Timed in calendar days, not business hours.',
-    21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Only quotations attached to a job card in the Orders tab are counted — one whose repair orders have all been moved to Historical, or which has no repair order at all, is out of scope, which is what keeps counter parts sales and retail orders out of the rate. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. No time limit applies.',
+    21: 'The share of this week\'s quotations the customer approved, meaning confirmed into a sale order. Counted from quotations created this week: Odoo records no reliable moment a quotation was sent, so creation stands in for sending. Only quotations attached to a job card in the Orders tab are counted — one whose repair orders have all been moved to Historical, or which has no repair order at all, is out of scope, which is what keeps counter parts sales and retail orders out of the rate. Drafts stay in the count on purpose — Send by Email is unused here, so an unapproved quotation sits in draft for good and dropping drafts would leave only the approved ones. In a week still running the newest quotations are simply undecided, so the figure reads low and settles upward as the week closes. Insurance jobs are exempt — the insurer decides those, not the customer. No time limit applies.',
     22: 'A deadline, not a duration: did the RO reach Repaired by the scheduled delivery date promised to the customer. Repaired means the FIRST of the Repaired codes it reached that week (Labour Complete / QC Complete / Vehicle Ready) — the last of them failed a car finished at 16:00 on its promised day because Vehicle Ready was ticked the next morning. The promise is a wall-clock moment the customer was given, so it is compared raw — running it through working hours would move the promise itself. A promise whose Gulf clock reads exactly midnight is a promise for that whole day and falls due at 23:59 Gulf on it, so a car ready at any hour of its promised day is on time. ROs with no scheduled delivery date are skipped: nothing was promised, so nothing can be late.',
     6: `Open ROs with parts still outstanding, detected from ${awaitingPartsMethod}. ${snapshotNote}`,
     // KPI 7 no longer shares `snapshotNote`: that string names the configured

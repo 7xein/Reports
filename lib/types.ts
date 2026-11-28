@@ -223,7 +223,7 @@ export const KPI_DEFINITIONS = [
   { id: 5, name: 'Tag on creation',          group: 'Tagging', section: 'advisor', rule: 'A tag must be added to every RO within the configured time of creation.' },
   { id: 8, name: 'Car in / out tag',         group: 'Tagging', section: 'advisor', rule: 'Every RO must carry a CAR-IN or CAR-OUT tag showing whether the vehicle is on site.' },
   { id: 2, name: 'Quote approval',           group: 'Quotations', section: 'advisor', rule: 'Quotations must not sit awaiting approval beyond the configured time. Insurance jobs are excluded — approval is the insurer\'s to give.' },
-  { id: 21, name: 'Quotation approval rate', group: 'Quotations', section: 'advisor', target: 70, rule: 'Of the quotations raised, the share the customer approves. Send by Email is unused here, so an unapproved quotation stays in draft and the denominator is quotations raised.' },
+  { id: 21, name: 'Quotation approval rate', group: 'Quotations', section: 'advisor', target: 70, rule: 'Of the quotations raised, the share the customer approves. Send by Email is unused here, so an unapproved quotation stays in draft and the denominator is quotations raised. Insurance jobs are exempt.' },
   { id: 9, name: 'Weekly closure rate',      group: 'Throughput & backlog', section: 'workshop', rule: 'Repair orders received this week should be closed this week (closed ÷ received).' },
   { id: 6, name: 'Awaiting parts',           group: 'Throughput & backlog', section: 'workshop', rule: 'An open RO with parts still outstanding (Done qty below Demand) cannot wait beyond the configured time.' },
   { id: 7, name: 'Awaiting labour',          group: 'Throughput & backlog', section: 'workshop', rule: 'A vehicle cannot await labour beyond the configured time.' },
